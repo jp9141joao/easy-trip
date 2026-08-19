@@ -41,3 +41,15 @@ example
 # generated native folders
 /ios
 /android
+
+# Local environment — never commit real keys (§17, §120)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Build/scan artifacts
+.secscan/
+.expo-export-check/
+dist/
+coverage/
