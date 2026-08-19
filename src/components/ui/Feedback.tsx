@@ -247,6 +247,22 @@ export function OfflineBanner({ message }: { message?: string }) {
   );
 }
 
+/**
+ * Um texto com interpolação (`texto {valor}`) chega como array de nós, não como
+ * string. Checar apenas `typeof children === 'string'` jogava esse caso no ramo
+ * "já é JSX pronto" e o React Native quebrava a tela inteira com "Text strings
+ * must be rendered within a <Text> component" — o conteúdo precisa ser
+ * envolvido sempre que for texto, esteja ele partido em pedaços ou não.
+ */
+function isTextContent(node: ReactNode): boolean {
+  // `null`/`undefined`/booleanos não renderizam nada e não atrapalham o ramo de
+  // texto — um `{cond && 'algo'}` falso não deve mudar a decisão.
+  if (node === null || node === undefined || typeof node === 'boolean') return true;
+  if (typeof node === 'string' || typeof node === 'number') return true;
+  if (Array.isArray(node)) return node.every(isTextContent);
+  return false;
+}
+
 /** Small inline notice — used for "modo demonstração" and stale-data hints. */
 export function InlineNotice({
   icon: Icon,
@@ -279,7 +295,7 @@ export function InlineNotice({
     >
       {Icon ? <Icon size={16} color={tones.fg} style={{ marginTop: 2 }} /> : null}
       <View style={{ flex: 1 }}>
-        {typeof children === 'string' ? (
+        {isTextContent(children) ? (
           <AppText variant="caption" color="secondary">
             {children}
           </AppText>

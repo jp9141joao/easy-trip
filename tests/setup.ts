@@ -97,3 +97,10 @@ jest.mock('expo-haptics', () => ({
   selectionAsync: jest.fn(async () => undefined),
   ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
 }));
+
+/* --------------------------------- Ícones --------------------------------- */
+
+// `lucide-react-native` só publica ESM (.mjs), que o transform do jest-expo não
+// cobre. Os ícones são decorativos, então um stub basta para que os componentes
+// que os usam possam ser renderizados em teste.
+jest.mock('lucide-react-native', () => new Proxy({}, { get: () => () => null }));

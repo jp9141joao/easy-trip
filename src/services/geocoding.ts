@@ -40,8 +40,13 @@ export async function searchDestinations(term: string): Promise<DestinationSugge
   const query = term.trim();
   if (query.length < 2) return [];
 
+  // Medido, este host responde em ~0,4s quando está saudável, mas trava por
+  // completo de vez em quando. Esperar 5s por tentativa já é dez vezes o normal:
+  // além disso a conexão está pendurada, e tentar de novo resolve mais rápido do
+  // que continuar esperando.
   const data = await getJson<GeocodingResponse>(
     `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=8&language=pt&format=json`,
+    { timeoutMs: 5_000, retries: 2 },
   );
 
   return (data.results ?? [])

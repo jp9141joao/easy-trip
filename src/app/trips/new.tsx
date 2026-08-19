@@ -33,6 +33,7 @@ import { formatDateRange, parseISODate, todayISO } from '@/lib/date';
 import { formatMoney } from '@/lib/currency';
 import { useAuth } from '@/providers/AuthProvider';
 import { searchDestinations, type DestinationSuggestion } from '@/services/geocoding';
+import { describeError } from '@/services/http';
 import { useTheme } from '@/theme';
 
 /**
@@ -284,7 +285,13 @@ function StepDestination({
   const [term, setTerm] = useState('');
   const [results, setResults] = useState<DestinationSuggestion[]>([]);
   const [searching, setSearching] = useState(false);
-  const [failed, setFailed] = useState(false);
+  // Guarda a causa real da falha (timeout, offline, HTTP 5xx), não um booleano:
+  // "verifique sua conexão" para um serviço fora do ar manda o usuário depurar
+  // o problema errado.
+  const [error, setError] = useState<string | null>(null);
+  // Incrementado pelo botão "Tentar novamente": refaz a busca sem obrigar o
+  // usuário a reescrever o termo.
+  const [attempt, setAttempt] = useState(0);
 
   const tooShort = term.trim().length < 2;
 
@@ -299,16 +306,19 @@ function StepDestination({
     const timer = setTimeout(async () => {
       if (!active) return;
       setSearching(true);
+      // Limpa o aviso anterior ao iniciar a tentativa, senão o spinner e o erro
+      // aparecem juntos e a tela se contradiz.
+      setError(null);
       try {
         const found = await searchDestinations(term);
         if (active) {
           setResults(found);
-          setFailed(false);
+          setError(null);
         }
-      } catch {
+      } catch (err) {
         if (active) {
           setResults([]);
-          setFailed(true);
+          setError(describeError(err, 'Não foi possível buscar destinos agora.'));
         }
       } finally {
         if (active) setSearching(false);
@@ -319,11 +329,11 @@ function StepDestination({
       active = false;
       clearTimeout(timer);
     };
-  }, [term, tooShort]);
+  }, [term, tooShort, attempt]);
 
   // Anything below the minimum length shows no results at all.
   const visibleResults = tooShort ? [] : results;
-  const showFailure = failed && !tooShort;
+  const showFailure = error !== null && !tooShort && !searching;
 
   return (
     <View style={{ gap: theme.spacing.xl }}>
@@ -352,7 +362,21 @@ function StepDestination({
 
       {showFailure ? (
         <InlineNotice icon={TriangleAlert} tone="warning">
-          Não foi possível buscar destinos agora. Verifique sua conexão e tente novamente.
+          <View style={{ gap: theme.spacing.sm, alignItems: 'flex-start' }}>
+            <AppText variant="caption" color="secondary">
+              Não foi possível buscar destinos agora. {error}
+            </AppText>
+            <Pressable
+              onPress={() => setAttempt((value) => value + 1)}
+              accessibilityRole="button"
+              accessibilityLabel="Tentar buscar destinos novamente"
+              hitSlop={8}
+            >
+              <AppText variant="caption" weight="semibold" style={{ color: theme.colors.primary }}>
+                Tentar novamente
+              </AppText>
+            </Pressable>
+          </View>
         </InlineNotice>
       ) : null}
 
