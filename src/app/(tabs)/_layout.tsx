@@ -6,6 +6,7 @@ import { Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppText } from '@/components/ui';
+import { useKeyboardVisible } from '@/hooks/useKeyboard';
 import { useAuth } from '@/providers/AuthProvider';
 import { useTheme } from '@/theme';
 
@@ -46,6 +47,14 @@ type BottomTabBarProps = Parameters<NonNullable<ComponentProps<typeof Tabs>['tab
 function FloatingDock({ state, navigation }: BottomTabBarProps) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const keyboardVisible = useKeyboardVisible();
+
+  // Enquanto o usuário digita, o dock e o teclado disputam a mesma faixa
+  // inferior — e trocar de aba não é o que se quer fazer no meio de uma frase.
+  // Sair de cena devolve o espaço ao composer e volta assim que o teclado
+  // fecha. Como o dock é `position: absolute`, remover não mexe no layout de
+  // ninguém: não há salto ao abrir nem ao fechar.
+  if (keyboardVisible) return null;
 
   return (
     <View

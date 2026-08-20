@@ -7,12 +7,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   AppImage,
   AppText,
-  Badge,
   IconButton,
   SegmentedTabs,
   type SegmentedTabItem,
 } from '@/components/ui';
-import { getCountdownLabel, getTripStatus, TRIP_STATUS_LABEL } from '@/domain/selectors';
+import { TripStatusChip, TripTimingChip } from '@/components/trip';
 import type { Trip } from '@/domain/types';
 import { formatDateRange } from '@/lib/date';
 import { formatMoney } from '@/lib/currency';
@@ -39,7 +38,6 @@ export function TripHero({
   const theme = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const status = getTripStatus(trip);
 
   return (
     <View>
@@ -48,6 +46,10 @@ export function TripHero({
         style={{ height: 240 + insets.top, width: '100%' }}
         fallbackLabel={trip.destinationCity}
         overlay
+        // Roteiro, Carteira e Tickets desenham este mesmo hero. Sem zerar o
+        // fade, a foto reaparece animada a cada troca de aba e a tela lê como
+        // três telas batendo uma na outra em vez de uma só (§2).
+        transition={0}
       />
 
       <View
@@ -65,8 +67,7 @@ export function TripHero({
           icon={ChevronLeft}
           accessibilityLabel="Voltar"
           onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/trips'))}
-          background="glass"
-          color={theme.colors.textOnImage}
+          background="onImage"
         />
 
         <View style={{ flex: 1 }} />
@@ -75,66 +76,81 @@ export function TripHero({
           icon={CloudSun}
           accessibilityLabel="Clima do destino"
           onPress={() => router.push('/utilities/weather')}
-          background="glass"
-          color={theme.colors.textOnImage}
+          background="onImage"
         />
         <IconButton
           icon={Clock3}
           accessibilityLabel="Fuso horário"
           onPress={() => router.push('/utilities/timezone')}
-          background="glass"
-          color={theme.colors.textOnImage}
+          background="onImage"
         />
         <IconButton
           icon={MapIcon}
           accessibilityLabel="Mapa"
           onPress={() => router.push('/utilities/map')}
-          background="glass"
-          color={theme.colors.textOnImage}
+          background="onImage"
         />
         <IconButton
           icon={LifeBuoy}
           accessibilityLabel="Emergência e SOS"
           onPress={() => router.push('/utilities/sos')}
-          background="glass"
-          color={theme.colors.textOnImage}
+          background="onImage"
         />
       </View>
 
+      {/*
+        Ordem de leitura do hero (§29): destino → período → status → tempo
+        restante. Os chips ficam abaixo do texto, e não acima, porque é o
+        destino que identifica a tela; status e contagem qualificam o que já
+        foi identificado.
+      */}
       <View
         style={{
           position: 'absolute',
           left: theme.spacing.screen,
           right: theme.spacing.screen,
           bottom: theme.spacing.lg,
-          gap: 6,
+          gap: theme.spacing.sm,
         }}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
-          <Badge
-            label={TRIP_STATUS_LABEL[status]}
-            tone={status === 'active' ? 'success' : status === 'upcoming' ? 'brand' : 'neutral'}
-          />
-          <Badge label={getCountdownLabel(trip)} tone="accent" />
-          <View style={{ flex: 1 }} />
+          <AppText
+            variant="h1"
+            color="onImage"
+            weight="bold"
+            numberOfLines={1}
+            style={{ flex: 1 }}
+          >
+            {trip.destinationCity}
+          </AppText>
           {onEdit ? (
             <IconButton
               icon={Pencil}
               accessibilityLabel="Editar viagem"
               onPress={onEdit}
-              background="glass"
-              color={theme.colors.textOnImage}
+              background="onImage"
               size={16}
             />
           ) : null}
         </View>
 
-        <AppText variant="h1" color="onImage" weight="bold" numberOfLines={1}>
-          {trip.destinationCity}
-        </AppText>
         <AppText variant="bodySmall" color="onImage" numberOfLines={1}>
           {trip.destinationCountry} · {formatDateRange(trip.startDate, trip.endDate)}
         </AppText>
+
+        {/* `flexWrap` porque "Em andamento" + "Faltam 127 dias" não cabem em
+            uma linha em telas estreitas (§35). */}
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: theme.spacing.sm,
+          }}
+        >
+          <TripStatusChip trip={trip} />
+          <TripTimingChip trip={trip} />
+        </View>
 
         {spent !== undefined ? (
           <AppText variant="caption" color="onImage" mono style={{ opacity: 0.9 }}>
@@ -161,39 +177,6 @@ export function TripTabs({ tripId, active }: { tripId: string; active: TripSecti
   return (
     <View style={{ paddingHorizontal: theme.spacing.screen, paddingVertical: theme.spacing.lg }}>
       <SegmentedTabs<TripSection>
-        items={items}
-        value={active}
-        onChange={(value) => {
-          if (value === active) return;
-          router.replace(`/trip/${tripId}/${value}`);
-        }}
-      />
-    </View>
-  );
-}
-
-/** Secondary tabs inside Roteiro: Jornada · Checklist · Diário (§22). */
-export function RoteiroTabs({
-  tripId,
-  active,
-  checklistBadge,
-}: {
-  tripId: string;
-  active: RoteiroSection;
-  checklistBadge?: number;
-}) {
-  const theme = useTheme();
-  const router = useRouter();
-
-  const items: SegmentedTabItem<RoteiroSection>[] = [
-    { value: 'itinerary', label: 'Jornada' },
-    { value: 'checklist', label: 'Checklist', badge: checklistBadge },
-    { value: 'journal', label: 'Diário' },
-  ];
-
-  return (
-    <View style={{ paddingHorizontal: theme.spacing.screen, paddingBottom: theme.spacing.lg }}>
-      <SegmentedTabs<RoteiroSection>
         items={items}
         value={active}
         onChange={(value) => {

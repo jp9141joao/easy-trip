@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Pressable, ScrollView, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { clampPercent } from '@/domain/selectors';
@@ -317,7 +317,7 @@ export function SegmentedTabs<T extends string>({
                   justifyContent: 'center',
                 }}
               >
-                <AppText variant="label" style={{ color: '#FFFFFF', fontSize: 10 }}>
+                <AppText variant="label" style={{ color: theme.colors.textOnPrimary, fontSize: 10 }}>
                   {item.badge}
                 </AppText>
               </View>
@@ -335,6 +335,40 @@ export function SegmentedTabs<T extends string>({
       {content}
     </ScrollView>
   );
+}
+
+/* --------------------------------- FadeIn --------------------------------- */
+
+/**
+ * Entrada suave para o conteúdo que troca dentro de uma mesma tela (§2).
+ *
+ * Apenas opacidade, no driver nativo: a animação roda na thread de UI, sem
+ * layout e sem re-render. É o bastante para a troca de painel parecer orgânica
+ * em vez de um corte seco, e curta o suficiente para nunca virar espera. O hero
+ * fica de fora de propósito — ele é o que precisa parecer imóvel.
+ */
+export function FadeIn({
+  children,
+  duration = 160,
+  style,
+}: {
+  children: ReactNode;
+  duration?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animation = Animated.timing(opacity, {
+      toValue: 1,
+      duration,
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [opacity, duration]);
+
+  return <Animated.View style={[{ opacity }, style]}>{children}</Animated.View>;
 }
 
 /* ---------------------------------- Chip ---------------------------------- */

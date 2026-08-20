@@ -153,7 +153,14 @@ export function EmptyState({
       ) : null}
 
       {actionLabel && onAction ? (
-        <Button label={actionLabel} onPress={onAction} style={{ marginTop: theme.spacing.sm }} />
+        // `Button` usa `alignSelf: 'flex-start'` por padrão, e `alignSelf`
+        // sobrepõe o `alignItems: 'center'` do container — era por isso que o
+        // CTA aparecia deslocado para a esquerda dentro do card (§19).
+        <Button
+          label={actionLabel}
+          onPress={onAction}
+          style={{ marginTop: theme.spacing.sm, alignSelf: 'center' }}
+        />
       ) : null}
     </View>
   );

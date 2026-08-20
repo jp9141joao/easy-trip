@@ -18,7 +18,7 @@ import { View } from 'react-native';
 
 import { AppProviders } from '@/providers/AppProviders';
 import { useAuth } from '@/providers/AuthProvider';
-import { useTheme } from '@/theme';
+import { useTheme, useThemePreference } from '@/theme';
 
 // Hold the splash until fonts are loaded and the session has been restored, so
 // the login screen never flashes for a signed-in user (§23).
@@ -52,16 +52,23 @@ export default function RootLayout() {
 function RootNavigator() {
   const theme = useTheme();
   const { initializing } = useAuth();
+  const { hydrated } = useThemePreference();
+
+  // A preferência de aparência entra na mesma barreira da sessão: enquanto o
+  // tema salvo não foi lido do disco, o splash continua cobrindo a tela. É isso
+  // que evita a sequência "abre no tema do sistema → troca para o tema
+  // escolhido" ficar visível na inicialização (§2).
+  const ready = !initializing && hydrated;
 
   const hideSplash = useCallback(async () => {
     await SplashScreen.hideAsync().catch(() => undefined);
   }, []);
 
   useEffect(() => {
-    if (!initializing) void hideSplash();
-  }, [initializing, hideSplash]);
+    if (ready) void hideSplash();
+  }, [ready, hideSplash]);
 
-  if (initializing) {
+  if (!ready) {
     // Splash is still covering the screen; render the brand colour underneath
     // so there is no white flash as it fades.
     return <View style={{ flex: 1, backgroundColor: theme.colors.background }} />;

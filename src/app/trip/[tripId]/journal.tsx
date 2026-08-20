@@ -14,6 +14,7 @@ import {
   ConfirmDialog,
   DateField,
   EmptyState,
+  FadeIn,
   ErrorState,
   FloatingActionButton,
   GlassCard,
@@ -24,7 +25,8 @@ import {
 } from '@/components/ui';
 import { journalEntrySchema, type JournalEntryInput } from '@/domain/schemas';
 import type { JournalEntry } from '@/domain/types';
-import { RoteiroTabs, TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
+import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
+import { RoteiroModules } from '@/features/trip/RoteiroModules';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useJournal, useJournalMedia, useJournalMutations } from '@/hooks/useTripData';
 import { formatWeekdayDate, todayISO } from '@/lib/date';
@@ -91,26 +93,29 @@ export default function JournalScreen() {
     }
   };
 
+  // Um único CTA para a primeira criação: quando o empty state já oferece a
+  // ação, o FAB logo abaixo seria o mesmo botão duas vezes (§20). Assim que
+  // existe conteúdo, o FAB volta ao comportamento normal.
+  const emptyCtaVisible = !loadingEntries && entries.length === 0;
+
   return (
     <TripScreenShell>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
         <TripHero trip={trip} />
         <TripTabs tripId={tripId} active="itinerary" />
-        <RoteiroTabs tripId={tripId} active="journal" />
+        <RoteiroModules tripId={tripId} active="journal" />
 
-        <View style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.lg }}>
+        <FadeIn style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.lg }}>
           {loadingEntries ? (
             <SkeletonList count={2} lines={4} />
           ) : entries.length === 0 ? (
-            <GlassCard>
-              <EmptyState
-                icon={BookOpen}
-                title="Nenhuma memória registrada"
-                message="Escreva sobre o dia, anexe fotos e guarde o que você não quer esquecer."
-                actionLabel="Criar primeira entrada"
-                onAction={() => setEditorOpen(true)}
-              />
-            </GlassCard>
+            <EmptyState
+              icon={BookOpen}
+              title="Nenhuma memória registrada"
+              message="Escreva sobre o dia, anexe fotos e guarde o que você não quer esquecer."
+              actionLabel="Criar primeira entrada"
+              onAction={() => setEditorOpen(true)}
+            />
           ) : (
             entries.map((entry) => {
               const photos = mediaByEntry.get(entry.id) ?? [];
@@ -190,17 +195,19 @@ export default function JournalScreen() {
               );
             })
           )}
-        </View>
+        </FadeIn>
       </ScrollView>
 
-      <FloatingActionButton
-        icon={Plus}
-        label="Registro"
-        onPress={() => {
-          setEditing(null);
-          setEditorOpen(true);
-        }}
-      />
+      {emptyCtaVisible ? null : (
+        <FloatingActionButton
+          icon={Plus}
+          label="Registro"
+          onPress={() => {
+            setEditing(null);
+            setEditorOpen(true);
+          }}
+        />
+      )}
 
       <JournalEditorSheet
         visible={editorOpen}

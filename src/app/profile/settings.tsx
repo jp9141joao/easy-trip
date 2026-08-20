@@ -1,17 +1,22 @@
 import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import {
+  Check,
   Database,
   FileText,
   Info,
   LogOut,
+  Moon,
   ShieldCheck,
+  Smartphone,
+  Sun,
   Trash2,
   Wifi,
   WifiOff,
+  type LucideIcon,
 } from 'lucide-react-native';
 import { useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
@@ -33,7 +38,7 @@ import { useConnectivity } from '@/providers/ConnectivityProvider';
 import { dataSource } from '@/repositories';
 import { EMERGENCY_COVERAGE } from '@/services/emergency';
 import { aiService } from '@/services/ai';
-import { useTheme } from '@/theme';
+import { useTheme, useThemePreference, type ThemeMode } from '@/theme';
 
 /**
  * Settings, including the LGPD obligations (§94): account deletion, data
@@ -46,6 +51,7 @@ export default function SettingsScreen() {
   const toast = useToast();
   const { user, signOut, deleteAccount } = useAuth();
   const { status } = useConnectivity();
+  const { mode, setMode } = useThemePreference();
 
   const [confirmSignOut, setConfirmSignOut] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -144,6 +150,23 @@ export default function SettingsScreen() {
           </GlassCard>
         </View>
 
+        {/* ---------------------------- Appearance --------------------------- */}
+        <View>
+          <SectionHeader title="Aparência" />
+          <GlassCard>
+            <View style={{ gap: theme.spacing.xs }}>
+              {APPEARANCE_OPTIONS.map((option) => (
+                <AppearanceRow
+                  key={option.mode}
+                  option={option}
+                  selected={mode === option.mode}
+                  onSelect={() => setMode(option.mode)}
+                />
+              ))}
+            </View>
+          </GlassCard>
+        </View>
+
         {config.mode === 'demo' ? (
           <InlineNotice icon={Info} tone="warning">
             O aplicativo está em modo demonstração: sua conta e seus dados ficam somente neste
@@ -225,5 +248,79 @@ export default function SettingsScreen() {
         onCancel={() => setConfirmDelete(false)}
       />
     </View>
+  );
+}
+
+/* ------------------------------- Appearance ------------------------------- */
+
+interface AppearanceOption {
+  mode: ThemeMode;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+}
+
+const APPEARANCE_OPTIONS: AppearanceOption[] = [
+  { mode: 'light', label: 'Claro', description: 'Sempre no tema claro', icon: Sun },
+  { mode: 'dark', label: 'Escuro', description: 'Sempre no tema escuro', icon: Moon },
+  {
+    mode: 'system',
+    label: 'Sistema',
+    description: 'Acompanha o ajuste do aparelho',
+    icon: Smartphone,
+  },
+];
+
+/**
+ * Linhas de rádio em vez de um segmented control: cada opção precisa caber uma
+ * descrição curta ("Acompanha o ajuste do aparelho"), que é o que torna
+ * `Sistema` compreensível sem o usuário ter de testar.
+ */
+function AppearanceRow({
+  option,
+  selected,
+  onSelect,
+}: {
+  option: AppearanceOption;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const theme = useTheme();
+  const Icon = option.icon;
+
+  return (
+    <Pressable
+      onPress={onSelect}
+      accessibilityRole="radio"
+      accessibilityState={{ selected }}
+      accessibilityLabel={option.label}
+      accessibilityHint={option.description}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.spacing.md,
+        padding: theme.spacing.md,
+        borderRadius: theme.radius.smallCard,
+        minHeight: theme.hitTarget,
+        backgroundColor: selected
+          ? theme.colors.primarySoft
+          : pressed
+            ? theme.colors.surfaceMuted
+            : 'transparent',
+        borderWidth: 1,
+        borderColor: selected ? theme.colors.primary : 'transparent',
+      })}
+    >
+      <Icon size={18} color={selected ? theme.colors.primary : theme.colors.textSecondary} />
+      <View style={{ flex: 1 }}>
+        <AppText variant="bodySmall" weight={selected ? 'semibold' : 'regular'}>
+          {option.label}
+        </AppText>
+        <AppText variant="caption" color="secondary">
+          {option.description}
+        </AppText>
+      </View>
+      {selected ? <Check size={18} color={theme.colors.primary} /> : null}
+    </Pressable>
   );
 }

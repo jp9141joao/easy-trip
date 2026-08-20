@@ -1,18 +1,13 @@
 import { CalendarDays, MapPin, Wallet } from 'lucide-react-native';
 import { View } from 'react-native';
 
-import { AppImage, AppText, Badge, GlassCard } from '@/components/ui';
-import { getCountdownLabel, getTripStatus, TRIP_STATUS_LABEL } from '@/domain/selectors';
-import type { Trip, TripStatus } from '@/domain/types';
+import { AppImage, AppText, GlassCard } from '@/components/ui';
+import { TripStatusChip } from '@/components/trip';
+import { getCountdownLabel, getTripTimingLabel } from '@/domain/selectors';
+import type { Trip } from '@/domain/types';
 import { formatMoney } from '@/lib/currency';
 import { formatDateRange } from '@/lib/date';
 import { useTheme } from '@/theme';
-
-const STATUS_TONE: Record<TripStatus, 'brand' | 'success' | 'neutral'> = {
-  upcoming: 'brand',
-  active: 'success',
-  completed: 'neutral',
-};
 
 export function TripCard({
   trip,
@@ -25,7 +20,7 @@ export function TripCard({
   spent?: number;
 }) {
   const theme = useTheme();
-  const status = getTripStatus(trip);
+  const timing = getTripTimingLabel(trip);
   const remaining = spent === undefined ? undefined : trip.budgetTotal - spent;
 
   return (
@@ -50,7 +45,7 @@ export function TripCard({
           right: theme.spacing.lg,
         }}
       >
-        <Badge label={TRIP_STATUS_LABEL[status]} tone={STATUS_TONE[status]} />
+        <TripStatusChip trip={trip} />
       </View>
 
       <View style={{ padding: theme.spacing.xl, gap: theme.spacing.md }}>
@@ -74,9 +69,11 @@ export function TripCard({
             </AppText>
           </View>
 
-          <AppText variant="caption" color="brand" weight="semibold">
-            {getCountdownLabel(trip)}
-          </AppText>
+          {timing ? (
+            <AppText variant="caption" color="brand" weight="semibold">
+              {timing}
+            </AppText>
+          ) : null}
         </View>
 
         <View

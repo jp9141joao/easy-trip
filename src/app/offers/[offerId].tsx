@@ -86,8 +86,7 @@ export default function OfferDetailScreen() {
               icon={ChevronLeft}
               accessibilityLabel="Voltar"
               onPress={() => (router.canGoBack() ? router.back() : router.replace('/offers'))}
-              background="glass"
-              color={theme.colors.textOnImage}
+              background="onImage"
             />
           </View>
 

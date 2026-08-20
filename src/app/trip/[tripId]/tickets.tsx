@@ -27,6 +27,7 @@ import {
   Button,
   ConfirmDialog,
   EmptyState,
+  FadeIn,
   ErrorState,
   FloatingActionButton,
   GlassCard,
@@ -96,13 +97,18 @@ export default function TicketsScreen() {
     }
   };
 
+  // Um único CTA para a primeira criação: quando o empty state já oferece a
+  // ação, o FAB logo abaixo seria o mesmo botão duas vezes (§20). Assim que
+  // existe conteúdo, o FAB volta ao comportamento normal.
+  const emptyCtaVisible = !loadingTickets && tickets.length === 0;
+
   return (
     <TripScreenShell>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
         <TripHero trip={trip} />
         <TripTabs tripId={tripId} active="tickets" />
 
-        <View style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.md }}>
+        <FadeIn style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.md }}>
           {loadingTickets ? (
             <SkeletonList count={3} lines={2} />
           ) : tickets.length === 0 ? (
@@ -120,17 +126,19 @@ export default function TicketsScreen() {
               <TicketCard key={ticket.id} ticket={ticket} onPress={() => setViewing(ticket)} />
             ))
           )}
-        </View>
+        </FadeIn>
       </ScrollView>
 
-      <FloatingActionButton
-        icon={Plus}
-        label="Documento"
-        onPress={() => {
-          setEditing(null);
-          setEditorOpen(true);
-        }}
-      />
+      {emptyCtaVisible ? null : (
+        <FloatingActionButton
+          icon={Plus}
+          label="Documento"
+          onPress={() => {
+            setEditing(null);
+            setEditorOpen(true);
+          }}
+        />
+      )}
 
       <TicketEditorSheet
         visible={editorOpen}

@@ -56,6 +56,11 @@ export default function TripsScreen() {
     router.push(`/trip/${tripId}`);
   };
 
+  // Um único CTA para a primeira criação: quando o empty state já oferece a
+  // ação, o FAB logo abaixo seria o mesmo botão duas vezes (§20). Assim que
+  // existe conteúdo, o FAB volta ao comportamento normal.
+  const emptyCtaVisible = !isLoading && !isError && trips.length === 0;
+
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
       <AuroraBackground />
@@ -141,12 +146,14 @@ export default function TripsScreen() {
         }
       />
 
-      <FloatingActionButton
-        icon={Plus}
-        label="Nova viagem"
-        onPress={() => router.push('/trips/new')}
-        bottomOffset={DOCK_CLEARANCE - theme.spacing.md}
-      />
+      {emptyCtaVisible ? null : (
+        <FloatingActionButton
+          icon={Plus}
+          label="Nova viagem"
+          onPress={() => router.push('/trips/new')}
+          bottomOffset={DOCK_CLEARANCE - theme.spacing.md}
+        />
+      )}
     </View>
   );
 }

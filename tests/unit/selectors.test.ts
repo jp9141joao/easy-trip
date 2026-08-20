@@ -12,11 +12,13 @@ import {
   getTravelStats,
   getTripDurationDays,
   getTripStatus,
+  getTripTimingLabel,
   getTripTotalSpent,
   getVisitedCountries,
   hasUnconvertedExpenses,
   isOverBudget,
   sortItinerary,
+  TRIP_STATUS_LABEL,
 } from '@/domain/selectors';
 import type {
   ChecklistItem,
@@ -259,5 +261,45 @@ describe('clampPercent', () => {
     expect(clampPercent(-10)).toBe(0);
     expect(clampPercent(150)).toBe(100);
     expect(clampPercent(Number.NaN)).toBe(0);
+  });
+});
+
+describe('hero timing label (§27, §31)', () => {
+  const t = trip({ startDate: '2026-09-10', endDate: '2026-09-13' });
+
+  it('counts down while the trip is still ahead', () => {
+    expect(getTripTimingLabel(t, '2026-08-11')).toBe('Faltam 30 dias');
+    expect(getTripTimingLabel(t, '2026-09-08')).toBe('Faltam 2 dias');
+    expect(getTripTimingLabel(t, '2026-09-09')).toBe('Falta 1 dia');
+  });
+
+  it('treats the departure day as day 1, not as a countdown', () => {
+    // No dia da partida a viagem já está em andamento (§36), então contar
+    // "faltam 0 dias" seria errado. O ramo 'Começa hoje' de
+    // `getCountdownLabel` é, por consequência, inalcançável: ele exige
+    // status 'upcoming', que por definição só ocorre com today < startDate.
+    expect(getTripStatus(t, '2026-09-10')).toBe('active');
+    expect(getTripTimingLabel(t, '2026-09-10')).toBe('Dia 1 de 4');
+  });
+
+  it('says which day of the trip it is instead of repeating the status', () => {
+    // `getCountdownLabel` devolve "Em andamento", exatamente o texto do status —
+    // era isso que fazia o hero desenhar dois chips idênticos lado a lado.
+    expect(getCountdownLabel(t, '2026-09-11')).toBe('Em andamento');
+    expect(getTripTimingLabel(t, '2026-09-11')).toBe('Dia 2 de 4');
+    expect(getTripTimingLabel(t, '2026-09-13')).toBe('Dia 4 de 4');
+  });
+
+  it('stays silent once the trip is over, since the status already says it', () => {
+    expect(getCountdownLabel(t, '2026-09-20')).toBe('Concluída');
+    expect(getTripTimingLabel(t, '2026-09-20')).toBeNull();
+  });
+
+  it('never repeats whatever the status chip is showing', () => {
+    for (const today of ['2026-08-01', '2026-09-09', '2026-09-10', '2026-09-12', '2026-10-01']) {
+      const label = getTripTimingLabel(t, today);
+      if (label === null) continue;
+      expect(label).not.toBe(TRIP_STATUS_LABEL[getTripStatus(t, today)]);
+    }
   });
 });

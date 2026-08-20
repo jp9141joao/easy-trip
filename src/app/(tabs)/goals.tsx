@@ -91,6 +91,11 @@ export default function GoalsScreen() {
     }
   };
 
+  // Um único CTA para a primeira criação: quando o empty state já oferece a
+  // ação, o FAB logo abaixo seria o mesmo botão duas vezes (§20). Assim que
+  // existe conteúdo, o FAB volta ao comportamento normal.
+  const emptyCtaVisible = !isLoading && !isError && active.length === 0;
+
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
       <AuroraBackground />
@@ -238,12 +243,14 @@ export default function GoalsScreen() {
         }
       />
 
-      <FloatingActionButton
-        icon={Plus}
-        label="Nova meta"
-        onPress={() => openEditor()}
-        bottomOffset={DOCK_CLEARANCE - theme.spacing.md}
-      />
+      {emptyCtaVisible ? null : (
+        <FloatingActionButton
+          icon={Plus}
+          label="Nova meta"
+          onPress={() => openEditor()}
+          bottomOffset={DOCK_CLEARANCE - theme.spacing.md}
+        />
+      )}
 
       <GoalEditorSheet
         visible={editorOpen}

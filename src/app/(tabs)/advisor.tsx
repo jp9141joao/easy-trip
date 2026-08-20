@@ -41,6 +41,7 @@ import {
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
 import { DOCK_CLEARANCE } from '@/constants/layout';
+import { useKeyboardVisible } from '@/hooks/useKeyboard';
 import { consultationSchema, type ConsultationInput } from '@/domain/schemas';
 import type { Advisor } from '@/domain/types';
 import { useAIConversation } from '@/hooks/useAI';
@@ -120,147 +121,153 @@ function ExpertsTab() {
   };
 
   return (
-    <ScrollView
-      showsVerticalScrollIndicator={false}
-      contentContainerStyle={{
-        paddingHorizontal: theme.spacing.screen,
-        paddingTop: theme.spacing.xl,
-        paddingBottom: DOCK_CLEARANCE + theme.spacing['3xl'],
-      }}
-    >
-      {consultations.length > 0 ? (
-        <View style={{ marginBottom: theme.spacing.xl }}>
-          <SectionHeader title="Suas solicitações" />
-          <View style={{ gap: theme.spacing.md }}>
-            {consultations.map((consultation) => {
-              const advisor = advisors.find((item) => item.id === consultation.advisorId);
-              return (
-                <GlassCard key={consultation.id}>
-                  <View
-                    style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}
-                  >
-                    <View
-                      style={{
-                        width: 40,
-                        height: 40,
-                        borderRadius: 20,
-                        backgroundColor: theme.colors.primarySoft,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      <CalendarCheck size={18} color={theme.colors.primary} />
-                    </View>
-
-                    <View style={{ flex: 1, gap: 2 }}>
-                      <AppText variant="body" weight="semibold" numberOfLines={1}>
-                        {advisor?.name ?? 'Especialista'}
-                      </AppText>
-                      <AppText variant="caption" color="secondary">
-                        {CONSULTATION_STATUS_HINT[consultation.status]}
-                      </AppText>
-                    </View>
-
-                    <Badge
-                      label={CONSULTATION_STATUS_LABEL[consultation.status]}
-                      tone={
-                        consultation.status === 'scheduled'
-                          ? 'success'
-                          : consultation.status === 'cancelled'
-                            ? 'neutral'
-                            : 'warning'
-                      }
-                    />
-                  </View>
-                </GlassCard>
-              );
-            })}
-          </View>
-        </View>
-      ) : null}
-
-      <SectionHeader
-        title="Especialistas"
-        subtitle="Converse com quem já planejou centenas de roteiros"
-      />
-
-      {isLoading ? (
-        <SkeletonList count={3} lines={2} />
-      ) : advisors.length === 0 ? (
-        <GlassCard>
-          <EmptyState
-            icon={UserRoundCheck}
-            title="Nenhum especialista disponível"
-            message="Tente novamente mais tarde."
-            compact
-          />
-        </GlassCard>
-      ) : (
-        advisors.map((advisor) => (
-          <AdvisorCard key={advisor.id} advisor={advisor} onPress={() => setSelected(advisor)} />
-        ))
-      )}
-
-      <BottomSheet
-        visible={Boolean(selected)}
-        onClose={() => setSelected(null)}
-        title={selected ? `Consultoria com ${selected.name}` : undefined}
-        subtitle={selected?.specialty}
+    // Mesmo defeito do composer, na aba vizinha: o formulário de solicitação
+    // tem campos de texto, e sem isto o último deles fica atrás do teclado.
+    // Não muda nada com o teclado fechado.
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{
+          paddingHorizontal: theme.spacing.screen,
+          paddingTop: theme.spacing.xl,
+          paddingBottom: DOCK_CLEARANCE + theme.spacing['3xl'],
+        }}
       >
-        {selected ? (
-          <View style={{ gap: theme.spacing.lg }}>
-            {selected.bio ? (
-              <AppText variant="bodySmall" color="secondary">
-                {selected.bio}
-              </AppText>
-            ) : null}
+        {consultations.length > 0 ? (
+          <View style={{ marginBottom: theme.spacing.xl }}>
+            <SectionHeader title="Suas solicitações" />
+            <View style={{ gap: theme.spacing.md }}>
+              {consultations.map((consultation) => {
+                const advisor = advisors.find((item) => item.id === consultation.advisorId);
+                return (
+                  <GlassCard key={consultation.id}>
+                    <View
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}
+                    >
+                      <View
+                        style={{
+                          width: 40,
+                          height: 40,
+                          borderRadius: 20,
+                          backgroundColor: theme.colors.primarySoft,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <CalendarCheck size={18} color={theme.colors.primary} />
+                      </View>
 
-            <InlineNotice icon={Info}>
-              Sua solicitação fica registrada como pendente até que o especialista confirme a data.
-            </InlineNotice>
+                      <View style={{ flex: 1, gap: 2 }}>
+                        <AppText variant="body" weight="semibold" numberOfLines={1}>
+                          {advisor?.name ?? 'Especialista'}
+                        </AppText>
+                        <AppText variant="caption" color="secondary">
+                          {CONSULTATION_STATUS_HINT[consultation.status]}
+                        </AppText>
+                      </View>
 
-            <Controller
-              control={control}
-              name="scheduledAt"
-              render={({ field, fieldState }) => (
-                <TextField
-                  label="Quando você gostaria de conversar?"
-                  placeholder="Ex.: quinta à tarde, ou 20/09 às 15h"
-                  value={field.value}
-                  onChangeText={field.onChange}
-                  error={fieldState.error?.message}
-                  required
-                />
-              )}
-            />
-
-            <Controller
-              control={control}
-              name="notes"
-              render={({ field, fieldState }) => (
-                <TextField
-                  label="O que você precisa?"
-                  placeholder="Conte o destino, as datas e suas dúvidas principais"
-                  value={field.value}
-                  onChangeText={field.onChange}
-                  error={fieldState.error?.message}
-                  multiline
-                />
-              )}
-            />
-
-            <Button
-              label="Enviar solicitação"
-              fullWidth
-              size="lg"
-              loading={formState.isSubmitting || request.isPending}
-              onPress={handleSubmit(onSubmit)}
-              haptic
-            />
+                      <Badge
+                        label={CONSULTATION_STATUS_LABEL[consultation.status]}
+                        tone={
+                          consultation.status === 'scheduled'
+                            ? 'success'
+                            : consultation.status === 'cancelled'
+                              ? 'neutral'
+                              : 'warning'
+                        }
+                      />
+                    </View>
+                  </GlassCard>
+                );
+              })}
+            </View>
           </View>
         ) : null}
-      </BottomSheet>
-    </ScrollView>
+
+        <SectionHeader
+          title="Especialistas"
+          subtitle="Converse com quem já planejou centenas de roteiros"
+        />
+
+        {isLoading ? (
+          <SkeletonList count={3} lines={2} />
+        ) : advisors.length === 0 ? (
+          <GlassCard>
+            <EmptyState
+              icon={UserRoundCheck}
+              title="Nenhum especialista disponível"
+              message="Tente novamente mais tarde."
+              compact
+            />
+          </GlassCard>
+        ) : (
+          advisors.map((advisor) => (
+            <AdvisorCard key={advisor.id} advisor={advisor} onPress={() => setSelected(advisor)} />
+          ))
+        )}
+
+        <BottomSheet
+          visible={Boolean(selected)}
+          onClose={() => setSelected(null)}
+          title={selected ? `Consultoria com ${selected.name}` : undefined}
+          subtitle={selected?.specialty}
+        >
+          {selected ? (
+            <View style={{ gap: theme.spacing.lg }}>
+              {selected.bio ? (
+                <AppText variant="bodySmall" color="secondary">
+                  {selected.bio}
+                </AppText>
+              ) : null}
+
+              <InlineNotice icon={Info}>
+                Sua solicitação fica registrada como pendente até que o especialista confirme a data.
+              </InlineNotice>
+
+              <Controller
+                control={control}
+                name="scheduledAt"
+                render={({ field, fieldState }) => (
+                  <TextField
+                    label="Quando você gostaria de conversar?"
+                    placeholder="Ex.: quinta à tarde, ou 20/09 às 15h"
+                    value={field.value}
+                    onChangeText={field.onChange}
+                    error={fieldState.error?.message}
+                    required
+                  />
+                )}
+              />
+
+              <Controller
+                control={control}
+                name="notes"
+                render={({ field, fieldState }) => (
+                  <TextField
+                    label="O que você precisa?"
+                    placeholder="Conte o destino, as datas e suas dúvidas principais"
+                    value={field.value}
+                    onChangeText={field.onChange}
+                    error={fieldState.error?.message}
+                    multiline
+                  />
+                )}
+              />
+
+              <Button
+                label="Enviar solicitação"
+                fullWidth
+                size="lg"
+                loading={formState.isSubmitting || request.isPending}
+                onPress={handleSubmit(onSubmit)}
+                haptic
+              />
+            </View>
+          ) : null}
+        </BottomSheet>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -273,11 +280,17 @@ function AITab() {
   const { messages, send, clear, kind, isLoading } = useAIConversation(trip);
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<ScrollView>(null);
+  const insets = useSafeAreaInsets();
+  const keyboardVisible = useKeyboardVisible();
 
+  // Abrir o teclado também reposiciona a conversa: quem começa a digitar quer
+  // ver a última mensagem, não o topo do histórico (§12). O atraso curto deixa
+  // o layout assentar antes de medir, e o timer é cancelado a cada mudança —
+  // não há como acumular scrolls.
   useEffect(() => {
     const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
     return () => clearTimeout(timer);
-  }, [messages.length, send.isPending]);
+  }, [messages.length, send.isPending, keyboardVisible]);
 
   const submit = async (text: string) => {
     const prompt = text.trim();
@@ -291,14 +304,36 @@ function AITab() {
   };
 
   return (
+    /*
+     * `behavior` precisa existir nas duas plataformas (§5).
+     *
+     * Antes era `undefined` no Android, o que faz o componente não fazer nada.
+     * Isso funcionava quando o Android encolhia a janela com `adjustResize`,
+     * mas o app roda com `edgeToEdgeEnabled`: a janela não encolhe mais, o IME
+     * chega como inset, e por isso nada acima do teclado se mexia — o composer
+     * simplesmente ficava atrás dele.
+     *
+     * `padding` é seguro nos dois casos porque o próprio RN mede a
+     * *sobreposição real* entre o rodapé desta view e o topo do teclado
+     * (`max(frame.y + frame.height - keyboardY, 0)`). Se a janela tiver
+     * encolhido, a sobreposição é zero e nada é somado; se não tiver, soma
+     * exatamente o quanto falta. Nenhum valor fixo, nenhuma altura de teclado
+     * codificada.
+     */
     <KeyboardAvoidingView
       style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
     >
       <ScrollView
         ref={scrollRef}
         showsVerticalScrollIndicator={false}
+        // Com o teclado aberto, um toque em algo interativo deve acionar o
+        // elemento, não ser consumido só para fechar o teclado (§14).
+        keyboardShouldPersistTaps="handled"
+        // Arrastar a conversa fecha o teclado, que é o gesto que o usuário já
+        // espera — sem precisar de um botão só para isso (§15).
+        keyboardDismissMode="on-drag"
         contentContainerStyle={{
           paddingHorizontal: theme.spacing.screen,
           paddingTop: theme.spacing.xl,
@@ -379,13 +414,22 @@ function AITab() {
         </ChipRow>
       </View>
 
+      {/*
+        O espaço reservado embaixo existe para o dock flutuante, não para o
+        teclado. Com o teclado aberto o dock sai de cena, então manter os 110pt
+        deixaria o composer boiando bem acima do teclado. Aqui ele cai para a
+        área segura do aparelho — continua sendo um valor do sistema, não um
+        número mágico atrelado a tamanho de teclado (§3, §6).
+      */}
       <View
         style={{
           flexDirection: 'row',
           alignItems: 'flex-end',
           gap: theme.spacing.sm,
           paddingHorizontal: theme.spacing.screen,
-          paddingBottom: DOCK_CLEARANCE - theme.spacing.md,
+          paddingBottom: keyboardVisible
+            ? Math.max(insets.bottom, theme.spacing.sm)
+            : DOCK_CLEARANCE - theme.spacing.md,
         }}
       >
         <View

@@ -89,7 +89,7 @@ export default function OnboardingScreen() {
                   justifyContent: 'center',
                 }}
               >
-                <item.icon size={40} color="#FFFFFF" />
+                <item.icon size={40} color={theme.colors.textOnPrimary} />
               </LinearGradient>
 
               <AppText variant="h1" align="center">

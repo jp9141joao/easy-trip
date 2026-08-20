@@ -15,6 +15,7 @@ import {
   ConfirmDialog,
   DateField,
   EmptyState,
+  FadeIn,
   ErrorState,
   FloatingActionButton,
   GlassCard,
@@ -110,13 +111,18 @@ export default function FinanceScreen() {
   const byCategory = getExpensesByCategory(expenses, trip);
   const unconverted = hasUnconvertedExpenses(expenses, trip);
 
+  // Um único CTA para a primeira criação: quando o empty state já oferece a
+  // ação, o FAB logo abaixo seria o mesmo botão duas vezes (§20). Assim que
+  // existe conteúdo, o FAB volta ao comportamento normal.
+  const emptyCtaVisible = !loadingExpenses && expenses.length === 0;
+
   return (
     <TripScreenShell>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
         <TripHero trip={trip} spent={spent} />
         <TripTabs tripId={tripId} active="finance" />
 
-        <View style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.lg }}>
+        <FadeIn style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.lg }}>
           {/* -------------------------- Budget summary ------------------------- */}
           <GlassCard elevation="md">
             <View style={{ gap: theme.spacing.lg }}>
@@ -260,17 +266,19 @@ export default function FinanceScreen() {
               />
             ))
           )}
-        </View>
+        </FadeIn>
       </ScrollView>
 
-      <FloatingActionButton
-        icon={Plus}
-        label="Gasto"
-        onPress={() => {
-          setEditing(null);
-          setEditorOpen(true);
-        }}
-      />
+      {emptyCtaVisible ? null : (
+        <FloatingActionButton
+          icon={Plus}
+          label="Gasto"
+          onPress={() => {
+            setEditing(null);
+            setEditorOpen(true);
+          }}
+        />
+      )}
 
       <ExpenseEditorSheet
         visible={editorOpen}

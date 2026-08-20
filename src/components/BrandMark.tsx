@@ -33,7 +33,7 @@ export function BrandMark({
         accessibilityRole="image"
         accessibilityLabel="Easy Trip"
       >
-        <Plane size={iconSize} color="#FFFFFF" />
+        <Plane size={iconSize} color={theme.colors.textOnPrimary} />
       </LinearGradient>
 
       {showWordmark ? (

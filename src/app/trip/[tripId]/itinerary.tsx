@@ -12,6 +12,7 @@ import {
   ConfirmDialog,
   DateField,
   EmptyState,
+  FadeIn,
   ErrorState,
   FloatingActionButton,
   GlassCard,
@@ -23,12 +24,13 @@ import {
   TimeField,
   useToast,
 } from '@/components/ui';
-import { getChecklistProgress, groupItineraryByDate, sortItinerary } from '@/domain/selectors';
+import { groupItineraryByDate, sortItinerary } from '@/domain/selectors';
 import { itineraryItemSchema, type ItineraryItemInput } from '@/domain/schemas';
 import { ITINERARY_TYPES, type ItineraryItem, type ItineraryType } from '@/domain/types';
-import { RoteiroTabs, TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
+import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
+import { RoteiroModules } from '@/features/trip/RoteiroModules';
 import { useTripRoute } from '@/features/trip/useTripRoute';
-import { useChecklist, useItinerary, useItineraryMutations } from '@/hooks/useTripData';
+import { useItinerary, useItineraryMutations } from '@/hooks/useTripData';
 import { formatWeekdayDate, isWithin } from '@/lib/date';
 import { ITINERARY_TYPE_LABEL } from '@/lib/labels';
 import { useTheme } from '@/theme';
@@ -40,7 +42,6 @@ export default function ItineraryScreen() {
   const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
 
   const { data: items = [], isLoading: loadingItems } = useItinerary(tripId);
-  const { data: checklist = [] } = useChecklist(tripId);
   const mutations = useItineraryMutations(tripId);
 
   const [editorOpen, setEditorOpen] = useState(false);
@@ -48,7 +49,6 @@ export default function ItineraryScreen() {
   const [deleting, setDeleting] = useState<ItineraryItem | null>(null);
 
   const days = useMemo(() => groupItineraryByDate(items), [items]);
-  const checklistPending = getChecklistProgress(checklist).total - getChecklistProgress(checklist).completed;
 
   if (isLoading) {
     return (
@@ -105,6 +105,11 @@ export default function ItineraryScreen() {
     }
   };
 
+  // Um único CTA para a primeira criação: quando o empty state já oferece a
+  // ação, o FAB logo abaixo seria o mesmo botão duas vezes (§20). Assim que
+  // existe conteúdo, o FAB volta ao comportamento normal.
+  const emptyCtaVisible = !loadingItems && items.length === 0;
+
   return (
     <TripScreenShell>
       <ScrollView
@@ -113,25 +118,19 @@ export default function ItineraryScreen() {
       >
         <TripHero trip={trip} onEdit={() => router.push(`/trip/${tripId}/edit`)} />
         <TripTabs tripId={tripId} active="itinerary" />
-        <RoteiroTabs
-          tripId={tripId}
-          active="itinerary"
-          checklistBadge={checklistPending || undefined}
-        />
+        <RoteiroModules tripId={tripId} active="itinerary" />
 
-        <View style={{ paddingHorizontal: theme.spacing.screen }}>
+        <FadeIn style={{ paddingHorizontal: theme.spacing.screen }}>
           {loadingItems ? (
             <SkeletonList count={3} lines={2} />
           ) : items.length === 0 ? (
-            <GlassCard>
-              <EmptyState
-                icon={CalendarClock}
-                title="Nenhuma atividade planejada ainda"
-                message="Comece pela chegada, a hospedagem e o que você não quer perder."
-                actionLabel="Adicionar atividade"
-                onAction={() => openEditor()}
-              />
-            </GlassCard>
+            <EmptyState
+              icon={CalendarClock}
+              title="Nenhuma atividade planejada ainda"
+              message="Comece pela chegada, a hospedagem e o que você não quer perder."
+              actionLabel="Adicionar atividade"
+              onAction={() => openEditor()}
+            />
           ) : (
             days.map((day) => (
               <View key={day.date} style={{ marginBottom: theme.spacing.lg }}>
@@ -151,10 +150,12 @@ export default function ItineraryScreen() {
               </View>
             ))
           )}
-        </View>
+        </FadeIn>
       </ScrollView>
 
-      <FloatingActionButton icon={Plus} label="Atividade" onPress={() => openEditor()} />
+      {emptyCtaVisible ? null : (
+        <FloatingActionButton icon={Plus} label="Atividade" onPress={() => openEditor()} />
+      )}
 
       <ActivityEditorSheet
         visible={editorOpen}

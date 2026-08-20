@@ -15,6 +15,7 @@ import {
   ConfirmDialog,
   DateField,
   EmptyState,
+  FadeIn,
   ErrorState,
   GlassCard,
   FloatingActionButton,
@@ -33,7 +34,8 @@ import {
   type ChecklistItem,
   type Priority,
 } from '@/domain/types';
-import { RoteiroTabs, TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
+import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
+import { RoteiroModules } from '@/features/trip/RoteiroModules';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useChecklist, useChecklistMutations } from '@/hooks/useTripData';
 import { CHECKLIST_CATEGORY_LABEL, PRIORITY_LABEL } from '@/lib/labels';
@@ -114,14 +116,19 @@ export default function ChecklistScreen() {
     }
   };
 
+  // Um único CTA para a primeira criação: quando o empty state já oferece a
+  // ação, o FAB logo abaixo seria o mesmo botão duas vezes (§20). Assim que
+  // existe conteúdo, o FAB volta ao comportamento normal.
+  const emptyCtaVisible = !loadingItems && items.length === 0;
+
   return (
     <TripScreenShell>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
         <TripHero trip={trip} />
         <TripTabs tripId={tripId} active="itinerary" />
-        <RoteiroTabs tripId={tripId} active="checklist" checklistBadge={pending || undefined} />
+        <RoteiroModules tripId={tripId} active="checklist" />
 
-        <View style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.lg }}>
+        <FadeIn style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.lg }}>
           {items.length > 0 ? (
             <GlassCard>
               <View style={{ gap: theme.spacing.md }}>
@@ -166,15 +173,13 @@ export default function ChecklistScreen() {
           {loadingItems ? (
             <SkeletonList count={4} lines={1} />
           ) : items.length === 0 ? (
-            <GlassCard>
-              <EmptyState
-                icon={ListChecks}
-                title="Seu checklist está vazio"
-                message="Documentos, saúde, mala, reservas — organize o que não pode ser esquecido."
-                actionLabel="Adicionar primeiro item"
-                onAction={() => setEditorOpen(true)}
-              />
-            </GlassCard>
+            <EmptyState
+              icon={ListChecks}
+              title="Seu checklist está vazio"
+              message="Documentos, saúde, mala, reservas — organize o que não pode ser esquecido."
+              actionLabel="Adicionar primeiro item"
+              onAction={() => setEditorOpen(true)}
+            />
           ) : (
             grouped.map(([category, list]) => (
               <View key={category} style={{ gap: theme.spacing.sm }}>
@@ -196,17 +201,19 @@ export default function ChecklistScreen() {
               </View>
             ))
           )}
-        </View>
+        </FadeIn>
       </ScrollView>
 
-      <FloatingActionButton
-        icon={Plus}
-        label="Item"
-        onPress={() => {
-          setEditing(null);
-          setEditorOpen(true);
-        }}
-      />
+      {emptyCtaVisible ? null : (
+        <FloatingActionButton
+          icon={Plus}
+          label="Item"
+          onPress={() => {
+            setEditing(null);
+            setEditorOpen(true);
+          }}
+        />
+      )}
 
       <ChecklistEditorSheet
         visible={editorOpen}

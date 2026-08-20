@@ -60,7 +60,12 @@ export function Button({
       case 'ghost':
         return { bg: 'transparent', pressed: theme.colors.surfaceMuted, fg: theme.colors.primary, border: 'transparent' };
       case 'danger':
-        return { bg: theme.colors.error, pressed: '#DC2626', fg: '#FFFFFF', border: 'transparent' };
+        return {
+          bg: theme.colors.error,
+          pressed: theme.colors.errorPressed,
+          fg: theme.colors.textOnPrimary,
+          border: 'transparent',
+        };
     }
   };
 
@@ -122,7 +127,7 @@ export interface IconButtonProps extends Omit<PressableProps, 'style' | 'childre
   accessibilityLabel: string;
   size?: number;
   color?: string;
-  background?: 'none' | 'surface' | 'glass' | 'primary';
+  background?: 'none' | 'surface' | 'onImage' | 'primary';
   style?: StyleProp<ViewStyle>;
 }
 
@@ -141,10 +146,20 @@ export function IconButton({
   const backgrounds: Record<NonNullable<IconButtonProps['background']>, string> = {
     none: 'transparent',
     surface: theme.colors.surface,
-    glass: theme.colors.glass,
+    onImage: theme.colors.onImage.background,
     primary: theme.colors.primary,
   };
-  const tint = color ?? (background === 'primary' ? theme.colors.textOnPrimary : theme.colors.textPrimary);
+
+  // Sobre fotografia o ícone claro vem junto com a superfície escura: são um
+  // par, e deixar a cor por conta do chamador foi o que produziu botão branco
+  // com ícone branco no tema claro.
+  const defaultTint =
+    background === 'primary'
+      ? theme.colors.textOnPrimary
+      : background === 'onImage'
+        ? theme.colors.onImage.foreground
+        : theme.colors.textPrimary;
+  const tint = color ?? defaultTint;
 
   return (
     <Pressable
@@ -162,8 +177,8 @@ export function IconButton({
           alignItems: 'center',
           justifyContent: 'center',
           backgroundColor: backgrounds[background],
-          borderWidth: background === 'glass' ? 1 : 0,
-          borderColor: theme.colors.glassBorder,
+          borderWidth: background === 'onImage' ? 1 : 0,
+          borderColor: theme.colors.onImage.border,
           opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
         },
         style,

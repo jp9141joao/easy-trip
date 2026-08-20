@@ -16,6 +16,12 @@ export interface AppImageProps {
   /** Darkens the image so text laid over it keeps contrast. */
   overlay?: boolean;
   radius?: number;
+  /**
+   * Duração do fade de entrada, em ms. Vale zerar em imagens que remontam com
+   * frequência — o hero da viagem é redesenhado a cada troca de aba, e refazer
+   * o fade toda vez faz a mesma foto piscar contra ela própria.
+   */
+  transition?: number;
 }
 
 /**
@@ -30,10 +36,15 @@ export function AppImage({
   accessibilityLabel,
   overlay = false,
   radius,
+  transition = 220,
 }: AppImageProps) {
   const theme = useTheme();
-  const [failed, setFailed] = useState(false);
-  const showFallback = !uri || failed;
+  // Guarda *qual* uri falhou, não um booleano: o mesmo componente permanece
+  // montado quando a viagem selecionada na Home muda, e um booleano manteria o
+  // fallback preso na foto seguinte. Comparar com a uri atual limpa a falha
+  // sozinho, sem effect e sem render extra.
+  const [failedUri, setFailedUri] = useState<string | undefined>();
+  const showFallback = !uri || failedUri === uri;
 
   return (
     <View style={[{ overflow: 'hidden', borderRadius: radius }, style]}>
@@ -58,8 +69,8 @@ export function AppImage({
           source={{ uri }}
           style={{ flex: 1 }}
           contentFit={contentFit}
-          transition={220}
-          onError={() => setFailed(true)}
+          transition={transition}
+          onError={() => setFailedUri(uri)}
           accessible={Boolean(accessibilityLabel)}
           accessibilityLabel={accessibilityLabel}
           cachePolicy="disk"
@@ -67,6 +78,10 @@ export function AppImage({
       )}
 
       {overlay ? (
+        // Deliberadamente fora do tema: este scrim existe para escurecer a
+        // fotografia e garantir contraste do texto `onImage`, e a foto é a
+        // mesma no Claro e no Escuro. Clareá-lo no tema claro só tiraria
+        // legibilidade sem ganho nenhum (§30).
         <LinearGradient
           colors={['transparent', 'rgba(2,6,23,0.15)', 'rgba(2,6,23,0.78)']}
           locations={[0, 0.45, 1]}

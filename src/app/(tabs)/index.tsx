@@ -17,11 +17,13 @@ import { Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ArticleCard, OfferCard, PlaceCard } from '@/components/cards';
+import { CommunityCard } from '@/components/cards/CommunityCard';
+import { TripChip } from '@/components/cards/TripChip';
+import { TripStatusChip, TripTimingChip } from '@/components/trip';
 import {
   AppImage,
   AppText,
   Avatar,
-  Badge,
   EmptyState,
   GlassCard,
   IconButton,
@@ -38,10 +40,8 @@ import {
   getCountdownLabel,
   getNextActivities,
   getRemainingBudget,
-  getTripStatus,
   getTripTotalSpent,
   isOverBudget,
-  TRIP_STATUS_LABEL,
 } from '@/domain/selectors';
 import type { Trip } from '@/domain/types';
 import { useAlerts } from '@/hooks/useAlerts';
@@ -127,7 +127,7 @@ export default function DashboardScreen() {
                     justifyContent: 'center',
                   }}
                 >
-                  <AppText variant="label" style={{ color: '#FFFFFF', fontSize: 10 }}>
+                  <AppText variant="label" style={{ color: theme.colors.textOnPrimary, fontSize: 10 }}>
                     {alerts.length}
                   </AppText>
                 </View>
@@ -436,6 +436,10 @@ export default function DashboardScreen() {
             </ScrollView>
           </View>
         ) : null}
+
+        {/* ------------------------- Comunidade no WhatsApp --------------------- */}
+        {/* Última seção de conteúdo da Home, depois de Restaurantes e hotéis. */}
+        <CommunityCard />
       </ScrollView>
     </View>
   );
@@ -446,7 +450,6 @@ export default function DashboardScreen() {
 function TripHero({ trip, expensesTotal }: { trip: Trip; expensesTotal: number }) {
   const theme = useTheme();
   const router = useRouter();
-  const status = getTripStatus(trip);
 
   return (
     <View style={{ paddingHorizontal: theme.spacing.screen }}>
@@ -455,116 +458,77 @@ function TripHero({ trip, expensesTotal }: { trip: Trip; expensesTotal: number }
         accessibilityRole="button"
         accessibilityLabel={`Viagem para ${trip.destinationCity}. ${getCountdownLabel(trip)}`}
         accessibilityHint="Abre o painel da viagem"
+        // Mesma separação do `GlassCard` (§5): a sombra fica na casca externa,
+        // que precisa de fundo sólido para o Android projetar a elevação, e o
+        // recorte fica numa camada interna. Acumular sombra e
+        // `overflow: 'hidden'` no mesmo View recortava a própria sombra.
         style={({ pressed }) => [
           {
             borderRadius: theme.radius.heroCard,
-            overflow: 'hidden',
+            backgroundColor: theme.colors.surfaceMuted,
             transform: [{ scale: pressed ? 0.99 : 1 }],
           },
           theme.shadows.lg,
         ]}
       >
-        <AppImage
-          uri={trip.coverImageUrl}
-          style={{ height: 280, width: '100%' }}
-          fallbackLabel={trip.destinationCity}
-          overlay
-        />
-
-        <View
-          style={{
-            position: 'absolute',
-            top: theme.spacing.lg,
-            left: theme.spacing.lg,
-            right: theme.spacing.lg,
-            flexDirection: 'row',
-            justifyContent: 'space-between',
-          }}
-        >
-          <Badge
-            label={TRIP_STATUS_LABEL[status]}
-            tone={status === 'active' ? 'success' : status === 'upcoming' ? 'brand' : 'neutral'}
+        <View style={{ borderRadius: theme.radius.heroCard, overflow: 'hidden' }}>
+          <AppImage
+            uri={trip.coverImageUrl}
+            style={{ height: 280, width: '100%' }}
+            fallbackLabel={trip.destinationCity}
+            overlay
           />
-          <Badge label={getCountdownLabel(trip)} tone="accent" />
-        </View>
-
-        <View
-          style={{
-            position: 'absolute',
-            left: theme.spacing.xl,
-            right: theme.spacing.xl,
-            bottom: theme.spacing.xl,
-            gap: 4,
-          }}
-        >
-          <AppText variant="display" color="onImage" weight="bold" numberOfLines={1}>
-            {trip.destinationCity}
-          </AppText>
-          <AppText variant="body" color="onImage" numberOfLines={1}>
-            {trip.destinationCountry}
-          </AppText>
-          <AppText variant="bodySmall" color="onImage" style={{ opacity: 0.85 }}>
-            {formatDateRange(trip.startDate, trip.endDate)}
-          </AppText>
 
           <View
             style={{
+              position: 'absolute',
+              top: theme.spacing.lg,
+              left: theme.spacing.lg,
+              right: theme.spacing.lg,
               flexDirection: 'row',
-              alignItems: 'center',
-              gap: 6,
-              marginTop: theme.spacing.sm,
+              justifyContent: 'space-between',
             }}
           >
-            <Wallet size={14} color={theme.colors.textOnImage} />
-            <AppText variant="caption" color="onImage" mono>
-              {formatMoney(trip.budgetTotal - expensesTotal, trip.budgetCurrency)} restantes
-            </AppText>
+            <TripStatusChip trip={trip} />
+            <TripTimingChip trip={trip} />
           </View>
-        </View>
+
+          <View
+            style={{
+              position: 'absolute',
+              left: theme.spacing.xl,
+              right: theme.spacing.xl,
+              bottom: theme.spacing.xl,
+              gap: 4,
+            }}
+          >
+            <AppText variant="display" color="onImage" weight="bold" numberOfLines={1}>
+              {trip.destinationCity}
+            </AppText>
+            <AppText variant="body" color="onImage" numberOfLines={1}>
+              {trip.destinationCountry}
+            </AppText>
+            <AppText variant="bodySmall" color="onImage" style={{ opacity: 0.85 }}>
+              {formatDateRange(trip.startDate, trip.endDate)}
+            </AppText>
+
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 6,
+                marginTop: theme.spacing.sm,
+              }}
+            >
+              <Wallet size={14} color={theme.colors.textOnImage} />
+              <AppText variant="caption" color="onImage" mono>
+                {formatMoney(trip.budgetTotal - expensesTotal, trip.budgetCurrency)} restantes
+              </AppText>
+            </View>
+          </View>
+          </View>
       </Pressable>
     </View>
-  );
-}
-
-function TripChip({ trip, active }: { trip: Trip; active: boolean }) {
-  const theme = useTheme();
-  const router = useRouter();
-  const { setCurrentTripId } = useCurrentTrip();
-
-  return (
-    <Pressable
-      onPress={() => {
-        setCurrentTripId(trip.id);
-        router.push(`/trip/${trip.id}`);
-      }}
-      accessibilityRole="button"
-      accessibilityState={{ selected: active }}
-      accessibilityLabel={`Selecionar viagem para ${trip.destinationCity}`}
-      style={{
-        width: 150,
-        borderRadius: theme.radius.smallCard,
-        overflow: 'hidden',
-        borderWidth: active ? 2 : 1,
-        borderColor: active ? theme.colors.primary : theme.colors.border,
-      }}
-    >
-      <AppImage
-        uri={trip.coverImageUrl}
-        style={{ height: 84, width: '100%' }}
-        fallbackLabel={trip.destinationCity}
-        overlay
-      />
-      <View
-        style={{ padding: theme.spacing.md, backgroundColor: theme.colors.surface }}
-      >
-        <AppText variant="caption" weight="semibold" numberOfLines={1}>
-          {trip.destinationCity}
-        </AppText>
-        <AppText variant="caption" color="tertiary" numberOfLines={1}>
-          {getCountdownLabel(trip)}
-        </AppText>
-      </View>
-    </Pressable>
   );
 }
 

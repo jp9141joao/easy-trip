@@ -37,6 +37,7 @@ export {
   Chip,
   ChipRow,
   ProgressBar,
+  FadeIn,
   SegmentedTabs,
   StatCard,
   type BadgeTone,

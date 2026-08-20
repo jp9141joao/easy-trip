@@ -94,15 +94,13 @@ export default function ArticleScreen() {
               icon={ChevronLeft}
               accessibilityLabel="Voltar"
               onPress={() => (router.canGoBack() ? router.back() : router.replace('/community'))}
-              background="glass"
-              color={theme.colors.textOnImage}
+              background="onImage"
             />
             <IconButton
               icon={Share2}
               accessibilityLabel="Compartilhar artigo"
               onPress={() => void share()}
-              background="glass"
-              color={theme.colors.textOnImage}
+              background="onImage"
             />
           </View>
 

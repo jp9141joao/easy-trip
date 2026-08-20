@@ -93,20 +93,45 @@ export function GlassCard({
 }: GlassCardProps) {
   const theme = useTheme();
 
-  const base: StyleProp<ViewStyle> = [
+  /*
+   * Sombra e recorte moram em camadas separadas (§5).
+   *
+   * Antes eram um View só, acumulando `elevation` + `borderRadius` +
+   * `overflow: 'hidden'`. No Android essa combinação faz o fundo ser pintado
+   * como um retângulo de cantos retos dentro do card arredondado — era daí que
+   * vinham os "blocos brancos" no tema claro — e ainda por cima o
+   * `overflow: 'hidden'` recorta a própria sombra que o card acabou de
+   * desenhar.
+   *
+   * A casca externa mantém preenchimento, borda, raio e sombra (o Android
+   * precisa de um fundo sólido para projetar a elevação). A interna só recorta
+   * o conteúdo, com o raio descontado da borda de 1px para os cantos aninharem
+   * sem desencontro.
+   */
+  const shell: StyleProp<ViewStyle> = [
     {
       backgroundColor: theme.colors.glass,
       borderRadius: theme.radius.card,
       borderWidth: 1,
       borderColor: theme.colors.glassBorder,
-      padding: padded ? theme.spacing.xl : 0,
-      overflow: 'hidden',
     },
     elevation === 'sm' ? theme.shadows.sm : elevation === 'md' ? theme.shadows.md : null,
     style,
   ];
 
-  if (!onPress) return <View style={base}>{children}</View>;
+  const clip: ViewStyle = {
+    borderRadius: theme.radius.card - 1,
+    overflow: 'hidden',
+    padding: padded ? theme.spacing.xl : 0,
+  };
+
+  if (!onPress) {
+    return (
+      <View style={shell}>
+        <View style={clip}>{children}</View>
+      </View>
+    );
+  }
 
   return (
     <Pressable
@@ -114,9 +139,9 @@ export function GlassCard({
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityHint={accessibilityHint}
-      style={({ pressed }) => [base, pressed ? { opacity: 0.85, transform: [{ scale: 0.995 }] } : null]}
+      style={({ pressed }) => [shell, pressed ? { opacity: 0.85, transform: [{ scale: 0.995 }] } : null]}
     >
-      {children}
+      <View style={clip}>{children}</View>
     </Pressable>
   );
 }

@@ -161,14 +161,13 @@ export default function PlaceDetailScreen() {
               icon={ChevronLeft}
               accessibilityLabel="Voltar"
               onPress={() => (router.canGoBack() ? router.back() : router.replace('/places'))}
-              background="glass"
-              color={theme.colors.textOnImage}
+              background="onImage"
             />
             <IconButton
               icon={Heart}
               accessibilityLabel={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}
               onPress={() => toggle.mutate({ placeId: place.id, favorite: !favorite })}
-              background="glass"
+              background="onImage"
               color={favorite ? theme.colors.accent : theme.colors.textOnImage}
             />
           </View>

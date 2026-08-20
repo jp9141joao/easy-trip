@@ -158,7 +158,7 @@ export function ActivityCard({
                   justifyContent: 'center',
                 }}
               >
-                {item.completed ? <Check size={14} color="#FFFFFF" /> : null}
+                {item.completed ? <Check size={14} color={theme.colors.textOnPrimary} /> : null}
               </Pressable>
             ) : null}
 
@@ -228,7 +228,7 @@ export function ChecklistRow({
           justifyContent: 'center',
         }}
       >
-        {item.completed ? <Check size={14} color="#FFFFFF" /> : null}
+        {item.completed ? <Check size={14} color={theme.colors.textOnPrimary} /> : null}
       </View>
 
       <View style={{ flex: 1 }}>
@@ -593,7 +593,7 @@ export function PlaceCard({
             icon={Heart}
             accessibilityLabel={favorite ? `Remover ${place.name} dos favoritos` : `Favoritar ${place.name}`}
             onPress={onToggleFavorite}
-            background="glass"
+            background="onImage"
             color={favorite ? theme.colors.accent : theme.colors.textOnImage}
             size={18}
           />

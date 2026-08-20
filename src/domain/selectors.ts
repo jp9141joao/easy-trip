@@ -65,6 +65,32 @@ export const TRIP_STATUS_LABEL: Record<TripStatus, string> = {
   completed: 'Concluída',
 };
 
+/**
+ * Rótulo temporal exibido ao lado do status no hero (§27, §31).
+ *
+ * `getCountdownLabel` devolve exatamente o mesmo texto do status quando a
+ * viagem está em andamento ou concluída, o que fazia o hero desenhar dois chips
+ * idênticos lado a lado. Aqui o rótulo só existe quando acrescenta alguma
+ * informação que o status não dá:
+ *
+ * - planejada  → quanto falta para embarcar;
+ * - em andamento → em que dia da viagem o usuário está;
+ * - concluída  → nada, o status já diz tudo.
+ */
+export function getTripTimingLabel(trip: Trip, today: string = todayISO()): string | null {
+  const status = getTripStatus(trip, today);
+
+  if (status === 'upcoming') return getCountdownLabel(trip, today);
+
+  if (status === 'active') {
+    const day = getCurrentTripDay(trip, today);
+    if (day === null) return null;
+    return `Dia ${day} de ${getTripDurationDays(trip)}`;
+  }
+
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Finance                                                                     */
 /* -------------------------------------------------------------------------- */
