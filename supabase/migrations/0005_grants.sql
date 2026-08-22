@@ -78,6 +78,25 @@ alter default privileges in schema public
 alter default privileges in schema public
   grant usage, select on sequences to authenticated, service_role;
 
+  -- ----------------------------------------------------------------------------
+-- 3.1. Normalização do papel anon
+--
+-- Projetos Supabase podem possuir privilégios padrão concedidos ao papel anon.
+-- O Easy Trip não possui tabelas públicas anônimas: toda leitura da aplicação
+-- exige usuário autenticado. Portanto a migration normaliza explicitamente
+-- esse estado antes das verificações abaixo.
+-- ----------------------------------------------------------------------------
+
+revoke all privileges
+on all tables in schema public
+from anon;
+
+-- Impede que novas tabelas criadas por migrations futuras sob o papel postgres
+-- voltem a receber privilégios anônimos por default privileges.
+alter default privileges for role postgres
+in schema public
+revoke all privileges on tables from anon;
+
 -- ----------------------------------------------------------------------------
 -- 4. Conferência
 --
