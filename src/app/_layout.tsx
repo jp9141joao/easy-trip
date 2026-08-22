@@ -10,11 +10,11 @@ import {
   PlusJakartaSans_700Bold,
 } from '@expo-google-fonts/plus-jakarta-sans';
 import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
+import { Stack, type ErrorBoundaryProps } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect } from 'react';
-import { View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
 import { AppProviders } from '@/providers/AppProviders';
 import { useAuth } from '@/providers/AuthProvider';
@@ -23,6 +23,66 @@ import { useTheme, useThemePreference } from '@/theme';
 // Hold the splash until fonts are loaded and the session has been restored, so
 // the login screen never flashes for a signed-in user (§23).
 void SplashScreen.preventAutoHideAsync();
+
+/**
+ * Rede de segurança de renderização (F10, §52).
+ *
+ * O Expo Router chama este componente exportado quando qualquer tela abaixo da
+ * raiz lança durante a renderização. Sem ele, em build de produção, um erro de
+ * render desmonta a árvore e deixa a tela **preta e sem explicação** — o usuário
+ * não sabe se o aplicativo travou, se está carregando ou se deve reinstalar.
+ *
+ * O que ele não faz, de propósito: relatar o erro para fora. Não há serviço de
+ * telemetria neste projeto, e inventar um enviaria dados de viagem de alguém
+ * para um terceiro. A mensagem técnica fica na tela, onde ajuda a diagnosticar,
+ * e o botão refaz a montagem — que resolve o caso comum, um estado transitório.
+ *
+ * `useTheme` não é usado aqui: se o erro tiver vindo de dentro dos providers,
+ * eles podem não estar montados, e um hook de contexto lançaria dentro do
+ * próprio tratamento de erro. As cores são fixas, no tema escuro do produto.
+ */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+        padding: 32,
+        backgroundColor: '#0B1120',
+      }}
+    >
+      <Text style={{ color: '#F8FAFC', fontSize: 20, fontWeight: '700', textAlign: 'center' }}>
+        Algo deu errado
+      </Text>
+      <Text style={{ color: '#94A3B8', fontSize: 14, textAlign: 'center', lineHeight: 20 }}>
+        O Easy Trip encontrou um erro inesperado nesta tela. Seus dados continuam salvos.
+      </Text>
+      <Text
+        style={{ color: '#64748B', fontSize: 12, textAlign: 'center' }}
+        numberOfLines={4}
+        selectable
+      >
+        {error.message}
+      </Text>
+      <Pressable
+        onPress={retry}
+        accessibilityRole="button"
+        accessibilityLabel="Tentar novamente"
+        style={{
+          minHeight: 48,
+          justifyContent: 'center',
+          paddingHorizontal: 24,
+          borderRadius: 16,
+          backgroundColor: '#6366F1',
+        }}
+      >
+        <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '600' }}>Tentar novamente</Text>
+      </Pressable>
+    </View>
+  );
+}
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
@@ -51,7 +111,7 @@ export default function RootLayout() {
 
 function RootNavigator() {
   const theme = useTheme();
-  const { initializing } = useAuth();
+  const { initializing, isAuthenticated } = useAuth();
   const { hydrated } = useThemePreference();
 
   // A preferência de aparência entra na mesma barreira da sessão: enquanto o
@@ -84,11 +144,41 @@ function RootNavigator() {
           animation: 'slide_from_right',
         }}
       >
+        {/*
+          A proteção de rota vive aqui, e não espalhada pelas telas.
+
+          `Stack.Protected` não esconde a tela: ela sai do estado de navegação.
+          A diferença aparece no logout — com um `if` dentro da tela, o histórico
+          continua existindo e o botão "voltar" leva de volta ao que já não
+          deveria ser acessível. Removendo a rota, não há para onde voltar.
+
+          Toda rota privada precisa estar listada no bloco de baixo. É uma lista
+          manual, e listas manuais são esquecidas: `tests/unit/route-guard.test.ts`
+          lê o diretório `src/app` e falha se aparecer uma rota nova que ninguém
+          classificou.
+        */}
         <Stack.Screen name="index" />
-        <Stack.Screen name="onboarding" options={{ animation: 'fade' }} />
-        <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />
-        <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
-        <Stack.Screen name="alerts" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+
+        <Stack.Protected guard={!isAuthenticated}>
+          <Stack.Screen name="onboarding" options={{ animation: 'fade' }} />
+          <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />
+        </Stack.Protected>
+
+        <Stack.Protected guard={isAuthenticated}>
+          <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
+          <Stack.Screen
+            name="alerts"
+            options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+          />
+          <Stack.Screen name="trip" />
+          <Stack.Screen name="trips" />
+          <Stack.Screen name="profile" />
+          <Stack.Screen name="utilities" />
+          <Stack.Screen name="community" />
+          <Stack.Screen name="offers" />
+          <Stack.Screen name="places" />
+          <Stack.Screen name="admin" />
+        </Stack.Protected>
       </Stack>
     </>
   );

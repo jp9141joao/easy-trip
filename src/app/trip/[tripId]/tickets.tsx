@@ -43,6 +43,8 @@ import { TICKET_TYPES, type Ticket, type TicketType } from '@/domain/types';
 import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useTicketMutations, useTickets } from '@/hooks/useTripData';
+import { ATTACHMENT_POLICY, validateUpload } from '@/domain/upload';
+import { dataSource } from '@/repositories';
 import { guessMimeType, isImageMime, isPdfMime, storedFileExists } from '@/lib/files';
 import { TICKET_TYPE_LABEL } from '@/lib/labels';
 import type { UploadableFile } from '@/repositories';
@@ -201,7 +203,11 @@ function TicketViewerSheet({
 
   if (!ticket) return null;
 
+  // `fileUrl` já vem resolvido pelo repositório: cópia local quando existe, URL
+  // assinada quando não (D-04). Aqui só interessa saber se há **alguma** forma
+  // de abrir, e se ela funciona sem rede.
   const available = ticket.fileUrl ? storedFileExists(ticket.fileUrl) : false;
+  const offlineReady = Boolean(ticket.filePath) && dataSource.files.isAvailableOffline('attachment', ticket.filePath!);
 
   /**
    * Opens the attachment for real (§42). Images render inline; PDFs and other
@@ -212,18 +218,26 @@ function TicketViewerSheet({
   const openFile = async () => {
     if (!ticket.fileUrl) return;
     try {
-      if (ticket.fileUrl.startsWith('http')) {
-        await WebBrowser.openBrowserAsync(ticket.fileUrl);
+      // "Uma cópia local é gravada ao anexar **e ao baixar**" (D-04). Abrir com
+      // rede é a única chance de garantir que a próxima abertura, sem rede,
+      // funcione — então baixa-se agora e abre-se a cópia.
+      const local = ticket.filePath
+        ? await dataSource.files.ensureOfflineCopy('attachment', ticket.filePath)
+        : undefined;
+      const alvo = local ?? ticket.fileUrl;
+
+      if (alvo.startsWith('http')) {
+        await WebBrowser.openBrowserAsync(alvo);
         return;
       }
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(ticket.fileUrl, {
+        await Sharing.shareAsync(alvo, {
           mimeType: ticket.mimeType,
           dialogTitle: ticket.title,
         });
         return;
       }
-      await Linking.openURL(ticket.fileUrl);
+      await Linking.openURL(alvo);
     } catch {
       toast.error('Não foi possível abrir o arquivo neste dispositivo.');
     }
@@ -290,6 +304,16 @@ function TicketViewerSheet({
                 fullWidth
                 onPress={() => void share()}
               />
+              {/*
+                Honestidade do §10: só diz "abre sem internet" quando o arquivo
+                está mesmo no aparelho. Uma URL assinada não é offline — ela
+                expira em uma hora.
+              */}
+              <AppText variant="caption" color="secondary">
+                {offlineReady
+                  ? 'Guardado neste aparelho — abre sem internet.'
+                  : 'Abra uma vez com internet para guardá-lo no aparelho.'}
+              </AppText>
             </>
           ) : (
             // Never show an action that cannot work (§42).
@@ -357,12 +381,23 @@ function TicketEditorSheet({
       });
       if (result.canceled || !result.assets?.[0]) return;
       const asset = result.assets[0];
-      setFile({
+      const candidate = {
         uri: asset.uri,
         name: asset.name,
         mimeType: asset.mimeType ?? guessMimeType(asset.name),
         size: asset.size ?? undefined,
-      });
+      };
+      // Conferido aqui, e não no "Salvar": o `type` passado ao seletor é uma
+      // sugestão ao sistema, e no Android costuma dar para escolher "todos os
+      // arquivos". Recusar agora diz o motivo; recusar depois só produziria o
+      // "não foi possível salvar" genérico do `catch` abaixo, com o formulário
+      // inteiro já preenchido.
+      const validation = validateUpload(candidate, ATTACHMENT_POLICY);
+      if (!validation.ok) {
+        toast.warning(validation.message);
+        return;
+      }
+      setFile(candidate);
     } catch {
       toast.error('Não foi possível selecionar o arquivo.');
     }
@@ -382,12 +417,18 @@ function TicketEditorSheet({
       if (result.canceled || !result.assets?.[0]) return;
       const asset = result.assets[0];
       const name = asset.fileName ?? `documento-${Date.now()}.jpg`;
-      setFile({
+      const candidate = {
         uri: asset.uri,
         name,
         mimeType: asset.mimeType ?? guessMimeType(name, 'image/jpeg'),
         size: asset.fileSize,
-      });
+      };
+      const validation = validateUpload(candidate, ATTACHMENT_POLICY);
+      if (!validation.ok) {
+        toast.warning(validation.message);
+        return;
+      }
+      setFile(candidate);
     } catch {
       toast.error('Não foi possível selecionar a imagem.');
     }

@@ -62,31 +62,91 @@ jest.mock('expo-crypto', () => {
 /* ------------------------------- File system ------------------------------ */
 
 jest.mock('expo-file-system', () => {
+  /**
+   * Sistema de arquivos em memória.
+   *
+   * O dublê anterior respondia `exists = true` para tudo e `copy()` não fazia
+   * nada — bastava para as telas, mas não serve para a F8: o espelho local da
+   * D-04 é justamente a diferença entre "o arquivo está aqui" e "não está", e
+   * um dublê que responde sempre "está" faria o teste passar sem medir nada.
+   */
+  const arquivos = new Map<string, Uint8Array>();
+  const pastas = new Set<string>(['file:///documents', 'file:///cache']);
+
+  const juntar = (segments: unknown[]) =>
+    segments
+      .map((s) => (s && typeof s === 'object' && 'uri' in s ? String((s as { uri: string }).uri) : String(s)))
+      .join('/');
+
   class FakeDirectory {
     uri: string;
-    exists = true;
     constructor(...segments: unknown[]) {
-      this.uri = segments.map(String).join('/');
+      this.uri = juntar(segments);
     }
-    create() {}
-    delete() {}
+    get exists() {
+      return pastas.has(this.uri);
+    }
+    create(options?: { intermediates?: boolean }) {
+      pastas.add(this.uri);
+      // `intermediates: true` cria a árvore inteira no expo-file-system real.
+      // Sem isto, uma pasta-pai existiria só implicitamente e um `delete()`
+      // nela não encontraria nada — que foi exatamente o que o teste do
+      // expurgo por conta pegou.
+      if (options?.intermediates !== false) {
+        const partes = this.uri.split('/');
+        while (partes.length > 3) {
+          partes.pop();
+          pastas.add(partes.join('/'));
+        }
+      }
+    }
+    delete() {
+      for (const chave of [...pastas]) if (chave.startsWith(this.uri)) pastas.delete(chave);
+      for (const chave of [...arquivos.keys()]) if (chave.startsWith(this.uri + '/')) arquivos.delete(chave);
+    }
   }
+
   class FakeFile {
     uri: string;
-    exists = true;
     constructor(...segments: unknown[]) {
-      this.uri = segments.map((s) => (s instanceof FakeDirectory ? s.uri : String(s))).join('/');
+      this.uri = juntar(segments);
     }
-    async copy() {}
-    delete() {}
+    get exists() {
+      return arquivos.has(this.uri);
+    }
+    create() {
+      if (!arquivos.has(this.uri)) arquivos.set(this.uri, new Uint8Array(0));
+    }
+    write(bytes: Uint8Array) {
+      arquivos.set(this.uri, bytes);
+    }
+    async copy(destino: FakeFile) {
+      arquivos.set(destino.uri, arquivos.get(this.uri) ?? new Uint8Array([1, 2, 3]));
+    }
+    delete() {
+      arquivos.delete(this.uri);
+    }
     async arrayBuffer() {
-      return new ArrayBuffer(0);
+      const bytes = arquivos.get(this.uri) ?? new Uint8Array(0);
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     }
   }
+
   return {
     Directory: FakeDirectory,
     File: FakeFile,
-    Paths: { document: new FakeDirectory('file:///documents'), cache: new FakeDirectory('file:///cache') },
+    Paths: {
+      document: new FakeDirectory('file:///documents'),
+      cache: new FakeDirectory('file:///cache'),
+    },
+    /** Só para os testes: zera o disco entre cenários. */
+    __reset: () => {
+      arquivos.clear();
+      pastas.clear();
+      pastas.add('file:///documents');
+      pastas.add('file:///cache');
+    },
+    __files: arquivos,
   };
 });
 

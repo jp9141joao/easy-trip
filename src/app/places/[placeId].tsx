@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Heart,
   MapPin,
+  MessageCircle,
   Phone,
   Sparkles,
   Star,
@@ -29,6 +30,7 @@ import {
   ChipRow,
   ErrorState,
   GlassCard,
+  HeroBadge,
   IconButton,
   InfoRow,
   InlineNotice,
@@ -37,11 +39,18 @@ import {
   TextField,
   useToast,
 } from '@/components/ui';
+import { isContactWhatsappConfigured, buildWhatsappUrl } from '@/constants/contact';
+import {
+  buildPlaceInquiryMessage,
+  placeInquiryLabel,
+  supportsCommercialInquiry,
+} from '@/domain/placeInquiry';
 import { reservationRequestSchema, type ReservationRequestInput } from '@/domain/schemas';
 import type { Place } from '@/domain/types';
 import { usePlace, usePlaceFavorites, useReservations } from '@/hooks/useContent';
 import { useCurrentTrip } from '@/hooks/useTrips';
 import { formatMoney } from '@/lib/currency';
+import { externalLinkLabel, normalizeExternalUrl } from '@/lib/url';
 import { PLACE_TYPE_LABEL } from '@/lib/labels';
 import { aiService } from '@/services/ai';
 import { useTheme } from '@/theme';
@@ -115,6 +124,39 @@ export default function PlaceDetailScreen() {
     }
   };
 
+  // Normalizado uma vez: a mesma decisão governa se o botão existe, qual é o
+  // rótulo dele e o que será aberto — não há como divergirem (§10, §11, §12).
+  const externalUrl = normalizeExternalUrl(place.partnerUrl);
+  const canInquire = supportsCommercialInquiry(place) && isContactWhatsappConfigured();
+
+  const openInquiry = async () => {
+    const url = buildWhatsappUrl(buildPlaceInquiryMessage(place, trip));
+    try {
+      await Linking.openURL(url);
+    } catch {
+      try {
+        // Sem WhatsApp instalado, o mesmo endereço HTTPS abre no navegador e o
+        // WhatsApp Web assume a conversa (§7).
+        await WebBrowser.openBrowserAsync(url);
+      } catch {
+        toast.error('Não foi possível abrir o WhatsApp agora. Tente novamente.');
+      }
+    }
+  };
+
+  const openExternal = async () => {
+    if (!externalUrl) return;
+    try {
+      await WebBrowser.openBrowserAsync(externalUrl);
+    } catch {
+      try {
+        await Linking.openURL(externalUrl);
+      } catch {
+        toast.error('Não foi possível abrir o link agora.');
+      }
+    }
+  };
+
   /** Place-aware assistant (§53) — real service call, no hardcoded answers. */
   const askAI = async (question: string) => {
     setAiLoading(true);
@@ -182,9 +224,9 @@ export default function PlaceDetailScreen() {
             }}
           >
             <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
-              <Badge label={PLACE_TYPE_LABEL[place.type]} tone="brand" />
+              <HeroBadge label={PLACE_TYPE_LABEL[place.type]} variant="info" />
               {place.rating ? (
-                <Badge label={`${place.rating.toFixed(1)} ★`} tone="warning" icon={Star} />
+                <HeroBadge label={place.rating.toFixed(1)} variant="rating" icon={Star} />
               ) : null}
             </View>
             <AppText variant="h1" color="onImage" weight="bold" numberOfLines={2}>
@@ -320,7 +362,48 @@ export default function PlaceDetailScreen() {
           </View>
 
           {/* ----------------------------- Actions ---------------------------- */}
+          {/*
+            Uma ação principal só (§14). O contato comercial é a ação de maior
+            valor da tela, então é ela que recebe o peso visual; site, reserva e
+            mapa ficam em `secondary`, disponíveis sem disputar atenção.
+
+            Empilhados em vez de lado a lado: os rótulos são frases ("Falar sobre
+            este restaurante"), e dois deles numa linha a 320pt viram reticências
+            ou duas linhas desalinhadas (§13).
+          */}
           <View style={{ gap: theme.spacing.md }}>
+            {canInquire ? (
+              <Button
+                label={placeInquiryLabel(place)}
+                icon={MessageCircle}
+                fullWidth
+                size="lg"
+                onPress={() => void openInquiry()}
+                accessibilityLabel={`${placeInquiryLabel(place)} pelo WhatsApp`}
+              />
+            ) : null}
+
+            {/* Some quando não há link — botão morto é pior que ausência (§12). */}
+            {externalUrl ? (
+              <Button
+                label={externalLinkLabel(externalUrl)}
+                icon={ExternalLink}
+                variant="secondary"
+                fullWidth
+                onPress={() => void openExternal()}
+              />
+            ) : null}
+
+            {place.type !== 'attraction' ? (
+              <Button
+                label="Solicitar reserva"
+                icon={CalendarPlus}
+                variant="secondary"
+                fullWidth
+                onPress={() => setReserveOpen(true)}
+              />
+            ) : null}
+
             <Button
               label="Abrir no mapa"
               icon={MapPin}
@@ -328,26 +411,6 @@ export default function PlaceDetailScreen() {
               fullWidth
               onPress={() => void openMap()}
             />
-
-            {place.type !== 'attraction' ? (
-              <Button
-                label="Solicitar reserva"
-                icon={CalendarPlus}
-                fullWidth
-                size="lg"
-                onPress={() => setReserveOpen(true)}
-              />
-            ) : null}
-
-            {place.partnerUrl ? (
-              <Button
-                label="Ver no parceiro"
-                icon={ExternalLink}
-                variant="secondary"
-                fullWidth
-                onPress={() => void WebBrowser.openBrowserAsync(place.partnerUrl!)}
-              />
-            ) : null}
           </View>
 
           {/* §52 — we never invent reviews. */}

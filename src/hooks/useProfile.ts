@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 
-import type { Profile } from '@/domain/types';
+import type { ProfilePatch } from '@/domain/types';
 import { useAuth } from '@/providers/AuthProvider';
 import { dataSource, type UploadableFile } from '@/repositories';
 
@@ -9,45 +9,31 @@ import { dataSource, type UploadableFile } from '@/repositories';
  * "Salvar" actually persists and survives a restart (§59, CA-05).
  */
 export function useUpdateProfile() {
-  const { user, profile, setProfile } = useAuth();
+  const { user, setProfile } = useAuth();
 
   return useMutation({
-    mutationFn: async (patch: Partial<Profile>) => {
-      const next: Profile = {
-        userId: user!.id,
-        name: patch.name ?? profile?.name ?? '',
-        phone: patch.phone ?? profile?.phone,
-        avatarUrl: patch.avatarUrl ?? profile?.avatarUrl,
-        homeCity: patch.homeCity ?? profile?.homeCity,
-        homeCountry: patch.homeCountry ?? profile?.homeCountry,
-        homeTimezone: patch.homeTimezone ?? profile?.homeTimezone,
-        travelStyle: patch.travelStyle ?? profile?.travelStyle,
-        defaultCurrency: patch.defaultCurrency ?? profile?.defaultCurrency ?? 'BRL',
-      };
-      return dataSource.profile.upsert(next);
+    mutationFn: async (patch: ProfilePatch) => {
+      // O patch vai como veio da tela. Antes esta função remontava o perfil
+      // inteiro a partir do que estava em memória — e era assim que a URL
+      // assinada do avatar acabava gravada na coluna do caminho, apagando a
+      // foto na leitura seguinte. Agora `ProfilePatch` sequer tem esse campo.
+      //
+      // O id vem da sessão. Não é ele que protege — quem protege é a RLS e o
+      // privilégio por coluna da `0006` —, mas formulário nenhum o alcança.
+      return dataSource.profile.update(user!.id, patch);
     },
     onSuccess: (saved) => setProfile(saved),
   });
 }
 
 export function useUploadAvatar() {
-  const { user, profile, setProfile } = useAuth();
+  const { user, setProfile } = useAuth();
 
   return useMutation({
-    mutationFn: async (file: UploadableFile) => {
-      const stored = await dataSource.profile.uploadAvatar(user!.id, file);
-      return dataSource.profile.upsert({
-        userId: user!.id,
-        name: profile?.name ?? '',
-        phone: profile?.phone,
-        homeCity: profile?.homeCity,
-        homeCountry: profile?.homeCountry,
-        homeTimezone: profile?.homeTimezone,
-        travelStyle: profile?.travelStyle,
-        defaultCurrency: profile?.defaultCurrency ?? 'BRL',
-        avatarUrl: stored.url,
-      });
-    },
+    // Uma operação só: validar, subir, apontar o perfil e limpar a foto
+    // anterior acontecem juntos, dentro do repositório, porque é lá que dá para
+    // desfazer o upload se o meio do caminho falhar (§10).
+    mutationFn: async (file: UploadableFile) => dataSource.profile.replaceAvatar(user!.id, file),
     onSuccess: (saved) => setProfile(saved),
   });
 }

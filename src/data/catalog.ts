@@ -13,6 +13,8 @@ import type { Advisor, Article, Offer, Place } from '@/domain/types';
 export const OFFERS: Offer[] = [
   {
     id: 'offer-paris-primavera',
+    status: 'published',
+    sortOrder: 10,
     destination: 'Paris, França',
     description:
       'Sete noites no Marais com café da manhã incluso, passeio guiado pelo Louvre e traslado de chegada. Ideal para quem quer a primavera parisiense sem abrir mão de conforto.',
@@ -29,6 +31,8 @@ export const OFFERS: Offer[] = [
   },
   {
     id: 'offer-kyoto-outono',
+    status: 'published',
+    sortOrder: 20,
     destination: 'Kyoto, Japão',
     description:
       'Roteiro de 10 dias pelo Japão clássico com hospedagem em ryokan tradicional, Japan Rail Pass e experiência de cerimônia do chá.',
@@ -45,6 +49,8 @@ export const OFFERS: Offer[] = [
   },
   {
     id: 'offer-roma-historica',
+    status: 'published',
+    sortOrder: 30,
     destination: 'Roma, Itália',
     description:
       'Cinco noites no centro histórico com ingresso sem fila para o Coliseu e Fórum Romano, mais um curso de massa fresca com chef local.',
@@ -61,6 +67,8 @@ export const OFFERS: Offer[] = [
   },
   {
     id: 'offer-lisboa-economica',
+    status: 'published',
+    sortOrder: 40,
     destination: 'Lisboa, Portugal',
     description:
       'Cinco noites em Alfama com voos de ida e volta, seguro viagem e city pass de transporte. A porta de entrada mais econômica para a Europa.',
@@ -77,6 +85,8 @@ export const OFFERS: Offer[] = [
   },
   {
     id: 'offer-nova-york',
+    status: 'published',
+    sortOrder: 50,
     destination: 'Nova York, Estados Unidos',
     description:
       'Seis noites em Manhattan com hotel a duas quadras do Central Park, City Pass para seis atrações e traslado do aeroporto.',
@@ -93,6 +103,8 @@ export const OFFERS: Offer[] = [
   },
   {
     id: 'offer-santorini',
+    status: 'published',
+    sortOrder: 60,
     destination: 'Santorini, Grécia',
     description:
       'Sete noites em Oia com vista para a caldeira, passeio de catamarã ao pôr do sol e degustação em vinícola local.',
@@ -574,6 +586,7 @@ export const PLACES: Place[] = [
 export const ADVISORS: Advisor[] = [
   {
     id: 'advisor-ana-europa',
+    active: true,
     name: 'Ana Beatriz Correia',
     specialty: 'Europa',
     rating: 4.9,
@@ -583,6 +596,7 @@ export const ADVISORS: Advisor[] = [
   },
   {
     id: 'advisor-caio-gastronomia',
+    active: true,
     name: 'Caio Menezes',
     specialty: 'Gastronomia',
     rating: 4.8,
@@ -592,6 +606,7 @@ export const ADVISORS: Advisor[] = [
   },
   {
     id: 'advisor-luiza-trilhas',
+    active: true,
     name: 'Luíza Prado',
     specialty: 'Trilhas e natureza',
     rating: 4.7,
@@ -601,6 +616,7 @@ export const ADVISORS: Advisor[] = [
   },
   {
     id: 'advisor-pedro-luademel',
+    active: true,
     name: 'Pedro Arantes',
     specialty: 'Lua de mel',
     rating: 4.9,
@@ -610,6 +626,7 @@ export const ADVISORS: Advisor[] = [
   },
   {
     id: 'advisor-marcia-corporativo',
+    active: true,
     name: 'Márcia Toledo',
     specialty: 'Corporativo',
     rating: 4.6,

@@ -193,16 +193,8 @@ describe('goals and profile (§43, §59, CA-05)', () => {
   });
 
   it('persists a profile preference change', async () => {
-    await localDataSource.profile.upsert({
-      userId: USER,
-      name: 'João',
-      defaultCurrency: 'BRL',
-    });
-    await localDataSource.profile.upsert({
-      userId: USER,
-      name: 'João',
-      defaultCurrency: 'EUR',
-    });
+    await localDataSource.profile.update(USER, { name: 'João', defaultCurrency: 'BRL' });
+    await localDataSource.profile.update(USER, { name: 'João', defaultCurrency: 'EUR' });
 
     const profile = await localDataSource.profile.get(USER);
     expect(profile?.defaultCurrency).toBe('EUR');

@@ -7,10 +7,10 @@ import { Markdown } from '@/components/Markdown';
 import {
   AppImage,
   AppText,
-  Badge,
   Button,
   ErrorState,
   GlassCard,
+  HeroBadge,
   IconButton,
   SkeletonCard,
   useToast,
@@ -113,7 +113,7 @@ export default function ArticleScreen() {
               gap: theme.spacing.sm,
             }}
           >
-            <Badge label={article.category} tone="accent" />
+            <HeroBadge label={article.category} variant="info" />
             <AppText variant="h1" color="onImage" weight="bold">
               {article.title}
             </AppText>

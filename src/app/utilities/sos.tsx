@@ -166,11 +166,19 @@ export default function SosScreen() {
               <SectionHeader title="Seguro viagem" />
               {policies.length === 0 ? (
                 <GlassCard>
+                  {/*
+                    O cadastro de apólice não existe nesta versão: `insurance_policies`
+                    é lida aqui e preenchida por fora do aplicativo. O texto anterior
+                    dizia "Adicionar documento" e levava para Documentos, o que sugeria
+                    que anexar um PDF encheria esta seção — e não enche. A ação continua
+                    útil (é lá que a apólice fica guardada e abre offline), mas agora
+                    diz exatamente o que faz.
+                  */}
                   <EmptyState
                     icon={LifeBuoy}
-                    title="Nenhuma apólice adicionada"
-                    message="Guarde os dados do seu seguro para acessá-los rapidamente em uma emergência."
-                    actionLabel="Adicionar documento"
+                    title="Nenhuma apólice cadastrada"
+                    message="Guarde o PDF da sua apólice nos documentos da viagem: ele fica disponível mesmo sem internet."
+                    actionLabel="Abrir documentos da viagem"
                     onAction={() => router.push(`/trip/${trip.id}/tickets`)}
                     compact
                   />

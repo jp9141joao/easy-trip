@@ -1,16 +1,16 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
-import { CalendarRange, ChevronLeft, CloudSun, ExternalLink, Sparkles } from 'lucide-react-native';
+import { CalendarRange, ChevronLeft, CloudSun, ExternalLink, Sparkles, Tag } from 'lucide-react-native';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   AppImage,
   AppText,
-  Badge,
   Button,
   ErrorState,
   GlassCard,
+  HeroBadge,
   IconButton,
   InfoRow,
   InlineNotice,
@@ -100,8 +100,8 @@ export default function OfferDetailScreen() {
             }}
           >
             <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
-              <Badge label={COST_LEVEL_LABEL[offer.costLevel]} tone="brand" />
-              {discount() ? <Badge label={discount()!} tone="accent" /> : null}
+              <HeroBadge label={COST_LEVEL_LABEL[offer.costLevel]} variant="info" />
+              {discount() ? <HeroBadge label={discount()!} variant="discount" icon={Tag} /> : null}
             </View>
             <AppText variant="h1" color="onImage" weight="bold">
               {offer.destination}

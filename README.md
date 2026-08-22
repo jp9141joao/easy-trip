@@ -112,14 +112,28 @@ Há um teste de segurança que verifica isso — veja [Testes](#testes).
 
 ## Backend (Supabase)
 
+> Para o **primeiro deploy num projeto hospedado**, siga
+> [`GO_LIVE_SUPABASE.md`](./GO_LIVE_SUPABASE.md): ele traz a ordem exata, as
+> verificações entre etapas e o que nunca deve ser executado no remoto.
+
 ```bash
 # 1. Schema, políticas e buckets
 psql "$DATABASE_URL" -f supabase/migrations/0001_schema.sql
 psql "$DATABASE_URL" -f supabase/migrations/0002_rls.sql
 
 # 2. Conteúdo editorial (gerado a partir de src/data/catalog.ts)
-npm run seed:generate         # regenera supabase/seed.sql
-psql "$DATABASE_URL" -f supabase/seed.sql
+npm run seed:generate         # regenera os dois seeds — sem rede
+#   supabase/seed.sql             → DEMONSTRAÇÃO (inclui especialistas fictícios
+#                                   e ofertas com preço de exemplo). Só local.
+#   supabase/seed.production.sql  → PRODUÇÃO (artigos + lugares, sem dado
+#                                   inventado apresentável como real).
+psql "$DATABASE_URL" -f supabase/seed.sql            # ambiente LOCAL
+# psql "$SUPABASE_DB_URL" -f supabase/seed.production.sql   # ambiente REAL
+
+# 2b. Imagens editoriais (etapa separada: o seed do banco não baixa nada)
+#     Lê assets/content/ e envia para o bucket `content`. Só contra o Supabase
+#     local; falha listando os arquivos que faltarem.
+node scripts/seed-content-assets.mjs
 
 # 3. BFF
 supabase secrets set GEMINI_API_KEY=...

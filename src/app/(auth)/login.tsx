@@ -40,7 +40,9 @@ export default function LoginScreen() {
     setFormError(null);
     try {
       await signIn(values.email, values.password);
-      router.replace('/(tabs)');
+      // Sem `router.replace`: quem troca de área é a proteção do stack, assim
+      // que a sessão existe. Navegar à mão aqui criaria duas autoridades sobre
+      // a mesma decisão, e elas discordariam durante o quadro da transição.
     } catch (error) {
       // Never a bare "Erro" — say what to check (§25).
       setFormError(

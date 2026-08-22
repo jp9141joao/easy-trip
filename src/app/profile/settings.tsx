@@ -2,9 +2,11 @@ import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import {
   Check,
+  ChevronRight,
   Database,
   FileText,
   Info,
+  LayoutDashboard,
   LogOut,
   Moon,
   ShieldCheck,
@@ -32,7 +34,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
-import { config } from '@/lib/config';
+import { config, configIssues } from '@/lib/config';
 import { useAuth } from '@/providers/AuthProvider';
 import { useConnectivity } from '@/providers/ConnectivityProvider';
 import { dataSource } from '@/repositories';
@@ -49,7 +51,7 @@ export default function SettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const toast = useToast();
-  const { user, signOut, deleteAccount } = useAuth();
+  const { user, isAdmin, signOut, deleteAccount } = useAuth();
   const { status } = useConnectivity();
   const { mode, setMode } = useThemePreference();
 
@@ -57,10 +59,13 @@ export default function SettingsScreen() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // Nenhum dos dois navega à mão. Ao cair a sessão, as rotas privadas saem do
+  // navegador (`app/_layout.tsx`) e a volta ao login é consequência disso —
+  // inclusive quando a sessão cai sozinha, por token revogado, caso em que não
+  // existiria nenhum `handle*` para chamar `replace`.
   const handleSignOut = async () => {
     try {
       await signOut();
-      router.replace('/(auth)/login');
     } catch {
       toast.error('Não foi possível sair agora.');
     }
@@ -69,9 +74,12 @@ export default function SettingsScreen() {
   const handleDelete = async () => {
     setDeleting(true);
     try {
+      // A exclusão de verdade é a Edge Function `delete-account`: ela apaga os
+      // arquivos, confere que sobrou zero e só então remove a conta (P-02).
+      // Daqui só sai o pedido, autenticado pelo próprio JWT — o identificador
+      // não é enviado e não poderia ser trocado.
       await deleteAccount();
       toast.success('Conta e dados excluídos');
-      router.replace('/(auth)/login');
     } catch {
       toast.error('Não foi possível excluir a conta. Tente novamente.');
     } finally {
@@ -167,6 +175,21 @@ export default function SettingsScreen() {
           </GlassCard>
         </View>
 
+        {/* --------------------------- Administration ------------------------ */}
+        {/*
+          Só existe para quem é admin (§17, §18). Para conta comum a seção não é
+          renderizada — nada de item desabilitado ou "Bloqueado", que só
+          anunciaria a existência de algo inalcançável.
+        */}
+        {isAdmin ? (
+          <View>
+            <SectionHeader title="Administração" />
+            <GlassCard padded={false}>
+              <AdminEntryRow onPress={() => router.push('/admin')} />
+            </GlassCard>
+          </View>
+        ) : null}
+
         {config.mode === 'demo' ? (
           <InlineNotice icon={Info} tone="warning">
             O aplicativo está em modo demonstração: sua conta e seus dados ficam somente neste
@@ -174,6 +197,18 @@ export default function SettingsScreen() {
             EXPO_PUBLIC_SUPABASE_URL e EXPO_PUBLIC_SUPABASE_ANON_KEY para usar o backend.
           </InlineNotice>
         ) : null}
+
+        {/*
+          Configuração pela metade tem sintoma idêntico ao de configuração
+          ausente — o aplicativo simplesmente fica local. Sem esta linha, quem
+          colou a chave errada descobriria o problema só ao notar que nada
+          sincroniza (§18 da F10).
+        */}
+        {configIssues.map((issue) => (
+          <InlineNotice key={issue} icon={Info} tone="error">
+            {issue}
+          </InlineNotice>
+        ))}
 
         {/* ------------------------------ Privacy ---------------------------- */}
         <View>
@@ -248,6 +283,48 @@ export default function SettingsScreen() {
         onCancel={() => setConfirmDelete(false)}
       />
     </View>
+  );
+}
+
+/* ----------------------------- Administration ----------------------------- */
+
+/**
+ * Entrada para o Painel de Conteúdo.
+ *
+ * Discreta de propósito: mesma linha, mesmo alvo de toque e mesma tipografia do
+ * restante das Configurações. Ser administrador é uma atribuição da conta, não
+ * um recurso a ser promovido dentro do aplicativo (§17, §25).
+ */
+function AdminEntryRow({ onPress }: { onPress: () => void }) {
+  const theme = useTheme();
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Painel de Conteúdo"
+      accessibilityHint="Gerencie os conteúdos do Easy Trip"
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.spacing.md,
+        padding: theme.spacing.xl,
+        minHeight: theme.hitTarget,
+        borderRadius: theme.radius.card,
+        backgroundColor: pressed ? theme.colors.surfaceMuted : 'transparent',
+      })}
+    >
+      <LayoutDashboard size={18} color={theme.colors.primary} />
+      <View style={{ flex: 1 }}>
+        <AppText variant="bodySmall" weight="semibold">
+          Painel de Conteúdo
+        </AppText>
+        <AppText variant="caption" color="secondary">
+          Gerencie os conteúdos do Easy Trip
+        </AppText>
+      </View>
+      <ChevronRight size={18} color={theme.colors.textTertiary} />
+    </Pressable>
   );
 }
 

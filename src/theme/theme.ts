@@ -82,6 +82,22 @@ export interface Palette {
   onImage: TonalRole;
 
   /**
+   * Badges sobre a fotografia do hero — categoria, tipo, avaliação, desconto
+   * (§1–§4).
+   *
+   * A superfície e a borda são compartilhadas; só o texto muda de cor, e é ele
+   * que carrega o significado. O scrim é forte o bastante para os tons claros
+   * das rampas passarem em AA mesmo contra uma foto totalmente branca, que é o
+   * pior caso possível — assim a cor semântica sobrevive sem depender da
+   * imagem escolhida.
+   */
+  heroBadge: {
+    surface: string;
+    border: string;
+    foreground: Record<HeroBadgeVariant, string>;
+  };
+
+  /**
    * Accent da comunidade no WhatsApp.
    *
    * Precisa de valores por tema porque o verde da marca (`#25D366`) rende
@@ -102,6 +118,9 @@ export type TripStatusRole = 'planned' | 'active' | 'completed';
  * ela nunca deve usar a semântica de perigo.
  */
 export type CountdownRole = 'calm' | 'near' | 'imminent';
+
+/** Significados que um badge sobre imagem precisa expressar (§6). */
+export type HeroBadgeVariant = 'info' | 'rating' | 'discount' | 'neutral';
 
 export interface TonalRole {
   background: string;
@@ -141,9 +160,24 @@ export interface Theme {
  * Escuro. Trocar esses valores por tema só reduziria contraste sem motivo.
  */
 const chipSurface = {
-  background: 'rgba(2,6,23,0.62)',
+  // 0.70 e não menos: é o ponto em que os tons claros das rampas (ocean 300,
+  // amber 300, coral 200) ainda passam em AA sobre uma foto branca. Abaixo
+  // disso só o texto branco sobrevive, e a cor semântica se perde.
+  background: 'rgba(2,6,23,0.70)',
   foreground: '#FFFFFF',
-  border: 'rgba(255,255,255,0.24)',
+  border: 'rgba(255,255,255,0.26)',
+} as const;
+
+const heroBadgeRole = {
+  surface: chipSurface.background,
+  border: chipSurface.border,
+  foreground: {
+    info: ocean[300],
+    rating: '#FCD34D',
+    // coral 200, e não 300: o 300 fica em 4.18:1 contra foto branca.
+    discount: coral[200],
+    neutral: chipSurface.foreground,
+  },
 } as const;
 
 /** Botões do topo do hero — mesma família visual dos chips de status. */
@@ -204,6 +238,7 @@ const lightPalette: Palette = {
   status: statusRoles,
   countdown: countdownRoles,
   onImage: onImageRole,
+  heroBadge: heroBadgeRole,
   whatsapp: {
     background: 'rgba(37,211,102,0.14)',
     foreground: '#0B7A4B',
@@ -250,6 +285,7 @@ const darkPalette: Palette = {
   status: statusRoles,
   countdown: countdownRoles,
   onImage: onImageRole,
+  heroBadge: heroBadgeRole,
   whatsapp: {
     background: 'rgba(37,211,102,0.16)',
     foreground: '#4ADE80',

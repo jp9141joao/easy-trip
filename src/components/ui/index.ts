@@ -43,4 +43,5 @@ export {
   type BadgeTone,
   type SegmentedTabItem,
 } from './Display';
+export { HeroBadge } from './HeroBadge';
 export { ToastProvider, useToast } from './Toast';

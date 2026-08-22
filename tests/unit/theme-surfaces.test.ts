@@ -193,3 +193,45 @@ describe('actions drawn over photography (§7, §8)', () => {
     expect(lightTheme.colors.onImage).toEqual(darkTheme.colors.onImage);
   });
 });
+
+describe('hero badges over photography (§1–§4)', () => {
+  const variants = ['info', 'rating', 'discount', 'neutral'] as const;
+
+  // A fotografia é a mesma nos dois temas, então o tratamento também é.
+  for (const [name, theme] of Object.entries({ light: lightTheme, dark: darkTheme })) {
+    describe(name, () => {
+      const badge = theme.colors.heroBadge;
+
+      it.each([
+        ['um céu totalmente branco', [255, 255, 255]],
+        ['uma fachada clara', [220, 225, 235]],
+        ['uma foto média', [128, 128, 128]],
+        ['uma foto escura', [20, 20, 20]],
+      ] as [string, [number, number, number]][])('stays readable over %s', (_label, photo) => {
+        const surface = flatten(badge.surface, photo);
+
+        for (const variant of variants) {
+          const text = flatten(badge.foreground[variant], surface);
+          expect(contrast(text, surface)).toBeGreaterThanOrEqual(4.5);
+        }
+      });
+
+      it('keeps each meaning a distinct colour instead of flattening to white', () => {
+        // §4: as cores semânticas continuam existindo; o que mudou foi de onde
+        // vem o contraste.
+        const distinct = new Set(variants.map((variant) => badge.foreground[variant]));
+        expect(distinct.size).toBe(variants.length);
+      });
+
+      it('does not lean on the photo for its own surface', () => {
+        const photo: [number, number, number] = [255, 255, 255];
+        const surface = flatten(badge.surface, photo);
+        expect(contrast(surface, photo)).toBeGreaterThanOrEqual(3);
+      });
+    });
+  }
+
+  it('uses one treatment across both themes', () => {
+    expect(lightTheme.colors.heroBadge).toEqual(darkTheme.colors.heroBadge);
+  });
+});

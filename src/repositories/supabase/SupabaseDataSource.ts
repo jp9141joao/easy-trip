@@ -28,11 +28,34 @@ import type {
   Offer,
   Place,
   Profile,
+  ProfilePatch,
   ReservationRequest,
   Ticket,
   Trip,
 } from '@/domain/types';
-import { nowISO } from '@/lib/date';
+import { avatarStoragePath, validateAvatar } from '@/domain/avatar';
+import { parseUserRole } from '@/domain/roles';
+import { nowISO, todayISO } from '@/lib/date';
+import { createId } from '@/lib/id';
+import { isUuid, likeContains } from '@/lib/postgrest';
+import {
+  ATTACHMENT_POLICY,
+  CONTENT_IMAGE_POLICY,
+  JOURNAL_POLICY,
+  attachmentStoragePath,
+  contentImagePath,
+  journalStoragePath,
+  managedContentPath,
+  managedPathBelongsTo,
+  validateUpload,
+} from '@/domain/upload';
+import {
+  purgeMirrorForUser,
+  readMirror,
+  writeMirrorFromBytes,
+  writeMirrorFromFile,
+} from '@/lib/fileMirror';
+import { deleteWithFiles, type FileLifecycleDeps } from './fileLifecycle';
 import { getSupabaseClient } from './client';
 import type { DataSource, StoredFile, UploadableFile } from '../types';
 
@@ -42,10 +65,16 @@ const BUCKET = {
   attachments: 'attachments',
   journal: 'journal',
   avatars: 'avatars',
+  /** Único bucket público do projeto: imagem editorial. Ver `0007` (P-04). */
+  content: 'content',
 } as const;
 
 function db(): SupabaseClient {
   return getSupabaseClient();
+}
+
+function bucketFor(kind: 'attachment' | 'journal'): string {
+  return kind === 'attachment' ? BUCKET.attachments : BUCKET.journal;
 }
 
 function unwrap<T>(result: { data: T | null; error: { message: string } | null }): T {
@@ -67,6 +96,35 @@ async function signUrl(bucket: string, path: string | null): Promise<string | un
   return data.signedUrl;
 }
 
+/**
+ * O UID da sessão, lido do cliente — sem ida à rede.
+ *
+ * Serve para autorizar caminhos de Storage antes de mandar removê-los. Não
+ * substitui a RLS: é a checagem que evita usar uma linha adulterada para
+ * apagar arquivo alheio, e que dá um erro compreensível em vez do 200 com
+ * lista vazia que o Storage devolve quando a policy barra.
+ */
+async function currentUserId(): Promise<string | null> {
+  const { data } = await db().auth.getSession();
+  return data.session?.user.id ?? null;
+}
+
+async function lifecycleDeps(): Promise<FileLifecycleDeps> {
+  return { db, userId: await currentUserId() };
+}
+
+/**
+ * A forma de abrir o arquivo agora, na ordem que a decisão D-04 manda: cópia
+ * local primeiro, URL assinada só quando não houver uma.
+ *
+ * O que se guarda no banco continua sendo o `storagePath`; isto aqui é derivado
+ * e vale por uma hora, ou para sempre se o espelho existir.
+ */
+async function openableUrl(bucket: string, path: string | null): Promise<string | undefined> {
+  if (!path) return undefined;
+  return readMirror(bucket, path) ?? (await signUrl(bucket, path));
+}
+
 async function uploadFile(
   bucket: string,
   path: string,
@@ -83,6 +141,37 @@ async function uploadFile(
   if (error) throw new Error(error.message);
 
   return { url: path, mimeType: file.mimeType };
+}
+
+/**
+ * Acrescenta a URL assinada ao perfil lido.
+ *
+ * A URL vive só na resposta: `avatarPath` é o que está gravado, `avatarUrl` é
+ * derivado e expira em uma hora. Enquanto os dois eram o mesmo campo, o valor
+ * derivado voltava para o banco no próximo "Salvar" e a foto sumia.
+ */
+async function withAvatarUrl(profile: Profile): Promise<Profile> {
+  return { ...profile, avatarUrl: await signUrl(BUCKET.avatars, profile.avatarPath ?? null) };
+}
+
+/**
+ * Traduz a allowlist para colunas, campo a campo.
+ *
+ * Só entra o que o objeto realmente trouxe: `'phone' in patch` distingue "o
+ * usuário apagou o telefone" (grava `null`) de "esta edição não mexeu no
+ * telefone" (não aparece no UPDATE). Um spread genérico não faria essa
+ * diferença — e apagar um campo pareceria não funcionar.
+ */
+function toProfileRow(patch: ProfilePatch): Row {
+  const row: Row = {};
+  if ('name' in patch) row.name = patch.name;
+  if ('phone' in patch) row.phone = patch.phone ?? null;
+  if ('homeCity' in patch) row.home_city = patch.homeCity ?? null;
+  if ('homeCountry' in patch) row.home_country = patch.homeCountry ?? null;
+  if ('homeTimezone' in patch) row.home_timezone = patch.homeTimezone ?? null;
+  if ('travelStyle' in patch) row.travel_style = patch.travelStyle ?? null;
+  if ('defaultCurrency' in patch) row.default_currency = patch.defaultCurrency;
+  return row;
 }
 
 /* --------------------------------- mappers -------------------------------- */
@@ -237,12 +326,16 @@ const toProfile = (row: Row): Profile => ({
   userId: row.user_id,
   name: row.name,
   phone: row.phone ?? undefined,
-  avatarUrl: row.avatar_path ?? undefined,
+  avatarPath: row.avatar_path ?? undefined,
   homeCity: row.home_city ?? undefined,
   homeCountry: row.home_country ?? undefined,
   homeTimezone: row.home_timezone ?? undefined,
   travelStyle: row.travel_style ?? undefined,
   defaultCurrency: row.default_currency,
+  // A coluna existe a partir da migration 0003. Um banco ainda não migrado
+  // devolve `undefined` aqui, e `parseUserRole` transforma isso em `user` —
+  // nunca em privilégio (§29).
+  role: parseUserRole(row.role),
 });
 
 const toPlace = (row: Row): Place => ({
@@ -283,6 +376,8 @@ const toOffer = (row: Row): Offer => ({
   activeFrom: row.active_from ?? undefined,
   activeUntil: row.active_until ?? undefined,
   partnerUrl: row.partner_url ?? undefined,
+  status: row.status,
+  sortOrder: row.sort_order,
 });
 
 const toArticle = (row: Row): Article => ({
@@ -306,6 +401,7 @@ const toAdvisor = (row: Row): Advisor => ({
   rating: row.rating ?? undefined,
   status: row.status,
   bio: row.bio ?? undefined,
+  active: row.active,
 });
 
 const toConsultation = (row: Row): Consultation => ({
@@ -313,6 +409,7 @@ const toConsultation = (row: Row): Consultation => ({
   userId: row.user_id,
   advisorId: row.advisor_id,
   scheduledAt: row.scheduled_at,
+  createdAt: row.created_at,
   status: row.status,
   notes: row.notes ?? undefined,
 });
@@ -485,7 +582,8 @@ export const supabaseDataSource: DataSource = {
           endDateTime: row.end_date_time ?? undefined,
           origin: row.origin ?? undefined,
           destination: row.destination ?? undefined,
-          fileUrl: await signUrl(BUCKET.attachments, row.file_path),
+          filePath: row.file_path ?? undefined,
+        fileUrl: await openableUrl(BUCKET.attachments, row.file_path),
           mimeType: row.mime_type ?? undefined,
           notes: row.notes ?? undefined,
         })) as Promise<Ticket>[],
@@ -517,7 +615,8 @@ export const supabaseDataSource: DataSource = {
       return {
         ...input,
         id: row.id,
-        fileUrl: await signUrl(BUCKET.attachments, row.file_path),
+        filePath: row.file_path ?? undefined,
+        fileUrl: await openableUrl(BUCKET.attachments, row.file_path),
       } as Ticket;
     },
     async update(id, patch) {
@@ -554,20 +653,47 @@ export const supabaseDataSource: DataSource = {
         endDateTime: row.end_date_time ?? undefined,
         origin: row.origin ?? undefined,
         destination: row.destination ?? undefined,
-        fileUrl: await signUrl(BUCKET.attachments, row.file_path),
+        filePath: row.file_path ?? undefined,
+        fileUrl: await openableUrl(BUCKET.attachments, row.file_path),
         mimeType: row.mime_type ?? undefined,
         notes: row.notes ?? undefined,
       };
     },
     async remove(id) {
       const existing = await db().from('tickets').select('file_path').eq('id', id).maybeSingle();
-      const path = existing.data?.file_path;
-      if (path) await db().storage.from(BUCKET.attachments).remove([path]);
-      const { error } = await db().from('tickets').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      await deleteWithFiles(
+        await lifecycleDeps(),
+        BUCKET.attachments,
+        [existing.data?.file_path],
+        async () => {
+          const { error } = await db().from('tickets').delete().eq('id', id);
+          if (error) throw new Error(error.message);
+        },
+      );
     },
-    uploadAttachment: (userId, tripId, file) =>
-      uploadFile(BUCKET.attachments, `${userId}/${tripId}/${Date.now()}-${file.name}`, file),
+    async uploadAttachment(userId, tripId, file) {
+      // Tipo e tamanho antes de qualquer byte sair do aparelho (P-09). O
+      // controle de verdade é o bucket — `0007` põe `allowed_mime_types` e
+      // `file_size_limit` no servidor —, mas recusar aqui poupa o upload
+      // inteiro e devolve uma frase que a pessoa entende.
+      const validation = validateUpload(file, ATTACHMENT_POLICY);
+      if (!validation.ok) throw new Error(validation.message);
+
+      // Caminho construído, nunca recebido: o nome vindo do seletor pode conter
+      // barra, `..` ou percent-encoding, e é o primeiro segmento que a policy
+      // de Storage compara com `auth.uid()`.
+      const path = attachmentStoragePath(userId, tripId, validation.extension, createId());
+      const stored = await uploadFile(BUCKET.attachments, path, {
+        ...file,
+        mimeType: validation.mimeType,
+      });
+
+      // "Uma cópia local é gravada ao anexar" (D-04). O arquivo já está no
+      // aparelho — copiá-lo agora custa muito menos do que baixá-lo de volta
+      // no aeroporto, que é exatamente onde não vai haver rede.
+      await writeMirrorFromFile(BUCKET.attachments, path, file.uri);
+      return stored;
+    },
   },
 
   journal: {
@@ -640,11 +766,14 @@ export const supabaseDataSource: DataSource = {
       };
     },
     async remove(id) {
+      // Uma entrada pode ter várias mídias — ou nenhuma. As duas pontas contam:
+      // `deleteWithFiles` com lista vazia é só o delete da linha.
       const media = await db().from('journal_media').select('file_path').eq('journal_entry_id', id);
-      const paths = (media.data ?? []).map((row: Row) => row.file_path).filter(Boolean);
-      if (paths.length) await db().storage.from(BUCKET.journal).remove(paths);
-      const { error } = await db().from('journal_entries').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      const paths = (media.data ?? []).map((row: Row) => row.file_path);
+      await deleteWithFiles(await lifecycleDeps(), BUCKET.journal, paths, async () => {
+        const { error } = await db().from('journal_entries').delete().eq('id', id);
+        if (error) throw new Error(error.message);
+      });
     },
     async listMedia(entryIds) {
       if (entryIds.length === 0) return [];
@@ -658,18 +787,25 @@ export const supabaseDataSource: DataSource = {
         rows.map(async (row) => ({
           id: row.id,
           journalEntryId: row.journal_entry_id,
-          fileUrl: (await signUrl(BUCKET.journal, row.file_path)) ?? '',
+          filePath: row.file_path ?? undefined,
+        fileUrl: (await openableUrl(BUCKET.journal, row.file_path)) ?? '',
           mimeType: row.mime_type,
           sortOrder: row.sort_order,
         })) as Promise<JournalMedia>[],
       );
     },
     async addMedia(entryId, userId, file) {
-      const stored = await uploadFile(
-        BUCKET.journal,
-        `${userId}/${entryId}/${Date.now()}-${file.name}`,
-        file,
-      );
+      // Só imagem: a galeria do diário renderiza cada item com `expo-image`, e
+      // um PDF viraria quadro quebrado. `0007` diz o mesmo no bucket.
+      const validation = validateUpload(file, JOURNAL_POLICY);
+      if (!validation.ok) throw new Error(validation.message);
+
+      const path = journalStoragePath(userId, entryId, validation.extension, createId());
+      const stored = await uploadFile(BUCKET.journal, path, {
+        ...file,
+        mimeType: validation.mimeType,
+      });
+      await writeMirrorFromFile(BUCKET.journal, path, file.uri);
       const existing = await db()
         .from('journal_media')
         .select('id')
@@ -688,7 +824,8 @@ export const supabaseDataSource: DataSource = {
       return {
         id: row.id,
         journalEntryId: entryId,
-        fileUrl: (await signUrl(BUCKET.journal, row.file_path)) ?? '',
+        filePath: row.file_path ?? undefined,
+        fileUrl: (await openableUrl(BUCKET.journal, row.file_path)) ?? '',
         mimeType: row.mime_type,
         sortOrder: row.sort_order,
       };
@@ -699,11 +836,15 @@ export const supabaseDataSource: DataSource = {
         .select('file_path')
         .eq('id', mediaId)
         .maybeSingle();
-      if (existing.data?.file_path) {
-        await db().storage.from(BUCKET.journal).remove([existing.data.file_path]);
-      }
-      const { error } = await db().from('journal_media').delete().eq('id', mediaId);
-      if (error) throw new Error(error.message);
+      await deleteWithFiles(
+        await lifecycleDeps(),
+        BUCKET.journal,
+        [existing.data?.file_path],
+        async () => {
+          const { error } = await db().from('journal_media').delete().eq('id', mediaId);
+          if (error) throw new Error(error.message);
+        },
+      );
     },
   },
 
@@ -735,46 +876,133 @@ export const supabaseDataSource: DataSource = {
       const result = await db().from('profiles').select('*').eq('user_id', userId).maybeSingle();
       if (result.error) throw new Error(result.error.message);
       if (!result.data) return null;
-      const profile = toProfile(result.data);
-      return { ...profile, avatarUrl: await signUrl(BUCKET.avatars, result.data.avatar_path) };
+      return withAvatarUrl(toProfile(result.data));
     },
-    async upsert(profile) {
+
+    async update(userId, patch) {
+      // UPDATE, e não upsert: a linha já existe desde o cadastro, criada pelo
+      // gatilho `handle_new_user` (0001). Um upsert aqui poderia inserir uma
+      // linha nova caso o id não batesse — e "criar perfil" não é o que
+      // "salvar perfil" deve fazer.
       const result = await db()
         .from('profiles')
-        .upsert(
-          prune({
-            user_id: profile.userId,
-            name: profile.name,
-            phone: profile.phone,
-            avatar_path: profile.avatarUrl,
-            home_city: profile.homeCity,
-            home_country: profile.homeCountry,
-            home_timezone: profile.homeTimezone,
-            travel_style: profile.travelStyle,
-            default_currency: profile.defaultCurrency,
-          }),
-          { onConflict: 'user_id' },
-        )
+        .update({ ...toProfileRow(patch), updated_at: nowISO() })
+        .eq('user_id', userId)
         .select()
         .single();
-      const row = unwrap<Row>(result);
-      // Return a usable URL, not the raw storage path, so the caller can render
-      // the new avatar immediately without a refetch.
-      return { ...toProfile(row), avatarUrl: await signUrl(BUCKET.avatars, row.avatar_path) };
+      return withAvatarUrl(toProfile(unwrap<Row>(result)));
     },
-    uploadAvatar: (userId, file) =>
-      uploadFile(BUCKET.avatars, `${userId}/avatar-${Date.now()}-${file.name}`, file),
+
+    async replaceAvatar(userId, file) {
+      const validation = validateAvatar(file);
+      if (!validation.ok) throw new Error(validation.message);
+
+      // O caminho é montado aqui, a partir do UID da sessão. O nome que veio da
+      // galeria não participa: ele pode conter `../` ou barras, e é o primeiro
+      // segmento do caminho que a policy de Storage compara com `auth.uid()`.
+      const path = avatarStoragePath(userId, validation.extension, createId());
+
+      const anterior = (await this.get(userId))?.avatarPath;
+
+      await uploadFile(BUCKET.avatars, path, { ...file, mimeType: validation.mimeType });
+
+      let saved: Profile;
+      try {
+        const result = await db()
+          .from('profiles')
+          .update({ avatar_path: path, updated_at: nowISO() })
+          .eq('user_id', userId)
+          .select()
+          .single();
+        saved = toProfile(unwrap<Row>(result));
+      } catch (error) {
+        // O perfil continua apontando para a foto antiga, então o arquivo que
+        // acabou de subir não é de ninguém. Removê-lo é o que evita acumular
+        // lixo a cada tentativa fracassada.
+        await db().storage.from(BUCKET.avatars).remove([path]);
+        throw error;
+      }
+
+      // A partir daqui o perfil já está correto. Se a remoção da foto anterior
+      // falhar, sobra um arquivo órfão — chato, mas não é motivo para desfazer
+      // uma troca que deu certo nem para mostrar erro a quem trocou a foto.
+      if (anterior && anterior !== path) {
+        const { error } = await db().storage.from(BUCKET.avatars).remove([anterior]);
+        if (error) console.warn('avatar_anterior_nao_removido', { path: anterior });
+      }
+
+      return withAvatarUrl(saved);
+    },
   },
 
   content: {
     async listOffers() {
-      const result = await db().from('offers').select('*');
+      // A RLS já esconde rascunho e oferta fora de vigência de quem não
+      // administra (0004). O filtro aqui é para o administrador: sem ele, o
+      // painel abriria a Home com os próprios rascunhos misturados às ofertas
+      // reais — as mesmas duas consultas que `listArticles`/`listAllArticles`
+      // separam.
+      //
+      // A vigência entra junto com o status. Filtrar só por `status` deixava
+      // uma promoção vencida reaparecer na Home do administrador — a policy a
+      // esconde de todo mundo, menos justamente de quem ela deixa ver tudo.
+      const today = todayISO();
+      const result = await db()
+        .from('offers')
+        .select('*')
+        .eq('status', 'published')
+        .or(`active_from.is.null,active_from.lte.${today}`)
+        .or(`active_until.is.null,active_until.gte.${today}`)
+        .order('sort_order', { ascending: true })
+        .order('id', { ascending: true });
       return unwrapList<Row>(result).map(toOffer);
     },
     async getOffer(id) {
       const result = await db().from('offers').select('*').eq('id', id).maybeSingle();
       if (result.error) throw new Error(result.error.message);
       return result.data ? toOffer(result.data) : null;
+    },
+    async listAllOffers() {
+      const result = await db()
+        .from('offers')
+        .select('*')
+        .order('sort_order', { ascending: true })
+        .order('id', { ascending: true });
+      return unwrapList<Row>(result).map(toOffer);
+    },
+    async upsertOffer(offer) {
+      // `?? null` e não `prune`: campo ausente aqui significa "o admin apagou".
+      const result = await db()
+        .from('offers')
+        .upsert(
+          {
+            id: offer.id,
+            destination: offer.destination,
+            description: offer.description,
+            price: offer.price ?? null,
+            price_currency: offer.priceCurrency ?? null,
+            discount_type: offer.discountType ?? null,
+            discount_value: offer.discountValue ?? null,
+            cost_level: offer.costLevel,
+            image_url: offer.imageUrl,
+            weather_summary: offer.weatherSummary ?? null,
+            best_time: offer.bestTime ?? null,
+            things_to_do: offer.thingsToDo,
+            active_from: offer.activeFrom ?? null,
+            active_until: offer.activeUntil ?? null,
+            partner_url: offer.partnerUrl ?? null,
+            status: offer.status,
+            sort_order: offer.sortOrder,
+          },
+          { onConflict: 'id' },
+        )
+        .select()
+        .single();
+      return toOffer(unwrap<Row>(result));
+    },
+    async removeOffer(id) {
+      const { error } = await db().from('offers').delete().eq('id', id);
+      if (error) throw new Error(error.message);
     },
     async listArticles() {
       const result = await db()
@@ -785,9 +1013,93 @@ export const supabaseDataSource: DataSource = {
       return unwrapList<Row>(result).map(toArticle);
     },
     async getArticle(id) {
-      const result = await db().from('articles').select('*').or(`id.eq.${id},slug.eq.${id}`).maybeSingle();
+      // A rota aceita id ou slug, e as duas colunas têm tipos diferentes: `id`
+      // é uuid, `slug` é texto. Um `or=` com o valor emendado entregava a
+      // gramática do filtro a quem controla o parâmetro (P-08) e, de quebra,
+      // nunca funcionou por slug: o ramo `id.eq.<slug>` estoura o cast de uuid
+      // e derruba a consulta inteira com 22P02.
+      //
+      // A forma do valor já diz qual coluna consultar, então nem é preciso um
+      // filtro composto — `.eq()` viaja como parâmetro separado e não passa
+      // pelo parser de árvore do PostgREST.
+      const column = isUuid(id) ? 'id' : 'slug';
+      const result = await db().from('articles').select('*').eq(column, id).maybeSingle();
       if (result.error) throw new Error(result.error.message);
       return result.data ? toArticle(result.data) : null;
+    },
+    async listAllArticles() {
+      const result = await db()
+        .from('articles')
+        .select('*')
+        .order('published_at', { ascending: false });
+      return unwrapList<Row>(result).map(toArticle);
+    },
+    async upsertArticle(article) {
+      // `?? null` e não `prune`: aqui um campo ausente significa "o admin
+      // apagou", e apagar precisa gravar NULL. Omitir a coluna manteria o valor
+      // antigo e a edição pareceria não ter funcionado.
+      const result = await db()
+        .from('articles')
+        .upsert(
+          {
+            id: article.id,
+            slug: article.slug,
+            title: article.title,
+            category: article.category,
+            image_url: article.imageUrl ?? null,
+            author_name: article.authorName,
+            content: article.content,
+            published_at: article.publishedAt,
+            estimated_read_minutes: article.estimatedReadMinutes,
+            status: article.status,
+          },
+          { onConflict: 'id' },
+        )
+        .select()
+        .single();
+      return toArticle(unwrap<Row>(result));
+    },
+    async uploadEditorialImage(kind, entityId, file) {
+      const validation = validateUpload(file, CONTENT_IMAGE_POLICY);
+      if (!validation.ok) throw new Error(validation.message);
+
+      // `content` não é namespaced por usuário — quem escreve é a
+      // administração, e a policy `content_write` (0007) confere `is_admin()`
+      // em vez de prefixo. O prefixo aqui organiza por família, para uma
+      // varredura futura conseguir separar o que é de artigo do que é de
+      // oferta.
+      const path = contentImagePath(kind, entityId, validation.extension, createId());
+      const stored = await uploadFile(BUCKET.content, path, {
+        ...file,
+        mimeType: validation.mimeType,
+      });
+
+      // Este é o único bucket cuja URL é permanente. Nos outros três a leitura
+      // passa por `signUrl` e expira em uma hora; aqui a imagem precisa
+      // sobreviver ao cache do aparelho e ser a mesma amanhã.
+      const { data } = db().storage.from(BUCKET.content).getPublicUrl(stored.url);
+      return { url: data.publicUrl, mimeType: stored.mimeType };
+    },
+    async removeEditorialImage(kind, entityId, imageUrl) {
+      const path = managedContentPath(imageUrl);
+      // URL do Unsplash, link de parceiro, campo vazio: não há arquivo nosso
+      // para remover, e mandar a URL inteira como se fosse caminho é
+      // exatamente o erro que o §17 da F9 proíbe.
+      if (!path) return;
+      // E o caminho precisa ser deste registro. A coluna não autoriza nada —
+      // mesmo raciocínio de `ownsPath` no ciclo de vida dos arquivos privados.
+      if (!managedPathBelongsTo(path, kind, entityId)) return;
+
+      // O Storage responde 200 com `[]` tanto quando removeu quanto quando o
+      // objeto já não estava lá (ver `fileLifecycle`). Para uma imagem pública
+      // isso basta: o alvo é a ausência do arquivo, e as duas respostas
+      // chegam nela. `error` só aparece em falha de transporte.
+      const { error } = await db().storage.from(BUCKET.content).remove([path]);
+      if (error) throw new Error(error.message);
+    },
+    async removeArticle(id) {
+      const { error } = await db().from('articles').delete().eq('id', id);
+      if (error) throw new Error(error.message);
     },
     async listLikedArticleIds(userId) {
       const result = await db().from('article_likes').select('article_id').eq('user_id', userId);
@@ -815,7 +1127,14 @@ export const supabaseDataSource: DataSource = {
       let query = db().from('places').select('*');
       if (params?.type) query = query.eq('type', params.type);
       if (params?.city) query = query.ilike('city', params.city);
-      if (params?.search) query = query.or(`name.ilike.%${params.search}%,city.ilike.%${params.search}%`);
+      // Mesma classe de defeito do P-08, e aqui o valor é digitado pelo
+      // usuário, não vem da rota. `or=` é inevitável (duas colunas, um termo),
+      // então o valor vai entre aspas — e os curingas do LIKE também são
+      // escapados, para `%` digitado significar `%` e não "tudo".
+      if (params?.search) {
+        const term = likeContains(params.search);
+        query = query.or(`name.ilike.${term},city.ilike.${term}`);
+      }
       const result = await query;
       return unwrapList<Row>(result).map(toPlace);
     },
@@ -823,6 +1142,41 @@ export const supabaseDataSource: DataSource = {
       const result = await db().from('places').select('*').eq('id', id).maybeSingle();
       if (result.error) throw new Error(result.error.message);
       return result.data ? toPlace(result.data) : null;
+    },
+    async upsert(place) {
+      const result = await db()
+        .from('places')
+        .upsert(
+          {
+            id: place.id,
+            external_provider_id: place.externalProviderId ?? null,
+            name: place.name,
+            type: place.type,
+            rating: place.rating ?? null,
+            price_level: place.priceLevel ?? null,
+            average_price: place.averagePrice ?? null,
+            currency: place.currency ?? null,
+            city: place.city,
+            country: place.country,
+            address: place.address ?? null,
+            phone: place.phone ?? null,
+            opening_hours: place.openingHours ?? null,
+            description: place.description ?? null,
+            latitude: place.latitude ?? null,
+            longitude: place.longitude ?? null,
+            image_url: place.imageUrl ?? null,
+            amenities: place.amenities ?? null,
+            partner_url: place.partnerUrl ?? null,
+          },
+          { onConflict: 'id' },
+        )
+        .select()
+        .single();
+      return toPlace(unwrap<Row>(result));
+    },
+    async remove(id) {
+      const { error } = await db().from('places').delete().eq('id', id);
+      if (error) throw new Error(error.message);
     },
     async listFavoriteIds(userId) {
       const result = await db().from('place_favorites').select('place_id').eq('user_id', userId);
@@ -847,7 +1201,13 @@ export const supabaseDataSource: DataSource = {
 
   advisors: {
     async list() {
-      const result = await db().from('advisors').select('*');
+      // Mesmo motivo do `listOffers`: a RLS protege o viajante, este filtro
+      // evita que o administrador veja ex-consultores na tela de Especialistas.
+      const result = await db()
+        .from('advisors')
+        .select('*')
+        .eq('active', true)
+        .order('name', { ascending: true });
       return unwrapList<Row>(result).map(toAdvisor);
     },
     async get(id) {
@@ -855,12 +1215,43 @@ export const supabaseDataSource: DataSource = {
       if (result.error) throw new Error(result.error.message);
       return result.data ? toAdvisor(result.data) : null;
     },
+    async listAll() {
+      const result = await db().from('advisors').select('*').order('name', { ascending: true });
+      return unwrapList<Row>(result).map(toAdvisor);
+    },
+    async upsert(advisor) {
+      const result = await db()
+        .from('advisors')
+        .upsert(
+          {
+            id: advisor.id,
+            name: advisor.name,
+            specialty: advisor.specialty,
+            avatar_url: advisor.avatarUrl ?? null,
+            rating: advisor.rating ?? null,
+            status: advisor.status,
+            bio: advisor.bio ?? null,
+            active: advisor.active,
+          },
+          { onConflict: 'id' },
+        )
+        .select()
+        .single();
+      return toAdvisor(unwrap<Row>(result));
+    },
+    async remove(id) {
+      const { error } = await db().from('advisors').delete().eq('id', id);
+      if (error) throw new Error(error.message);
+    },
     async listConsultations(userId) {
       const result = await db()
         .from('consultations')
         .select('*')
         .eq('user_id', userId)
-        .order('scheduled_at', { ascending: false });
+        // Por `created_at`, não por `scheduled_at`: aquele é texto que a pessoa
+        // escreveu, e ordenar por ele punha "amanhã cedo" depois de "20/09"
+        // (P-03). O mais recente primeiro é o que a tela quer mostrar.
+        .order('created_at', { ascending: false });
       return unwrapList<Row>(result).map(toConsultation);
     },
     async requestConsultation(input) {
@@ -1018,6 +1409,7 @@ export const supabaseDataSource: DataSource = {
           provider: row.provider,
           policyNumber: row.policy_number,
           emergencyPhone: row.emergency_phone ?? undefined,
+          filePath: row.file_path ?? undefined,
           fileUrl: row.file_path ?? undefined,
           validUntil: row.valid_until ?? undefined,
         }),
@@ -1043,8 +1435,55 @@ export const supabaseDataSource: DataSource = {
       return { ...input, id: row.id };
     },
     async remove(id) {
-      const { error } = await db().from('insurance_policies').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      // P-07 reproduzido aqui, e **só** aqui: medido contra o Storage local,
+      // apagar uma apólice deixava o objeto no bucket `attachments`. Ticket e
+      // diário já removiam — a auditoria acertou o diagnóstico e errou o
+      // alcance.
+      const existing = await db()
+        .from('insurance_policies')
+        .select('file_path')
+        .eq('id', id)
+        .maybeSingle();
+
+      // O `file_path` de apólice é o único que pode conter uma URI local
+      // (`file://…`) em vez de chave de Storage: `useInsurance.create` grava
+      // `file?.uri` direto, porque nunca existiu upload para esta entidade.
+      // Uma URI dessas não é objeto de bucket e não deve ir para o Storage.
+      const gravado = existing.data?.file_path as string | undefined;
+      const chave = gravado && !gravado.startsWith('file:') ? gravado : undefined;
+
+      await deleteWithFiles(await lifecycleDeps(), BUCKET.attachments, [chave], async () => {
+        const { error } = await db().from('insurance_policies').delete().eq('id', id);
+        if (error) throw new Error(error.message);
+      });
+    },
+  },
+
+  files: {
+    isAvailableOffline(kind, filePath) {
+      return Boolean(readMirror(bucketFor(kind), filePath));
+    },
+    async ensureOfflineCopy(kind, filePath) {
+      const bucket = bucketFor(kind);
+      const existente = readMirror(bucket, filePath);
+      if (existente) return existente;
+
+      // "Uma cópia local é gravada ao anexar **e ao baixar**" (D-04). Esta é a
+      // segunda metade: o arquivo veio de outro aparelho, e a primeira abertura
+      // com rede é a chance de deixá-lo pronto para a próxima sem rede.
+      try {
+        const { data, error } = await db().storage.from(bucket).download(filePath);
+        if (error || !data) return undefined;
+        return await writeMirrorFromBytes(bucket, filePath, await data.arrayBuffer());
+      } catch {
+        // Sem rede, ou sem permissão. Nos dois casos a resposta honesta é "não
+        // está disponível offline" — não um erro na cara de quem só abriu a
+        // tela de documentos.
+        return undefined;
+      }
+    },
+    purgeLocalCopies(userId) {
+      purgeMirrorForUser(userId);
     },
   },
 

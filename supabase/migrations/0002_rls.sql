@@ -167,12 +167,16 @@ create policy ai_messages_all on public.ai_messages
 
 -- ----------------------------------------------------------------------------
 -- Editorial content: read-only for authenticated users
+--
+-- `articles` fica de fora deste laço de propósito. As outras três tabelas não
+-- têm noção de rascunho: toda linha nelas é conteúdo pronto. `articles` tem
+-- `status`, e por isso precisa de uma regra própria — ver abaixo (P-01).
 -- ----------------------------------------------------------------------------
 do $$
 declare
   table_name text;
 begin
-  foreach table_name in array array['offers', 'articles', 'places', 'advisors']
+  foreach table_name in array array['offers', 'places', 'advisors']
   loop
     execute format('drop policy if exists %I_read on public.%I', table_name, table_name);
     execute format(
@@ -182,6 +186,33 @@ begin
   end loop;
 end;
 $$;
+
+-- ----------------------------------------------------------------------------
+-- Artigos: rascunho não é conteúdo público (P-01)
+--
+-- O aplicativo já filtra `status = 'published'` na consulta, mas filtro de
+-- cliente não é controle de acesso: o `anon key` está no bundle, e uma
+-- requisição direta a `/rest/v1/articles` ignora completamente o que a tela faz.
+-- Com `using (true)`, qualquer conta autenticada leria os rascunhos da equipe
+-- editorial pela API REST.
+--
+-- A regra passa a viver aqui, que é o único lugar por onde toda leitura
+-- obrigatoriamente passa. `is_admin()` (0003) preserva o painel: quem administra
+-- continua enxergando rascunho e publicado, que é o que a lista do painel exige.
+--
+-- Continua restrito a `authenticated`: o Easy Trip não tem área pública, e
+-- afrouxar isso aqui abriria o catálogo para quem não tem conta.
+--
+-- Nesta migration a regra é só `status = 'published'`, sem exceção para
+-- administrador — porque administrador ainda não existe aqui: `profiles.role` e
+-- `is_admin()` só nascem em 0003. Escrever `public.is_admin()` nesta linha faria
+-- esta migration falhar ao ser aplicada em ordem. A 0003 estende a policy no
+-- momento em que passa a haver o que estender.
+-- ----------------------------------------------------------------------------
+drop policy if exists articles_read on public.articles;
+create policy articles_read on public.articles
+  for select to authenticated
+  using (status = 'published');
 
 -- =============================================================================
 -- Storage: private buckets only. The client never gets a public URL — it

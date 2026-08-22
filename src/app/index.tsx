@@ -16,7 +16,7 @@ const ONBOARDING_KEY = 'onboardingSeen';
  */
 export default function BootScreen() {
   const theme = useTheme();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, recoveryPending } = useAuth();
   const [seenOnboarding, setSeenOnboarding] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -27,6 +27,10 @@ export default function BootScreen() {
     return <View style={{ flex: 1, backgroundColor: theme.colors.background }} />;
   }
 
+  // O link de recuperação pode abrir o aplicativo fechado. Nesse caso ele
+  // aterrissa aqui, e a única coisa a fazer é trocar a senha — nem onboarding,
+  // nem login.
+  if (recoveryPending) return <Redirect href="/(auth)/reset-password" />;
   if (!seenOnboarding) return <Redirect href="/onboarding" />;
   if (!isAuthenticated) return <Redirect href="/(auth)/login" />;
   return <Redirect href="/(tabs)" />;

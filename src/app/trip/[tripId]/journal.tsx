@@ -30,6 +30,7 @@ import { RoteiroModules } from '@/features/trip/RoteiroModules';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useJournal, useJournalMedia, useJournalMutations } from '@/hooks/useTripData';
 import { formatWeekdayDate, todayISO } from '@/lib/date';
+import { JOURNAL_POLICY, validateUpload } from '@/domain/upload';
 import { guessMimeType } from '@/lib/files';
 import type { UploadableFile } from '@/repositories';
 import { useTheme } from '@/theme';
@@ -294,18 +295,31 @@ function JournalEditorSheet({
         quality: 0.8,
       });
       if (result.canceled) return;
-      setFiles((current) => [
-        ...current,
-        ...result.assets.map((asset) => {
-          const name = asset.fileName ?? `foto-${Date.now()}.jpg`;
-          return {
-            uri: asset.uri,
-            name,
-            mimeType: asset.mimeType ?? guessMimeType(name, 'image/jpeg'),
-            size: asset.fileSize,
-          };
-        }),
-      ]);
+
+      const candidatos = result.assets.map((asset) => {
+        const name = asset.fileName ?? `foto-${Date.now()}.jpg`;
+        return {
+          uri: asset.uri,
+          name,
+          mimeType: asset.mimeType ?? guessMimeType(name, 'image/jpeg'),
+          size: asset.fileSize,
+        };
+      });
+
+      // Numa seleção múltipla, uma foto recusada não pode derrubar as outras:
+      // quem escolheu seis imagens e tem uma acima do limite fica com cinco e
+      // uma explicação, não com um erro e nenhuma.
+      const aceitos = candidatos.filter((c) => validateUpload(c, JOURNAL_POLICY).ok);
+      const recusados = candidatos.length - aceitos.length;
+      if (recusados > 0) {
+        toast.warning(
+          recusados === 1
+            ? 'Uma foto foi ignorada: só JPG, PNG ou WEBP de até 10 MB.'
+            : `${recusados} fotos foram ignoradas: só JPG, PNG ou WEBP de até 10 MB.`,
+        );
+      }
+      if (aceitos.length === 0) return;
+      setFiles((current) => [...current, ...aceitos]);
     } catch {
       toast.error('Não foi possível selecionar as fotos.');
     }

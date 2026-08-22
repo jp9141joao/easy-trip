@@ -28,6 +28,13 @@ export const queryKeys = {
   place: (id: string) => ['place', id] as const,
   placeFavorites: (userId: string) => ['placeFavorites', userId] as const,
 
+  /** Painel: inclui rascunhos, por isso chave própria — nunca compartilhada
+   *  com a listagem pública, que não pode servir rascunho do cache. */
+  adminArticles: () => ['admin', 'articles'] as const,
+  adminPlaces: () => ['admin', 'places'] as const,
+  adminOffers: () => ['admin', 'offers'] as const,
+  adminAdvisors: () => ['admin', 'advisors'] as const,
+
   advisors: () => ['advisors'] as const,
   consultations: (userId: string) => ['consultations', userId] as const,
   reservations: (userId: string) => ['reservations', userId] as const,

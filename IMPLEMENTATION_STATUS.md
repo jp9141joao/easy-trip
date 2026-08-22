@@ -4,8 +4,14 @@ Registro do que foi construído, das decisões tomadas e do que ficou fora do
 escopo desta entrega (§121).
 
 **Estado atual:** aplicativo executável no Expo Go, TypeScript `strict` sem
-erros, ESLint sem problemas, 73 testes passando, bundles Android e iOS gerados
-com sucesso, e nenhum segredo no bundle.
+erros, ESLint sem problemas, 542 testes passando e nenhum segredo no bundle.
+
+> Este documento registra a **entrega original do aplicativo**. A integração com
+> o Supabase — migrations, RLS, Storage, autenticação, painel administrativo e
+> as correções P-01 a P-09 — está registrada em
+> [`SUPABASE_IMPLEMENTATION_PLAN.md`](./SUPABASE_IMPLEMENTATION_PLAN.md), e o
+> procedimento do primeiro deploy remoto em
+> [`GO_LIVE_SUPABASE.md`](./GO_LIVE_SUPABASE.md).
 
 ---
 
@@ -15,7 +21,8 @@ com sucesso, e nenhum segredo no bundle.
 | --- | --- | --- |
 | TypeScript | `npm run typecheck` | 0 erros |
 | Lint | `npm run lint` | 0 problemas |
-| Testes | `npm test` | 73/73 |
+| Testes | `npm test` | 542/542 (48 suítes) |
+| E2E contra Supabase local | `node supabase/tests/*.mjs` | 331 verificações, 0 falhas |
 | Bundle Android | `expo export --platform android` | 7,4 MB, sucesso |
 | Bundle iOS | `expo export --platform ios` | 7,1 MB, sucesso |
 | Segredos no bundle | grep no `.hbc` | 0 ocorrências |

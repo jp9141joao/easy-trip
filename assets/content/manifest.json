@@ -1,0 +1,248 @@
+{
+  "gerado": "scripts/seed-content-assets.mjs",
+  "bucket": "content",
+  "formatosAceitos": [
+    "jpg",
+    "jpeg",
+    "png",
+    "webp"
+  ],
+  "tamanhoMaximoMB": 5,
+  "caminhoDosArquivos": "assets/content/{entidade}/{slug}.{ext}",
+  "totalPendentes": 29,
+  "totalPendentesProducao": 18,
+  "pendentes": [
+    {
+      "entidade": "articles",
+      "slug": "article-mala-10-dias",
+      "id": "a64cbe0f-bf3a-4061-8976-3e6e65873e70",
+      "rotulo": "Como fazer a mala para 10 dias levando só bagagem de mão",
+      "arquivoEsperado": "assets/content/articles/article-mala-10-dias.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "articles",
+      "slug": "article-documentos-europa",
+      "id": "8352bc8c-8e67-4b90-8d35-671c11ba981c",
+      "rotulo": "Documentos para a Europa: o que conferir antes de embarcar",
+      "arquivoEsperado": "assets/content/articles/article-documentos-europa.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "articles",
+      "slug": "article-comer-bem-barato",
+      "id": "bd492df7-d2ad-4095-8fe4-8d628ff6ce8c",
+      "rotulo": "Comer bem gastando pouco: a estratégia dos mercados municipais",
+      "arquivoEsperado": "assets/content/articles/article-comer-bem-barato.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "articles",
+      "slug": "article-jetlag",
+      "id": "072e3b09-4f43-4db0-886d-c6b9567238b9",
+      "rotulo": "Vencendo o jet lag: o que realmente funciona",
+      "arquivoEsperado": "assets/content/articles/article-jetlag.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "articles",
+      "slug": "article-orcamento-real",
+      "id": "529a9f39-e0dc-492a-8246-661333779863",
+      "rotulo": "Montando um orçamento de viagem que sobrevive à viagem",
+      "arquivoEsperado": "assets/content/articles/article-orcamento-real.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "articles",
+      "slug": "article-primeira-viagem-internacional",
+      "id": "d131c52f-be56-41b7-8f67-e4988f87e6e6",
+      "rotulo": "Primeira viagem internacional: 12 coisas que ninguém te conta",
+      "arquivoEsperado": "assets/content/articles/article-primeira-viagem-internacional.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "offers",
+      "slug": "offer-paris-primavera",
+      "id": "cb7c04c5-fc0e-4479-8772-20bcc78a293e",
+      "rotulo": "Paris, França",
+      "arquivoEsperado": "assets/content/offers/offer-paris-primavera.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "offers",
+      "slug": "offer-kyoto-outono",
+      "id": "ba4f3385-3979-4afe-8336-c97bf3c92e83",
+      "rotulo": "Kyoto, Japão",
+      "arquivoEsperado": "assets/content/offers/offer-kyoto-outono.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "offers",
+      "slug": "offer-roma-historica",
+      "id": "b2872454-21f0-483a-8377-5c6ed4779c8e",
+      "rotulo": "Roma, Itália",
+      "arquivoEsperado": "assets/content/offers/offer-roma-historica.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "offers",
+      "slug": "offer-lisboa-economica",
+      "id": "f499c957-c999-458a-8d00-fcddbe32fee1",
+      "rotulo": "Lisboa, Portugal",
+      "arquivoEsperado": "assets/content/offers/offer-lisboa-economica.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "offers",
+      "slug": "offer-nova-york",
+      "id": "cc4b6222-baae-477b-86e5-255986f9a99d",
+      "rotulo": "Nova York, Estados Unidos",
+      "arquivoEsperado": "assets/content/offers/offer-nova-york.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "offers",
+      "slug": "offer-santorini",
+      "id": "f3a21b27-31f3-4e4a-8251-a56d2595d971",
+      "rotulo": "Santorini, Grécia",
+      "arquivoEsperado": "assets/content/offers/offer-santorini.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "places",
+      "slug": "place-le-comptoir",
+      "id": "1ced5572-b489-4824-8864-cd56d176ed96",
+      "rotulo": "Le Comptoir du Marais",
+      "arquivoEsperado": "assets/content/places/place-le-comptoir.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-hotel-lumiere",
+      "id": "cf7dc25f-fa15-4510-8568-674fc993676f",
+      "rotulo": "Hôtel Lumière Rivoli",
+      "arquivoEsperado": "assets/content/places/place-hotel-lumiere.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-kikunoi",
+      "id": "36dd692f-0bbc-496d-8d61-d042429a229c",
+      "rotulo": "Kikunoi Higashiyama",
+      "arquivoEsperado": "assets/content/places/place-kikunoi.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-ryokan-sakura",
+      "id": "25e93d03-5925-4dba-8ccc-40b97f0ebabd",
+      "rotulo": "Ryokan Sakura-an",
+      "arquivoEsperado": "assets/content/places/place-ryokan-sakura.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-trattoria-vecchia",
+      "id": "3ed32f5d-ae20-44c2-80f3-2b9fecf3341f",
+      "rotulo": "Trattoria Vecchia Roma",
+      "arquivoEsperado": "assets/content/places/place-trattoria-vecchia.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-albergo-fontana",
+      "id": "ea7fa3d9-a7c7-4bb9-8db8-98609246df92",
+      "rotulo": "Albergo della Fontana",
+      "arquivoEsperado": "assets/content/places/place-albergo-fontana.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-brooklyn-grill",
+      "id": "c4d681c8-953f-46c8-81e9-87005a158890",
+      "rotulo": "Brooklyn Harbor Grill",
+      "arquivoEsperado": "assets/content/places/place-brooklyn-grill.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-midtown-suites",
+      "id": "738c8bdf-df11-4631-8c9d-9dee529da210",
+      "rotulo": "Midtown Park Suites",
+      "arquivoEsperado": "assets/content/places/place-midtown-suites.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-louvre",
+      "id": "490ef2e8-1740-4ad0-8e4e-0838604fedb8",
+      "rotulo": "Museu do Louvre",
+      "arquivoEsperado": "assets/content/places/place-louvre.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-fushimi-inari",
+      "id": "f1cf0440-c473-40ef-85bc-d4afb642d52f",
+      "rotulo": "Santuário Fushimi Inari",
+      "arquivoEsperado": "assets/content/places/place-fushimi-inari.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-coliseu",
+      "id": "01a1f019-d68c-44e3-872d-c4fad82e24fc",
+      "rotulo": "Coliseu de Roma",
+      "arquivoEsperado": "assets/content/places/place-coliseu.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "places",
+      "slug": "place-central-park",
+      "id": "c114ed23-26b8-4e32-87ac-e311e7ccfb55",
+      "rotulo": "Central Park",
+      "arquivoEsperado": "assets/content/places/place-central-park.{jpg|png|webp}",
+      "necessarioEmProducao": true
+    },
+    {
+      "entidade": "advisors",
+      "slug": "advisor-ana-europa",
+      "id": "c1fa4279-7d9f-4fe6-8c65-4d9f3f99525f",
+      "rotulo": "Ana Beatriz Correia",
+      "arquivoEsperado": "assets/content/advisors/advisor-ana-europa.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "advisors",
+      "slug": "advisor-caio-gastronomia",
+      "id": "9a199173-2629-4793-8c30-e6e0c0430906",
+      "rotulo": "Caio Menezes",
+      "arquivoEsperado": "assets/content/advisors/advisor-caio-gastronomia.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "advisors",
+      "slug": "advisor-luiza-trilhas",
+      "id": "20c66539-e09e-4ce9-8058-e9d00164f222",
+      "rotulo": "Luíza Prado",
+      "arquivoEsperado": "assets/content/advisors/advisor-luiza-trilhas.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "advisors",
+      "slug": "advisor-pedro-luademel",
+      "id": "67760aea-f08e-4ce7-87f8-260d580437d1",
+      "rotulo": "Pedro Arantes",
+      "arquivoEsperado": "assets/content/advisors/advisor-pedro-luademel.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    },
+    {
+      "entidade": "advisors",
+      "slug": "advisor-marcia-corporativo",
+      "id": "321ceb30-ca21-4557-883d-0e67fc3ed087",
+      "rotulo": "Márcia Toledo",
+      "arquivoEsperado": "assets/content/advisors/advisor-marcia-corporativo.{jpg|png|webp}",
+      "necessarioEmProducao": false
+    }
+  ]
+}

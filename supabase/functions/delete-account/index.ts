@@ -6,12 +6,16 @@
  * verifies the identity, then performs the privileged delete server-side.
  *
  * Every owned row cascades away via `on delete cascade` from `auth.users`.
+ * Arquivos NÃO cascateiam: são apagados explicitamente antes, por
+ * `purgeUserFiles` (P-02).
  *
  * Deploy with:
  *   supabase functions deploy delete-account
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+
+import { purgeUserFiles, type StorageClient } from '../_shared/storagePurge.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
@@ -22,6 +26,9 @@ const CORS = {
   'Access-Control-Allow-Headers': 'authorization, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+/** Os três buckets privados criados em `0002_rls.sql`, todos com `{uid}/` na raiz. */
+const BUCKETS = ['attachments', 'journal', 'avatars'] as const;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -47,21 +54,43 @@ Deno.serve(async (req) => {
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
   try {
-    // Remove stored files first — they do not cascade with the database rows.
-    for (const bucket of ['attachments', 'journal', 'avatars']) {
-      const { data: files } = await admin.storage.from(bucket).list(userId, { limit: 1000 });
-      if (files?.length) {
-        await admin.storage
-          .from(bucket)
-          .remove(files.map((file) => `${userId}/${file.name}`));
-      }
+    // ---- 1. Arquivos primeiro, e a conta só depois ----
+    //
+    // A ordem importa e é a parte mais fácil de errar. Se a conta fosse apagada
+    // antes e a limpeza falhasse, restariam arquivos pessoais sem dono — não
+    // atribuíveis a ninguém, e o usuário sem conta para tentar de novo.
+    //
+    // Fazendo o inverso, uma falha deixa a conta intacta: nada foi destruído
+    // pela metade e a operação pode ser repetida.
+    const purge = await purgeUserFiles(
+      admin.storage as unknown as StorageClient,
+      BUCKETS,
+      userId,
+    );
+
+    if (!purge.ok) {
+      // Responder sucesso aqui seria a pior saída possível: o usuário pediu
+      // exclusão, receberia confirmação, e os arquivos continuariam lá (§13).
+      console.error('delete_account_storage_incomplete', {
+        userId,
+        deleted: purge.deleted.length,
+        remaining: purge.remaining.length,
+        errors: purge.errors,
+      });
+      return json(
+        {
+          error:
+            'Não foi possível remover todos os seus arquivos. Sua conta não foi excluída — tente novamente em alguns instantes.',
+        },
+        500,
+      );
     }
 
-    // Deleting the auth user cascades to every table referencing auth.users.
+    // ---- 2. Conta: o delete cascateia para todas as tabelas ----
     const { error: deleteError } = await admin.auth.admin.deleteUser(userId);
     if (deleteError) throw deleteError;
 
-    return json({ ok: true });
+    return json({ ok: true, filesDeleted: purge.deleted.length });
   } catch (deletionError) {
     console.error('delete_account_failure', deletionError);
     return json({ error: 'Não foi possível excluir a conta.' }, 500);

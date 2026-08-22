@@ -24,12 +24,24 @@ import type {
   Offer,
   Place,
   Profile,
+  CurrencyCode,
   ReservationRequest,
   Ticket,
   Trip,
 } from '@/domain/types';
-import { nowISO } from '@/lib/date';
-import { deleteStoredFile, persistFile, purgeAllFiles } from '@/lib/files';
+import { validateAvatar } from '@/domain/avatar';
+import { byEditorialOrder, isOfferLive } from '@/domain/offerWindow';
+import { parseUserRole } from '@/domain/roles';
+import { nowISO, todayISO } from '@/lib/date';
+import { deleteStoredFile, persistFile, purgeAllFiles, storedFileExists } from '@/lib/files';
+import {
+  ATTACHMENT_POLICY,
+  CONTENT_IMAGE_POLICY,
+  JOURNAL_POLICY,
+  managedContentPath,
+  managedPathBelongsTo,
+  validateUpload,
+} from '@/domain/upload';
 import { createId } from '@/lib/id';
 import { normalizeKey } from '@/data/images';
 import type {
@@ -67,6 +79,21 @@ const reservations = new LocalCollection<ReservationRequest>('reservations');
 const conversations = new LocalCollection<AIConversation>('aiConversations');
 const messages = new LocalCollection<AIMessage>('aiMessages');
 const insurance = new LocalCollection<InsurancePolicy>('insurance');
+/**
+ * Conteúdo editorial agora é persistido, e não mais lido direto de
+ * `catalog.ts`. A semente é o próprio catálogo: quem já usa o aplicativo
+ * continua vendo exatamente o mesmo conteúdo, e o que o administrador editar
+ * passa a valer por cima — sem que a Comunidade ou o diretório fiquem vazios
+ * enquanto o cadastro não existe.
+ */
+const articles = new LocalCollection<Article>('articles', () => ARTICLES);
+const places = new LocalCollection<Place>('places', () => PLACES);
+// P-05: até aqui estas duas eram lidas direto da constante importada, e por
+// isso nenhuma escrita tinha onde acontecer. Agora seguem o mesmo padrão das
+// outras — semeadas do catálogo, persistidas a partir daí.
+const offers = new LocalCollection<Offer>('offers', () => OFFERS);
+const advisors = new LocalCollection<Advisor>('advisors', () => ADVISORS);
+
 const articleLikes = new LocalCollection<{ id: string; userId: string; articleId: string }>(
   'articleLikes',
 );
@@ -151,7 +178,14 @@ const ticketRepository: TicketRepository = {
     if (ticket?.fileUrl) deleteStoredFile(ticket.fileUrl);
     await tickets.remove(id);
   },
-  uploadAttachment: (userId, tripId, file) => persistFile(['tickets', tripId], file),
+  async uploadAttachment(userId, tripId, file) {
+    // A mesma política do adaptador remoto. Ela mora nas duas fontes de
+    // propósito: sem isso, o que a tela aceita passaria a depender de o
+    // aplicativo estar em modo local ou conectado.
+    const validation = validateUpload(file, ATTACHMENT_POLICY);
+    if (!validation.ok) throw new Error(validation.message);
+    return persistFile(['tickets', tripId], file);
+  },
 };
 
 /* -------------------------------- journal --------------------------------- */
@@ -174,6 +208,8 @@ const journalRepository: JournalRepository = {
   },
   listMedia: (entryIds) => journalMedia.find((m) => entryIds.includes(m.journalEntryId)),
   async addMedia(entryId, userId, file) {
+    const validation = validateUpload(file, JOURNAL_POLICY);
+    if (!validation.ok) throw new Error(validation.message);
     const stored = await persistFile(['journal', entryId], file);
     const existing = await journalMedia.find((m) => m.journalEntryId === entryId);
     return journalMedia.insert({
@@ -210,34 +246,121 @@ const profileRepository: ProfileRepository = {
     const row = await profiles.byId(userId);
     if (!row) return null;
     const { id: _id, ...profile } = row;
-    return profile;
+    // Perfis gravados antes desta versão não têm a coluna; `parseUserRole` os
+    // lê como `user` em vez de deixar `role` chegar `undefined` na interface.
+    return { ...profile, role: parseUserRole(profile.role) } as Profile;
   },
-  async upsert(profile) {
-    const existing = await profiles.byId(profile.userId);
-    const row = { ...profile, id: profile.userId };
-    if (existing) await profiles.update(profile.userId, row);
-    else await profiles.insert(row);
-    return profile;
+  async update(userId, patch) {
+    const existing = await profiles.byId(userId);
+    // Espelho local do gatilho do Postgres (§7, §31): o papel vem do que já
+    // estava gravado e nunca da entrada. Perfil novo nasce `user`.
+    const role = parseUserRole(existing?.role);
+    // Só as chaves presentes: apagar o telefone grava `undefined`, não mexer
+    // nele mantém o que estava — a mesma distinção que o `toProfileRow` faz do
+    // lado do Supabase.
+    const merged = {
+      userId,
+      name: '',
+      defaultCurrency: 'BRL' as CurrencyCode,
+      ...(existing ?? {}),
+      ...patch,
+      role,
+      id: userId,
+    };
+    if (existing) await profiles.update(userId, merged);
+    else await profiles.insert(merged);
+    const { id: _id, ...profile } = merged;
+    return profile as Profile;
   },
-  uploadAvatar: (userId, file) => persistFile(['avatars', userId], file),
+
+  async replaceAvatar(userId, file) {
+    const validation = validateAvatar(file);
+    if (!validation.ok) throw new Error(validation.message);
+
+    const existing = await profiles.byId(userId);
+    const anterior = existing?.avatarPath;
+
+    // Mesma ordem do adaptador remoto: sobe, aponta, e só então apaga a
+    // anterior. Aqui não há rede, mas a ordem continua importando — uma cópia
+    // que falhe não pode deixar o usuário sem foto.
+    const stored = await persistFile(['avatars', userId], file);
+    const saved = await this.update(userId, {});
+    const next = { ...saved, avatarPath: stored.url, avatarUrl: stored.url, id: userId };
+    await profiles.update(userId, next);
+
+    if (anterior && anterior !== stored.url) deleteStoredFile(anterior);
+
+    const { id: _id, ...profile } = next;
+    return profile as Profile;
+  },
 };
 
 /* --------------------------------- content -------------------------------- */
 
 const contentRepository: ContentRepository = {
   async listOffers(): Promise<Offer[]> {
-    return OFFERS;
+    // Mesma regra da policy `offers_read` (0004), pela mesma função que o
+    // adaptador Supabase usa — publicada E dentro da vigência.
+    const today = todayISO();
+    const rows = await offers.find((o) => isOfferLive(o, today));
+    return rows.sort(byEditorialOrder);
   },
   async getOffer(id) {
-    return OFFERS.find((o) => o.id === id) ?? null;
+    return offers.byId(id);
+  },
+  async listAllOffers(): Promise<Offer[]> {
+    const rows = await offers.all();
+    return rows.sort(byEditorialOrder);
+  },
+  async upsertOffer(offer) {
+    const existing = await offers.byId(offer.id);
+    if (existing) return offers.update(offer.id, offer);
+    return offers.insert(offer);
+  },
+  async removeOffer(id) {
+    await offers.remove(id);
   },
   async listArticles(): Promise<Article[]> {
-    return ARTICLES.filter((a) => a.status === 'published').sort((a, b) =>
-      a.publishedAt < b.publishedAt ? 1 : -1,
-    );
+    const rows = await articles.find((a) => a.status === 'published');
+    return rows.sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1));
   },
   async getArticle(id) {
-    return ARTICLES.find((a) => a.id === id || a.slug === id) ?? null;
+    const rows = await articles.all();
+    return rows.find((a) => a.id === id || a.slug === id) ?? null;
+  },
+  async listAllArticles(): Promise<Article[]> {
+    const rows = await articles.all();
+    return rows.sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1));
+  },
+  async upsertArticle(article) {
+    const existing = await articles.byId(article.id);
+    if (existing) await articles.update(article.id, article);
+    else await articles.insert(article);
+    return article;
+  },
+  async uploadEditorialImage(kind, entityId, file) {
+    // Mesma validação do adaptador remoto, para as duas fontes recusarem o
+    // mesmo arquivo. O modo local não tem `is_admin()` — não há camada de
+    // autorização nenhuma aqui, como já acontece em `getArticle` e nos demais
+    // métodos administrativos.
+    const validation = validateUpload(file, CONTENT_IMAGE_POLICY);
+    if (!validation.ok) throw new Error(validation.message);
+    return persistFile(['content', kind, entityId], file);
+  },
+  async removeEditorialImage(kind, entityId, imageUrl) {
+    // A mesma regra do adaptador remoto, com o mesmo reconhecedor: só sai o
+    // arquivo que este aplicativo gravou para este registro. A URL do Unsplash
+    // que veio do catálogo não é apagável — e nem deveria ser tentada.
+    const path = managedContentPath(imageUrl);
+    if (!path || !managedPathBelongsTo(path, kind, entityId)) return;
+    // `deleteStoredFile` já ignora arquivo ausente: repetir a exclusão
+    // converge, como no lado remoto.
+    deleteStoredFile(imageUrl!);
+  },
+  async removeArticle(id) {
+    await articles.remove(id);
+    // Curtidas de um artigo que deixou de existir só ocupariam espaço.
+    await articleLikes.removeWhere((l) => l.articleId === id);
   },
   async listLikedArticleIds(userId) {
     const rows = await articleLikes.find((l) => l.userId === userId);
@@ -261,7 +384,7 @@ const contentRepository: ContentRepository = {
 
 const placeRepository: PlaceRepository = {
   async list(params): Promise<Place[]> {
-    let rows = PLACES;
+    let rows = await places.all();
     if (params?.type) rows = rows.filter((p) => p.type === params.type);
     if (params?.city) {
       const city = normalizeKey(params.city);
@@ -280,7 +403,17 @@ const placeRepository: PlaceRepository = {
     return rows;
   },
   async get(id) {
-    return PLACES.find((p) => p.id === id) ?? null;
+    return places.byId(id);
+  },
+  async upsert(place) {
+    const existing = await places.byId(place.id);
+    if (existing) await places.update(place.id, place);
+    else await places.insert(place);
+    return place;
+  },
+  async remove(id) {
+    await places.remove(id);
+    await placeFavorites.removeWhere((f) => f.placeId === id);
   },
   async listFavoriteIds(userId) {
     const rows = await placeFavorites.find((f) => f.userId === userId);
@@ -302,18 +435,39 @@ const placeRepository: PlaceRepository = {
 
 const advisorRepository: AdvisorRepository = {
   async list(): Promise<Advisor[]> {
-    return ADVISORS;
+    const rows = await advisors.find((a) => a.active);
+    return rows.sort((a, b) => a.name.localeCompare(b.name));
   },
   async get(id) {
-    return ADVISORS.find((a) => a.id === id) ?? null;
+    return advisors.byId(id);
+  },
+  async listAll(): Promise<Advisor[]> {
+    const rows = await advisors.all();
+    return rows.sort((a, b) => a.name.localeCompare(b.name));
+  },
+  async upsert(advisor) {
+    const existing = await advisors.byId(advisor.id);
+    if (existing) return advisors.update(advisor.id, advisor);
+    return advisors.insert(advisor);
+  },
+  async remove(id) {
+    // Só o cadastro. As consultas continuam de pé — ver o contrato.
+    await advisors.remove(id);
   },
   async listConsultations(userId) {
     const rows = await consultations.find((c) => c.userId === userId);
-    return rows.sort((a, b) => (a.scheduledAt < b.scheduledAt ? 1 : -1));
+    // Por `createdAt`. `scheduledAt` é o texto que a pessoa escreveu — ordenar
+    // por ele comparava "amanhã cedo" com "20/09 às 15h" como string (P-03).
+    return rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   },
   async requestConsultation(input) {
     // Always lands as `requested` — an advisor still has to accept it (§46).
-    return consultations.insert({ ...input, id: createId(), status: input.status ?? 'requested' });
+    return consultations.insert({
+      ...input,
+      id: createId(),
+      status: input.status ?? 'requested',
+      createdAt: nowISO(),
+    });
   },
   async cancelConsultation(id) {
     await consultations.update(id, { status: 'cancelled' });
@@ -400,6 +554,18 @@ export const localDataSource: DataSource = {
   reservations: reservationRepository,
   ai: aiRepository,
   insurance: insuranceRepository,
+  /**
+   * No modo local o arquivo **já é** local: `persistFile` copia o que o usuário
+   * escolheu para o diretório do aplicativo, e é essa URI que fica gravada.
+   * Não há o que baixar nem espelhar — a disponibilidade offline aqui é a
+   * situação original que a D-04 existe para não perder ao ligar o Storage.
+   */
+  files: {
+    isAvailableOffline: (_kind, filePath) => storedFileExists(filePath),
+    ensureOfflineCopy: async (_kind, filePath) =>
+      storedFileExists(filePath) ? filePath : undefined,
+    purgeLocalCopies: () => purgeAllFiles(),
+  },
 
   async purgeUserData(userId) {
     const userTrips = await trips.find((t) => t.userId === userId);
@@ -422,6 +588,8 @@ export const localDataSource: DataSource = {
 /** Exposed for the seeding routine and for tests. */
 export const localCollections = {
   trips,
+  offers,
+  advisors,
   itinerary,
   checklist,
   expenses,

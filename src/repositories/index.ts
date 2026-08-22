@@ -13,4 +13,10 @@ import type { DataSource } from './types';
 export const dataSource: DataSource = config.hasSupabase ? supabaseDataSource : localDataSource;
 
 export * from './types';
-export { authAdapter, AuthError, type AuthSession } from './auth';
+export {
+  authAdapter,
+  AuthError,
+  type AuthSession,
+  type RecoveryGrant,
+  type SignUpOutcome,
+} from './auth';

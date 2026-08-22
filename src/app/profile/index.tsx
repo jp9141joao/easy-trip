@@ -31,6 +31,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
+import { validateAvatar } from '@/domain/avatar';
 import { getTravelStats } from '@/domain/selectors';
 import { profileSchema, type ProfileInput } from '@/domain/schemas';
 import {
@@ -110,12 +111,24 @@ export default function ProfileScreen() {
       if (result.canceled || !result.assets?.[0]) return;
       const asset = result.assets[0];
       const name = asset.fileName ?? `avatar-${Date.now()}.jpg`;
-      await uploadAvatar.mutateAsync({
+      const file = {
         uri: asset.uri,
         name,
         mimeType: asset.mimeType ?? guessMimeType(name, 'image/jpeg'),
         size: asset.fileSize,
-      });
+      };
+
+      // A mesma verificação roda de novo no repositório, e o bucket tem os
+      // próprios limites (0006). Esta primeira passagem existe para o usuário
+      // saber *o que* houve — "essa imagem tem mais de 5 MB" em vez de uma
+      // falha de upload depois de esperar.
+      const validation = validateAvatar(file);
+      if (!validation.ok) {
+        toast.warning(validation.message);
+        return;
+      }
+
+      await uploadAvatar.mutateAsync(file);
       toast.success('Foto atualizada');
     } catch {
       toast.error('Não foi possível atualizar a foto.');
@@ -164,7 +177,9 @@ export default function ProfileScreen() {
                 <View style={{ position: 'absolute', bottom: -4, right: -4 }}>
                   <IconButton
                     icon={Camera}
-                    accessibilityLabel="Alterar foto do perfil"
+                    accessibilityLabel={
+                      uploadAvatar.isPending ? 'Enviando foto…' : 'Alterar foto do perfil'
+                    }
                     onPress={() => void changeAvatar()}
                     background="primary"
                     size={16}

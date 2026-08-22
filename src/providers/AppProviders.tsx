@@ -6,6 +6,7 @@ import { ToastProvider } from '@/components/ui';
 import { ThemeProvider } from '@/theme';
 import { AuthProvider } from './AuthProvider';
 import { ConnectivityProvider } from './ConnectivityProvider';
+import { QueryPersistence } from './QueryPersistence';
 import { TripSelectionProvider } from './TripSelectionProvider';
 
 function createQueryClient() {
@@ -39,6 +40,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
           <ToastProvider>
             <ConnectivityProvider>
               <AuthProvider>
+                <QueryPersistence />
                 <TripSelectionProvider>{children}</TripSelectionProvider>
               </AuthProvider>
             </ConnectivityProvider>

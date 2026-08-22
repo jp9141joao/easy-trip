@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useRouter } from 'expo-router';
+import { MailCheck } from 'lucide-react-native';
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
@@ -10,6 +10,7 @@ import {
   AppHeader,
   AppText,
   Button,
+  InlineNotice,
   PasswordField,
   SelectField,
   TextField,
@@ -25,11 +26,11 @@ import { useTheme } from '@/theme';
 
 export default function RegisterScreen() {
   const theme = useTheme();
-  const router = useRouter();
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const { signUp } = useAuth();
   const [formError, setFormError] = useState<string | null>(null);
+  const [pendingEmail, setPendingEmail] = useState<string | null>(null);
 
   const { control, handleSubmit, formState } = useForm<RegisterInput>({
     resolver: zodResolver(registerSchema),
@@ -45,15 +46,25 @@ export default function RegisterScreen() {
   const onSubmit = async (values: RegisterInput) => {
     setFormError(null);
     try {
-      await signUp({
+      const outcome = await signUp({
         name: values.name,
         email: values.email,
         password: values.password,
         defaultCurrency: values.defaultCurrency as CurrencyCode,
         travelStyle: values.travelStyle as TravelStyle | undefined,
       });
+
+      // Cadastrar tem dois finais, e qual deles acontece depende de o projeto
+      // exigir ou não confirmação de e-mail. Os dois deram certo — o que muda é
+      // o que a pessoa precisa fazer agora.
+      if (outcome.status === 'confirmation-required') {
+        setPendingEmail(outcome.email);
+        return;
+      }
+
       toast.success('Conta criada. Bem-vindo ao Easy Trip!');
-      router.replace('/(tabs)');
+      // A entrada no aplicativo é consequência de haver sessão: a proteção do
+      // stack troca as rotas sozinha, sem navegação manual competindo com ela.
     } catch (error) {
       setFormError(
         error instanceof AuthError
@@ -86,13 +97,22 @@ export default function RegisterScreen() {
           <View style={{ alignItems: 'center', gap: theme.spacing.sm }}>
             <BrandMark size="md" showWordmark={false} />
             <AppText variant="h1" align="center">
-              Criar conta
+              {pendingEmail ? 'Confirme seu e-mail' : 'Criar conta'}
             </AppText>
             <AppText variant="bodySmall" color="secondary" align="center">
-              Leva menos de um minuto. As preferências podem ser ajustadas depois.
+              {pendingEmail
+                ? `A conta foi criada. Enviamos um link de confirmação para ${pendingEmail} — abra-o para concluir o acesso.`
+                : 'Leva menos de um minuto. As preferências podem ser ajustadas depois.'}
             </AppText>
           </View>
 
+          {pendingEmail ? (
+            <InlineNotice icon={MailCheck} tone="success">
+              Não recebeu? Verifique a caixa de spam. O link vale por tempo limitado; depois
+              disso, use &quot;Esqueci minha senha&quot; para receber outro.
+            </InlineNotice>
+          ) : (
+          <>
           <View style={{ gap: theme.spacing.lg }}>
             <Controller
               control={control}
@@ -225,6 +245,8 @@ export default function RegisterScreen() {
             loading={formState.isSubmitting}
             onPress={handleSubmit(onSubmit)}
           />
+          </>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
