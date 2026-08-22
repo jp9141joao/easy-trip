@@ -69,10 +69,14 @@ function FloatingDock({ state, navigation }: BottomTabBarProps) {
         style={[
           {
             flexDirection: 'row',
-            backgroundColor: theme.colors.surfaceElevated,
+            // Papel próprio: no claro a navbar era branca sobre quase branco
+            // e lia como um retângulo solto. Agora a superfície e a borda da
+            // navegação são tokens dedicados (§4). No escuro os dois valores
+            // são exatamente `surfaceElevated` e `border`, então nada muda.
+            backgroundColor: theme.colors.navigation,
             borderRadius: theme.radius.pill,
             borderWidth: 1,
-            borderColor: theme.colors.border,
+            borderColor: theme.colors.navigationBorder,
             paddingVertical: theme.spacing.sm,
             paddingHorizontal: theme.spacing.sm,
           },
@@ -109,7 +113,7 @@ function FloatingDock({ state, navigation }: BottomTabBarProps) {
                 gap: 3,
                 paddingVertical: theme.spacing.sm,
                 borderRadius: theme.radius.pill,
-                backgroundColor: focused ? theme.colors.primarySoft : 'transparent',
+                backgroundColor: focused ? theme.colors.navigationActive : 'transparent',
                 minHeight: theme.hitTarget,
               }}
             >

@@ -239,7 +239,14 @@ export interface ReservationRepository {
 
 export interface AIRepository {
   listConversations(userId: string, tripId?: string): Promise<AIConversation[]>;
+  /** A conversa mais recente da viagem, ou uma nova se ainda não houver. */
   getOrCreateConversation(userId: string, tripId?: string): Promise<AIConversation>;
+  /**
+   * Abre uma conversa nova sem tocar nas anteriores — é o que "Novo chat"
+   * faz. Deliberadamente diferente de `clearConversation`: começar de novo não
+   * pode significar apagar o histórico que o usuário já tinha.
+   */
+  createConversation(userId: string, tripId?: string): Promise<AIConversation>;
   listMessages(conversationId: string): Promise<AIMessage[]>;
   addMessage(input: Omit<AIMessage, 'id' | 'createdAt'>): Promise<AIMessage>;
   clearConversation(conversationId: string): Promise<void>;

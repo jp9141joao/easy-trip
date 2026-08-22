@@ -1,25 +1,11 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import {
-  Bot,
-  CalendarCheck,
-  Info,
-  RefreshCw,
-  Send,
-  Sparkles,
-  UserRoundCheck,
-} from 'lucide-react-native';
+import { Bot, CalendarCheck, Info, Plus, Sparkles, UserRoundCheck } from 'lucide-react-native';
 import { useEffect, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import {
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  TextInput,
-  View,
-} from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AIComposer, TripContextCard, TripPickerSheet } from '@/components/ai';
 import { AdvisorCard } from '@/components/cards';
 import { Markdown } from '@/components/Markdown';
 import {
@@ -29,6 +15,7 @@ import {
   Button,
   Chip,
   ChipRow,
+  ConfirmDialog,
   EmptyState,
   GlassCard,
   InlineNotice,
@@ -46,9 +33,10 @@ import { consultationSchema, type ConsultationInput } from '@/domain/schemas';
 import type { Advisor } from '@/domain/types';
 import { useAIConversation } from '@/hooks/useAI';
 import { useAdvisors, useConsultations } from '@/hooks/useContent';
-import { useCurrentTrip } from '@/hooks/useTrips';
-import { formatLongDate } from '@/lib/date';
+import { useTrips } from '@/hooks/useTrips';
+import { useTripSelection } from '@/providers/TripSelectionProvider';
 import { CONSULTATION_STATUS_HINT, CONSULTATION_STATUS_LABEL } from '@/lib/labels';
+import { markdownToPlainText } from '@/lib/markdown';
 import { AI_SUGGESTIONS } from '@/services/ai';
 import { useTheme } from '@/theme';
 
@@ -276,12 +264,42 @@ function ExpertsTab() {
 function AITab() {
   const theme = useTheme();
   const toast = useToast();
-  const { trip } = useCurrentTrip();
-  const { messages, send, clear, kind, isLoading } = useAIConversation(trip);
-  const [draft, setDraft] = useState('');
-  const scrollRef = useRef<ScrollView>(null);
   const insets = useSafeAreaInsets();
   const keyboardVisible = useKeyboardVisible();
+
+  /*
+   * Contexto da IA é estado desta tela, não o estado global do app (§1).
+   *
+   * `currentTripId` continua sendo "a viagem que o app está mostrando" e é
+   * usado aqui apenas como pré-seleção de conveniência — e só se aquele id
+   * estiver mesmo na lista do usuário. Escolher outra viagem para a IA não
+   * mexe na viagem ativa do restante do app: são duas perguntas diferentes
+   * ("o que estou vendo?" e "sobre o que estou perguntando?"), e amarrar as
+   * duas foi justamente o que deixou o contexto implícito.
+   */
+  const { data: trips = [], isLoading: tripsLoading } = useTrips();
+  const { currentTripId } = useTripSelection();
+  const [aiTripId, setAiTripId] = useState<string | null>(null);
+  const [chosen, setChosen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [confirmNewChat, setConfirmNewChat] = useState(false);
+
+  useEffect(() => {
+    if (chosen) return;
+    if (currentTripId && trips.some((item) => item.id === currentTripId)) setAiTripId(currentTripId);
+  }, [chosen, currentTripId, trips]);
+
+  // Viagem excluída não pode continuar sendo o contexto: a referência órfã sai
+  // e a tela volta ao estado "selecione uma viagem".
+  useEffect(() => {
+    if (aiTripId && !trips.some((item) => item.id === aiTripId)) setAiTripId(null);
+  }, [aiTripId, trips]);
+
+  const trip = trips.find((item) => item.id === aiTripId) ?? null;
+
+  const { messages, send, newChat, kind, isLoading } = useAIConversation(trip);
+  const [draft, setDraft] = useState('');
+  const scrollRef = useRef<ScrollView>(null);
 
   // Abrir o teclado também reposiciona a conversa: quem começa a digitar quer
   // ver a última mensagem, não o topo do histórico (§12). O atraso curto deixa
@@ -294,13 +312,45 @@ function AITab() {
 
   const submit = async (text: string) => {
     const prompt = text.trim();
-    if (!prompt || send.isPending) return;
+    // Sem viagem escolhida a pergunta não sai — não existe contexto para ela.
+    if (!prompt || !trip || send.isPending) return;
     setDraft('');
     try {
       await send.mutateAsync(prompt);
     } catch {
       toast.error('Não foi possível obter uma resposta agora. Tente novamente.');
     }
+  };
+
+  const selectTrip = (tripId: string) => {
+    setChosen(true);
+    setAiTripId(tripId);
+    setPickerOpen(false);
+    // A conversa que aparece a seguir é a daquela viagem: contexto, histórico e
+    // thread trocam juntos, então a próxima pergunta já sai com os dados novos
+    // e nada de Paris atravessa para Tóquio.
+    setDraft('');
+    send.reset();
+  };
+
+  const startNewChat = async () => {
+    setConfirmNewChat(false);
+    try {
+      await newChat.mutateAsync();
+      setDraft('');
+      toast.success('Novo chat iniciado. A conversa anterior continua salva.');
+    } catch {
+      toast.error('Não foi possível iniciar um novo chat agora. Tente novamente.');
+    }
+  };
+
+  const requestNewChat = () => {
+    if (!trip) return;
+    if (messages.length === 0) {
+      void startNewChat();
+      return;
+    }
+    setConfirmNewChat(true);
   };
 
   return (
@@ -325,6 +375,51 @@ function AITab() {
       behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
     >
+      {/* Contexto e "Novo chat" ficam fixos no topo: são os dois controles que
+          o usuário precisa achar sem rolar a conversa (§1, §2). */}
+      <View
+        style={{
+          paddingHorizontal: theme.spacing.screen,
+          paddingTop: theme.spacing.lg,
+          gap: theme.spacing.sm,
+        }}
+      >
+        <TripContextCard
+          trip={trip}
+          onPress={() => setPickerOpen(true)}
+          disabled={tripsLoading}
+        />
+
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+          <Pressable
+            onPress={requestNewChat}
+            disabled={!trip || newChat.isPending}
+            accessibilityRole="button"
+            accessibilityLabel="Novo chat"
+            accessibilityHint="Inicia uma conversa nova com a viagem selecionada"
+            accessibilityState={{ disabled: !trip || newChat.isPending }}
+            hitSlop={theme.hitSlop}
+            style={({ pressed }) => ({
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+              minHeight: 36,
+              paddingHorizontal: theme.spacing.md,
+              borderRadius: theme.radius.pill,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              backgroundColor: pressed ? theme.colors.surfaceMuted : theme.colors.surface,
+              opacity: !trip || newChat.isPending ? 0.5 : 1,
+            })}
+          >
+            <Plus size={14} color={theme.colors.primary} />
+            <AppText variant="caption" color="brand" weight="semibold">
+              Novo chat
+            </AppText>
+          </Pressable>
+        </View>
+      </View>
+
       <ScrollView
         ref={scrollRef}
         showsVerticalScrollIndicator={false}
@@ -336,7 +431,7 @@ function AITab() {
         keyboardDismissMode="on-drag"
         contentContainerStyle={{
           paddingHorizontal: theme.spacing.screen,
-          paddingTop: theme.spacing.xl,
+          paddingTop: theme.spacing.lg,
           paddingBottom: theme.spacing.xl,
           gap: theme.spacing.md,
         }}
@@ -349,23 +444,20 @@ function AITab() {
           </InlineNotice>
         ) : null}
 
-        {trip ? (
-          <GlassCard elevation="flat">
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}>
-              <Sparkles size={18} color={theme.colors.primary} />
-              <AppText variant="caption" color="secondary" style={{ flex: 1 }}>
-                Contexto ativo: <AppText variant="caption" weight="bold">{trip.destinationCity}</AppText>
-                {' '}· {formatLongDate(trip.startDate)}
-              </AppText>
-            </View>
+        {!trip ? (
+          <GlassCard>
+            <EmptyState
+              icon={Sparkles}
+              title={trips.length === 0 ? 'Crie uma viagem primeiro' : 'Escolha uma viagem'}
+              message={
+                trips.length === 0
+                  ? 'O assistente responde a partir dos dados de uma viagem sua. Crie uma viagem para começar.'
+                  : 'Selecione uma viagem para que a IA use roteiro, gastos, checklist e orçamento como contexto.'
+              }
+              compact
+            />
           </GlassCard>
-        ) : (
-          <InlineNotice icon={Info}>
-            Selecione uma viagem para que o assistente use seu roteiro, checklist e orçamento.
-          </InlineNotice>
-        )}
-
-        {isLoading ? (
+        ) : isLoading ? (
           <SkeletonList count={2} lines={2} />
         ) : messages.length === 0 ? (
           <GlassCard>
@@ -386,7 +478,7 @@ function AITab() {
                 Easy Trip IA
               </AppText>
               <AppText variant="bodySmall" color="secondary" align="center">
-                Seu concierge de viagem. Pergunte sobre orçamento, roteiro ou o que ainda falta
+                Perguntas sobre {trip.destinationCity}: orçamento, roteiro ou o que ainda falta
                 organizar.
               </AppText>
             </View>
@@ -398,21 +490,16 @@ function AITab() {
         {send.isPending ? <TypingIndicator /> : null}
       </ScrollView>
 
-      {/* Quick suggestions (§50) */}
-      <View style={{ paddingLeft: theme.spacing.screen, paddingBottom: theme.spacing.sm }}>
-        <ChipRow>
-          {AI_SUGGESTIONS.map((suggestion) => (
-            <Chip
-              key={suggestion}
-              label={suggestion}
-              onPress={() => void submit(suggestion)}
-            />
-          ))}
-          {messages.length > 0 ? (
-            <Chip label="Limpar conversa" icon={RefreshCw} onPress={() => void clear.mutateAsync()} />
-          ) : null}
-        </ChipRow>
-      </View>
+      {/* Quick suggestions (§50) — só fazem sentido com contexto escolhido. */}
+      {trip ? (
+        <View style={{ paddingLeft: theme.spacing.screen, paddingBottom: theme.spacing.sm }}>
+          <ChipRow>
+            {AI_SUGGESTIONS.map((suggestion) => (
+              <Chip key={suggestion} label={suggestion} onPress={() => void submit(suggestion)} />
+            ))}
+          </ChipRow>
+        </View>
+      ) : null}
 
       {/*
         O espaço reservado embaixo existe para o dock flutuante, não para o
@@ -421,65 +508,38 @@ function AITab() {
         área segura do aparelho — continua sendo um valor do sistema, não um
         número mágico atrelado a tamanho de teclado (§3, §6).
       */}
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'flex-end',
-          gap: theme.spacing.sm,
-          paddingHorizontal: theme.spacing.screen,
-          paddingBottom: keyboardVisible
+      <AIComposer
+        value={draft}
+        onChangeText={setDraft}
+        onSubmit={(text) => void submit(text)}
+        disabled={!trip}
+        pending={send.isPending}
+        disabledHint="Selecione uma viagem para conversar com a IA"
+        paddingBottom={
+          keyboardVisible
             ? Math.max(insets.bottom, theme.spacing.sm)
-            : DOCK_CLEARANCE - theme.spacing.md,
-        }}
-      >
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: theme.colors.surface,
-            borderRadius: theme.radius.input,
-            borderWidth: 1,
-            borderColor: theme.colors.border,
-            paddingHorizontal: theme.spacing.lg,
-            maxHeight: 120,
-            justifyContent: 'center',
-          }}
-        >
-          <TextInput
-            value={draft}
-            onChangeText={setDraft}
-            placeholder="Pergunte sobre sua viagem"
-            placeholderTextColor={theme.colors.textTertiary}
-            accessibilityLabel="Mensagem para a Easy Trip IA"
-            multiline
-            style={{
-              fontFamily: theme.fontFamily.body,
-              fontSize: theme.typography.body.size,
-              color: theme.colors.textPrimary,
-              paddingVertical: theme.spacing.md,
-              minHeight: 48,
-            }}
-          />
-        </View>
+            : DOCK_CLEARANCE - theme.spacing.md
+        }
+      />
 
-        <Pressable
-          onPress={() => void submit(draft)}
-          disabled={!draft.trim() || send.isPending}
-          accessibilityRole="button"
-          accessibilityLabel="Enviar mensagem"
-          accessibilityState={{ disabled: !draft.trim() || send.isPending }}
-          style={({ pressed }) => ({
-            width: 48,
-            height: 48,
-            borderRadius: 24,
-            backgroundColor: theme.colors.primary,
-            alignItems: 'center',
-            justifyContent: 'center',
-            opacity: !draft.trim() || send.isPending ? 0.4 : pressed ? 0.8 : 1,
-          })}
-        >
-          <Send size={20} color={theme.colors.textOnPrimary} />
-        </Pressable>
-      </View>
+      <TripPickerSheet
+        visible={pickerOpen}
+        trips={trips}
+        selectedTripId={aiTripId}
+        onSelect={selectTrip}
+        onClose={() => setPickerOpen(false)}
+      />
+
+      <ConfirmDialog
+        visible={confirmNewChat}
+        title="Iniciar novo chat?"
+        message="A conversa atual será encerrada nesta tela. Ela continua salva no seu histórico."
+        confirmLabel="Novo chat"
+        cancelLabel="Cancelar"
+        loading={newChat.isPending}
+        onConfirm={() => void startNewChat()}
+        onCancel={() => setConfirmNewChat(false)}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -496,17 +556,27 @@ function MessageBubble({
     <View
       style={{
         alignSelf: isUser ? 'flex-end' : 'flex-start',
-        maxWidth: '88%',
-        backgroundColor: isUser ? theme.colors.primary : theme.colors.surface,
+        // A bolha da IA é mais larga que a do usuário de propósito: ela carrega
+        // listas e títulos, e a do usuário carrega uma frase.
+        maxWidth: isUser ? '88%' : '96%',
+        // A bolha da IA tem papel próprio: no claro ela precisava se separar do
+        // fundo, e no escuro os tokens repetem `surface`/`border` (§4).
+        backgroundColor: isUser ? theme.colors.primary : theme.colors.bubbleAssistant,
         borderRadius: theme.radius.card,
         borderTopRightRadius: isUser ? 6 : theme.radius.card,
         borderTopLeftRadius: isUser ? theme.radius.card : 6,
         borderWidth: isUser ? 0 : 1,
-        borderColor: theme.colors.border,
-        padding: theme.spacing.lg,
+        borderColor: theme.colors.bubbleAssistantBorder,
+        // Resposta longa com títulos e listas precisa de respiro: apertado, a
+        // hierarquia do Markdown some (§4).
+        paddingVertical: theme.spacing.lg,
+        paddingHorizontal: isUser ? theme.spacing.lg : theme.spacing.xl,
       }}
       accessible
-      accessibilityLabel={`${isUser ? 'Você' : 'Easy Trip IA'}: ${message.content}`}
+      // O leitor de tela ouve a frase, não a pontuação do Markdown.
+      accessibilityLabel={`${isUser ? 'Você' : 'Easy Trip IA'}: ${
+        isUser ? message.content : markdownToPlainText(message.content)
+      }`}
     >
       {isUser ? (
         <AppText variant="body" color="onPrimary">
@@ -529,10 +599,10 @@ function TypingIndicator() {
         flexDirection: 'row',
         alignItems: 'center',
         gap: theme.spacing.sm,
-        backgroundColor: theme.colors.surface,
+        backgroundColor: theme.colors.bubbleAssistant,
         borderRadius: theme.radius.card,
         borderWidth: 1,
-        borderColor: theme.colors.border,
+        borderColor: theme.colors.bubbleAssistantBorder,
         paddingVertical: theme.spacing.md,
         paddingHorizontal: theme.spacing.lg,
       }}

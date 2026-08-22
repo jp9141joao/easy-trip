@@ -504,7 +504,14 @@ const aiRepository: AIRepository = {
     const existing = await conversations.find(
       (c) => c.userId === userId && c.tripId === tripId,
     );
-    if (existing.length) return existing[0];
+    // A mais recente, e não "a primeira que aparecer": depois de um "Novo
+    // chat" existe mais de uma conversa para a mesma viagem, e reabrir a tela
+    // tem de cair na que o usuário estava usando.
+    const [latest] = existing.sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1));
+    if (latest) return latest;
+    return aiRepository.createConversation(userId, tripId);
+  },
+  createConversation(userId, tripId) {
     const timestamp = nowISO();
     return conversations.insert({
       id: createId(),

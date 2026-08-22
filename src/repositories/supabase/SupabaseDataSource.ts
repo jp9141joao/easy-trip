@@ -1330,7 +1330,13 @@ export const supabaseDataSource: DataSource = {
     async getOrCreateConversation(userId, tripId) {
       let query = db().from('ai_conversations').select('*').eq('user_id', userId);
       query = tripId ? query.eq('trip_id', tripId) : query.is('trip_id', null);
-      const existing = await query.limit(1).maybeSingle();
+      // Ordenado, e não apenas `limit(1)`: depois de um "Novo chat" existe
+      // mais de uma conversa para a mesma viagem, e sem ordenação o Postgres
+      // pode devolver qualquer uma delas — a tela reabriria num chat antigo.
+      const existing = await query
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
       if (existing.data) {
         return {
           id: existing.data.id,
@@ -1340,6 +1346,9 @@ export const supabaseDataSource: DataSource = {
           updatedAt: existing.data.updated_at,
         };
       }
+      return supabaseDataSource.ai.createConversation(userId, tripId);
+    },
+    async createConversation(userId, tripId) {
       const result = await db()
         .from('ai_conversations')
         .insert(prune({ user_id: userId, trip_id: tripId }))

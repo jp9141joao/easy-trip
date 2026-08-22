@@ -269,7 +269,10 @@ export function SegmentedTabs<T extends string>({
     <View
       style={{
         flexDirection: 'row',
-        backgroundColor: theme.colors.surfaceMuted,
+        // Trilho com tom próprio: no claro `surfaceMuted` e `surface` eram
+        // dois brancos, então a pastilha selecionada não se destacava de nada
+        // (§4). No escuro os dois tokens repetem os valores antigos.
+        backgroundColor: theme.colors.segmentTrack,
         borderRadius: theme.radius.pill,
         padding: 4,
         gap: 4,
@@ -289,7 +292,7 @@ export function SegmentedTabs<T extends string>({
               paddingHorizontal: theme.spacing.lg,
               paddingVertical: theme.spacing.sm + 2,
               borderRadius: theme.radius.pill,
-              backgroundColor: active ? theme.colors.surface : 'transparent',
+              backgroundColor: active ? theme.colors.segmentSelected : 'transparent',
               alignItems: 'center',
               justifyContent: 'center',
               flexDirection: 'row',

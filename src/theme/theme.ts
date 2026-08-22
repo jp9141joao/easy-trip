@@ -53,9 +53,39 @@ export interface Palette {
 
   border: string;
   borderStrong: string;
+  /** Linha divisória interna — mais leve que `border`, nunca estrutural. */
+  divider: string;
   /** Scrim over hero photography to guarantee contrast (§75). */
   scrim: string;
   skeleton: string;
+
+  /**
+   * Papéis semânticos das superfícies que o tema claro precisava distinguir e
+   * não distinguia (§4).
+   *
+   * No escuro cada um deles recebe exatamente o valor que o componente já usava
+   * antes de existir o papel — `input` é o `surface` do escuro, `navigation` é o
+   * `surfaceElevated`, e assim por diante. Por construção, portanto, o tema
+   * escuro renderiza igual ao que foi aprovado; quem ganha vocabulário novo é
+   * só o claro, onde tudo isso colapsava em branco.
+   */
+  /** Campo de entrada — recuado em relação ao card que o contém. */
+  input: string;
+  inputBorder: string;
+  /** Dock flutuante e barras de navegação. */
+  navigation: string;
+  navigationBorder: string;
+  /** Fundo do item ativo da navegação. */
+  navigationActive: string;
+  /** Trilho do segmented control e a pastilha selecionada. */
+  segmentTrack: string;
+  segmentSelected: string;
+  /** Bolha da IA no chat — a do usuário usa `primary`. */
+  bubbleAssistant: string;
+  bubbleAssistantBorder: string;
+  /** Card informativo com a identidade da marca (contexto da IA, destaques). */
+  surfaceAccent: string;
+  surfaceAccentBorder: string;
 
   /**
    * Chips de status e contagem regressiva (§32).
@@ -197,30 +227,60 @@ const countdownRoles: Record<CountdownRole, TonalRole> = {
 };
 
 const lightPalette: Palette = {
-  background: slate[50],
+  /*
+   * Tema claro — refino (§4).
+   *
+   * O diagnóstico do claro anterior era simples: quase tudo era `#FFFFFF` ou
+   * um branco a 1–2/255 dele. Fundo `slate[50]`, card branco, navbar branca,
+   * pastilha do segmented control branca sobre trilho quase branco. Não havia
+   * hierarquia de superfície nenhuma — só sombra tentando fazer o trabalho que
+   * a cor deveria fazer — e os tons "soft" da marca (`ocean[50]`, `coral[50]`)
+   * eram claros demais para aparecer sobre branco, o que deixava todo elemento
+   * decorativo lavado.
+   *
+   * A correção é uma escala fria de verdade: o fundo desce para um off-white
+   * azulado, o card sobe para branco puro (agora é ele o ponto mais alto), e
+   * abaixo do fundo existe um degrau recuado (`surfaceMuted`, `input`) para
+   * campos e trilhos. Três degraus visíveis, não três brancos.
+   */
+  background: '#EDF2F9',
   surface: '#FFFFFF',
   surfaceElevated: '#FFFFFF',
   // Quase opaco de propósito. A 0.72 o card ficava a 1/255 do fundo — sem
   // aresta própria, existindo só pela sombra — e qualquer coisa translúcida
-  // deixava o gradiente da aurora vazar em manchas dentro dele. A 0.96 o card
+  // deixava o gradiente da aurora vazar em manchas dentro dele. A 0.97 o card
   // é uma superfície de verdade e continua com um fio de translucidez.
-  glass: 'rgba(255,255,255,0.96)',
+  glass: 'rgba(255,255,255,0.97)',
   // A borda era branca *sobre* um preenchimento branco: ela apagava a aresta em
   // vez de defini-la. No claro a borda precisa ser mais escura que o card.
-  glassBorder: 'rgba(15,23,42,0.08)',
-  surfaceMuted: slate[100],
+  glassBorder: 'rgba(15,23,42,0.09)',
+  surfaceMuted: '#E3EBF5',
 
   textPrimary: slate[900],
   textSecondary: slate[600],
-  textTertiary: slate[400],
+  // `slate[400]` rendia 2.27:1 sobre o fundo claro — era ele que deixava
+  // rótulos de aba inativa e placeholders ilegíveis. Este tom frio passa em
+  // AA (4.8:1) sem virar um segundo `textSecondary`.
+  textTertiary: '#5B6B85',
   textOnPrimary: '#FFFFFF',
   textOnImage: '#FFFFFF',
 
-  primary: ocean[500],
-  primaryPressed: ocean[600],
-  primarySoft: ocean[50],
-  accent: coral[500],
-  accentSoft: coral[50],
+  /*
+   * O azul interativo do claro é o `ocean[700]`, não o `ocean[500]`.
+   *
+   * Texto branco sobre `ocean[500]` rende 2.77:1 — o botão principal do app
+   * reprovava em AA, e "brand" como cor de texto sobre branco reprovava junto.
+   * Com o 700 o botão vai a 5.87:1 e o texto de marca sobre superfície clara
+   * acompanha. O ciano da identidade não some: ele continua vivo nos tons
+   * soft, na aurora e no tema escuro, que é onde ele de fato brilha.
+   */
+  primary: ocean[700],
+  primaryPressed: ocean[800],
+  // `ocean[50]` (#F0F9FF) some sobre branco — era a causa dos elementos
+  // decorativos lavados. O 100 é o primeiro degrau que se vê de verdade.
+  primarySoft: ocean[100],
+  accent: coral[600],
+  accentSoft: coral[100],
 
   success: semantic.success,
   successSoft: semantic.successSoft,
@@ -230,10 +290,26 @@ const lightPalette: Palette = {
   errorPressed: '#DC2626',
   errorSoft: semantic.errorSoft,
 
-  border: slate[200],
-  borderStrong: slate[300],
+  border: '#DCE4EF',
+  borderStrong: '#C3CFE0',
+  divider: '#E6EDF6',
   scrim: 'rgba(2,6,23,0.45)',
-  skeleton: slate[200],
+  skeleton: '#DFE7F1',
+
+  input: '#F5F8FC',
+  inputBorder: '#DAE3EF',
+  navigation: '#FFFFFF',
+  // A navbar clara parecia solta na página porque era branca sobre quase
+  // branco, sem aresta. Com o fundo azulado e uma borda visível ela volta a
+  // ser uma superfície flutuante em vez de um retângulo perdido.
+  navigationBorder: 'rgba(15,23,42,0.10)',
+  navigationActive: '#DCEEFB',
+  segmentTrack: '#E1EAF5',
+  segmentSelected: '#FFFFFF',
+  bubbleAssistant: '#FFFFFF',
+  bubbleAssistantBorder: 'rgba(15,23,42,0.10)',
+  surfaceAccent: '#E8F1FB',
+  surfaceAccentBorder: 'rgba(3,105,161,0.22)',
 
   status: statusRoles,
   countdown: countdownRoles,
@@ -279,8 +355,29 @@ const darkPalette: Palette = {
 
   border: 'rgba(148,163,184,0.20)',
   borderStrong: 'rgba(148,163,184,0.34)',
+  divider: 'rgba(148,163,184,0.20)',
   scrim: 'rgba(2,6,23,0.60)',
   skeleton: 'rgba(148,163,184,0.16)',
+
+  /*
+   * Cada papel novo recebe aqui o valor que o componente correspondente já
+   * usava: `input` era `surface`, `navigation` era `surfaceElevated`,
+   * `navigationActive` era `primarySoft`, `segmentTrack` era `surfaceMuted`,
+   * `segmentSelected` e `bubbleAssistant` eram `surface`, e todas as bordas
+   * eram `border`. O escuro, portanto, renderiza exatamente como antes — só
+   * `surfaceAccent` é novo, e só a tela da IA o utiliza.
+   */
+  input: '#0B1220',
+  inputBorder: 'rgba(148,163,184,0.20)',
+  navigation: slate[800],
+  navigationBorder: 'rgba(148,163,184,0.20)',
+  navigationActive: 'rgba(14,165,233,0.16)',
+  segmentTrack: 'rgba(148,163,184,0.12)',
+  segmentSelected: '#0B1220',
+  bubbleAssistant: '#0B1220',
+  bubbleAssistantBorder: 'rgba(148,163,184,0.20)',
+  surfaceAccent: 'rgba(14,165,233,0.12)',
+  surfaceAccentBorder: 'rgba(56,189,248,0.26)',
 
   status: statusRoles,
   countdown: countdownRoles,
@@ -368,8 +465,11 @@ function buildTheme(scheme: 'light' | 'dark'): Theme {
     aurora:
       scheme === 'light'
         ? {
-            cyan: 'rgba(14,165,233,0.16)',
-            blue: 'rgba(56,189,248,0.12)',
+            // Sobre o off-white azulado a aurora precisa de um pouco mais de
+            // corpo para continuar sendo identidade e não sujeira — mas segue
+            // baixa o bastante para nunca competir com o conteúdo (§68).
+            cyan: 'rgba(14,165,233,0.22)',
+            blue: 'rgba(56,189,248,0.16)',
             rose: 'rgba(244,63,94,0.10)',
           }
         : {

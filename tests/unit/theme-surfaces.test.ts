@@ -235,3 +235,145 @@ describe('hero badges over photography (§1–§4)', () => {
     expect(lightTheme.colors.heroBadge).toEqual(darkTheme.colors.heroBadge);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*  Refino do tema claro                                                       */
+/* -------------------------------------------------------------------------- */
+
+describe('light theme tem vocabulário próprio de superfície (§4)', () => {
+  const { colors } = lightTheme;
+  const page = flatten(colors.background, [255, 255, 255]);
+  const card = flatten(colors.glass, page);
+
+  it('não é branco puro no fundo — é um off-white frio', () => {
+    const [r, g, b] = page;
+    expect(page).not.toEqual([255, 255, 255]);
+    // Frio: o azul acima do verde acima do vermelho é o que dá o tom da marca.
+    expect(b).toBeGreaterThan(g);
+    expect(g).toBeGreaterThan(r);
+  });
+
+  it('dá papel próprio a campo, navegação, segmento e bolha da IA', () => {
+    // O sintoma do claro anterior era este: todos estes papéis eram o mesmo
+    // branco do card, então nada se separava de nada.
+    for (const role of ['input', 'navigationActive', 'segmentTrack', 'surfaceAccent'] as const) {
+      expect(distance(flatten(colors[role], card), card)).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  it('mantém o campo de entrada abaixo do card e acima do trilho recuado', () => {
+    const input = flatten(colors.input, card);
+    const track = flatten(colors.segmentTrack, card);
+    expect(luminance(input)).toBeLessThan(luminance(card));
+    expect(luminance(track)).toBeLessThan(luminance(input));
+  });
+
+  it('separa a pastilha selecionada do trilho do segmented control', () => {
+    const track = flatten(colors.segmentTrack, page);
+    const selected = flatten(colors.segmentSelected, track);
+    expect(distance(selected, track)).toBeGreaterThanOrEqual(8);
+    expect(luminance(selected)).toBeGreaterThan(luminance(track));
+  });
+
+  it('dá à navbar uma aresta visível em vez de deixá-la flutuando em branco', () => {
+    const nav = flatten(colors.navigation, page);
+    const border = flatten(colors.navigationBorder, nav);
+    expect(distance(border, nav)).toBeGreaterThanOrEqual(8);
+    expect(luminance(border)).toBeLessThan(luminance(nav));
+  });
+
+  it('deixa o item ativo da navegação visível sobre a própria navbar', () => {
+    // `ocean[50]` sobre branco era invisível: a aba ativa não se distinguia.
+    const nav = flatten(colors.navigation, page);
+    const active = flatten(colors.navigationActive, nav);
+    expect(distance(active, nav)).toBeGreaterThanOrEqual(10);
+  });
+
+  it('faz a bolha da IA se destacar do fundo da conversa', () => {
+    const bubble = flatten(colors.bubbleAssistant, page);
+    const border = flatten(colors.bubbleAssistantBorder, bubble);
+    expect(distance(bubble, page)).toBeGreaterThanOrEqual(4);
+    expect(distance(border, bubble)).toBeGreaterThanOrEqual(8);
+  });
+
+  it('dá ao card de contexto da IA identidade de marca, não mais um branco', () => {
+    const accent = flatten(colors.surfaceAccent, page);
+    const [r, , b] = accent;
+    expect(b).toBeGreaterThan(r + 8);
+    expect(distance(accent, card)).toBeGreaterThanOrEqual(8);
+  });
+
+  it('usa tons soft que aparecem sobre branco', () => {
+    // `ocean[50]`/`coral[50]` sumiam sobre o card — eram os "elementos
+    // decorativos lavados" do relato.
+    for (const soft of [colors.primarySoft, colors.accentSoft]) {
+      expect(distance(flatten(soft, card), card)).toBeGreaterThanOrEqual(8);
+    }
+  });
+});
+
+describe('contraste do tema claro (§6)', () => {
+  const { colors } = lightTheme;
+  const page = flatten(colors.background, [255, 255, 255]);
+  const card = flatten(colors.glass, page);
+
+  it('mantém o texto secundário e o terciário legíveis', () => {
+    for (const role of ['textSecondary', 'textTertiary'] as const) {
+      expect(contrast(flatten(colors[role], page), page)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('passa em AA no botão primário, que antes ficava em 2.77:1', () => {
+    const fill = flatten(colors.primary, card);
+    expect(contrast(flatten(colors.textOnPrimary, fill), fill)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('mantém o azul legível sobre a superfície soft da marca', () => {
+    const soft = flatten(colors.primarySoft, card);
+    expect(contrast(flatten(colors.primary, soft), soft)).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+describe('dark theme não regride com os papéis novos (§5)', () => {
+  const { colors } = darkTheme;
+
+  it('reaproveita exatamente os valores que os componentes já usavam', () => {
+    // Este é o teste que prova a preservação: cada papel novo é, no escuro, o
+    // mesmo valor que o componente lia antes de o papel existir.
+    expect(colors.input).toBe(colors.surface);
+    expect(colors.inputBorder).toBe(colors.border);
+    expect(colors.navigation).toBe(colors.surfaceElevated);
+    expect(colors.navigationBorder).toBe(colors.border);
+    expect(colors.navigationActive).toBe(colors.primarySoft);
+    expect(colors.segmentTrack).toBe(colors.surfaceMuted);
+    expect(colors.segmentSelected).toBe(colors.surface);
+    expect(colors.bubbleAssistant).toBe(colors.surface);
+    expect(colors.bubbleAssistantBorder).toBe(colors.border);
+    expect(colors.divider).toBe(colors.border);
+  });
+
+  it('mantém a paleta aprovada intacta', () => {
+    expect(colors.primary).toBe('#38BDF8');
+    expect(colors.primaryPressed).toBe('#7DD3FC');
+    expect(colors.primarySoft).toBe('rgba(14,165,233,0.16)');
+    expect(colors.textPrimary).toBe('#F8FAFC');
+    expect(colors.textSecondary).toBe('#94A3B8');
+    expect(colors.textTertiary).toBe('#64748B');
+    expect(colors.accent).toBe('#FB7185');
+    expect(colors.border).toBe('rgba(148,163,184,0.20)');
+  });
+
+  it('mantém a aurora do escuro como estava', () => {
+    expect(darkTheme.aurora).toEqual({
+      cyan: 'rgba(14,165,233,0.20)',
+      blue: 'rgba(2,132,199,0.16)',
+      rose: 'rgba(244,63,94,0.12)',
+    });
+  });
+
+  it('claro e escuro continuam sendo paletas distintas, não uma inversão', () => {
+    for (const role of ['background', 'surface', 'primary', 'textPrimary'] as const) {
+      expect(lightTheme.colors[role]).not.toBe(darkTheme.colors[role]);
+    }
+  });
+});

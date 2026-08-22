@@ -51,7 +51,7 @@ function FieldShell({
     ? theme.colors.error
     : focused
       ? theme.colors.primary
-      : theme.colors.border;
+      : theme.colors.inputBorder;
 
   return (
     <View style={[{ gap: theme.spacing.sm }, style]}>
@@ -65,7 +65,8 @@ function FieldShell({
           borderWidth: focused || error ? 1.5 : 1,
           borderColor,
           borderRadius: theme.radius.input,
-          backgroundColor: disabled ? theme.colors.surfaceMuted : theme.colors.surface,
+          // Campo é uma superfície recuada, não o mesmo branco do card (§4).
+          backgroundColor: disabled ? theme.colors.surfaceMuted : theme.colors.input,
           opacity: disabled ? 0.6 : 1,
           minHeight: 52,
           justifyContent: 'center',
@@ -222,10 +223,10 @@ export function SearchInput({
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: theme.colors.surface,
+        backgroundColor: theme.colors.input,
         borderRadius: theme.radius.pill,
         borderWidth: 1,
-        borderColor: theme.colors.border,
+        borderColor: theme.colors.inputBorder,
         paddingHorizontal: theme.spacing.lg,
         height: 48,
         gap: theme.spacing.sm,

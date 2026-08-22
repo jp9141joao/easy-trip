@@ -287,7 +287,7 @@ export function Divider({ spacing = 0 }: { spacing?: number }) {
     <View
       style={{
         height: 1,
-        backgroundColor: theme.colors.border,
+        backgroundColor: theme.colors.divider,
         marginVertical: spacing,
       }}
     />
