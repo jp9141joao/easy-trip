@@ -56,6 +56,7 @@ export default function SettingsScreen() {
   const { mode, setMode } = useThemePreference();
 
   const [confirmSignOut, setConfirmSignOut] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -64,10 +65,22 @@ export default function SettingsScreen() {
   // inclusive quando a sessão cai sozinha, por token revogado, caso em que não
   // existiria nenhum `handle*` para chamar `replace`.
   const handleSignOut = async () => {
+    // Sair encosta na rede. Sem estado de espera, o toque parecia não ter feito
+    // nada — e um segundo toque disparava uma segunda saída por cima da
+    // primeira. O `disabled` do botão vem do `loading` do próprio diálogo.
+    if (signingOut) return;
+    setSigningOut(true);
     try {
       await signOut();
+      // Só fecha o diálogo depois do sucesso: fechá-lo antes anunciaria uma
+      // saída que ainda podia falhar.
+      setConfirmSignOut(false);
     } catch {
-      toast.error('Não foi possível sair agora.');
+      // Nada foi limpo e a sessão continua de pé — a mensagem tem de dizer
+      // isso, não um "saiu" que não aconteceu (§8).
+      toast.error('Não foi possível sair da conta. Tente novamente.');
+    } finally {
+      setSigningOut(false);
     }
   };
 
@@ -268,8 +281,9 @@ export default function SettingsScreen() {
         title="Sair da conta?"
         message="Seus dados continuam salvos. Você precisará entrar novamente para acessá-los."
         confirmLabel="Sair"
+        loading={signingOut}
         onConfirm={() => void handleSignOut()}
-        onCancel={() => setConfirmSignOut(false)}
+        onCancel={() => (signingOut ? undefined : setConfirmSignOut(false))}
       />
 
       <ConfirmDialog

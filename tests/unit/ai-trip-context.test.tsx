@@ -1,8 +1,9 @@
-import { fireEvent, render as renderRaw } from '@testing-library/react-native';
+import { fireEvent, render as renderRaw, within } from '@testing-library/react-native';
 import type { ReactElement } from 'react';
+import { StyleSheet } from 'react-native';
 import { SafeAreaProvider, type Metrics } from 'react-native-safe-area-context';
 
-import { AIComposer, TripContextCard, TripPickerSheet } from '@/components/ai';
+import { AIComposer, TripContextBar, TripPickerSheet } from '@/components/ai';
 import type { Trip } from '@/domain/types';
 
 const metrics: Metrics = {
@@ -50,26 +51,100 @@ const toquio = trip({
   endDate: '2026-10-27',
 });
 
-describe('card de contexto', () => {
+/** O nó da árvore renderizada, sem depender dos tipos do react-test-renderer. */
+type Node = ReturnType<ReturnType<typeof render>['getByLabelText']>;
+
+const styleOf = (node: Node): Record<string, unknown> =>
+  (StyleSheet.flatten(node.props.style) ?? {}) as Record<string, unknown>;
+
+/** Sobe a árvore até o primeiro container em linha. */
+const rowAncestor = (node: Node): Node | null => {
+  let current: Node | null = node.parent;
+  while (current) {
+    if (styleOf(current).flexDirection === 'row') return current;
+    current = current.parent;
+  }
+  return null;
+};
+
+describe('barra compacta de contexto', () => {
+  const montar = (props: Partial<React.ComponentProps<typeof TripContextBar>> = {}) => {
+    const onChangeTrip = jest.fn();
+    const onNewChat = jest.fn();
+    const view = render(
+      <TripContextBar
+        trip={trip()}
+        onChangeTrip={onChangeTrip}
+        onNewChat={onNewChat}
+        {...props}
+      />,
+    );
+    return { view, onChangeTrip, onNewChat };
+  };
+
   it('convida à escolha quando não há viagem selecionada', () => {
-    const view = render(<TripContextCard trip={null} onPress={jest.fn()} />);
+    const { view } = montar({ trip: null });
     // O estado sem seleção precisa ser dizível, não só desenhável.
     expect(view.getByLabelText('Contexto da viagem. Nenhuma viagem selecionada.')).toBeTruthy();
     expect(view.getByText('Selecionar viagem')).toBeTruthy();
+    expect(view.getByText('Escolher')).toBeTruthy();
   });
 
-  it('mostra qual viagem está em uso e oferece a troca', () => {
-    const view = render(<TripContextCard trip={trip()} onPress={jest.fn()} />);
-    expect(view.getByText('Paris')).toBeTruthy();
-    expect(view.getByText('França · 22 – 31 de ago')).toBeTruthy();
-    expect(view.getByText('Trocar viagem')).toBeTruthy();
+  it('mostra viagem e período numa linha só, e oferece a troca', () => {
+    const { view } = montar();
+    // O ponto do hotfix: cidade e datas cabem numa linha, no lugar das três
+    // que o card antigo ocupava ("CONTEXTO ATIVO" / "Paris" / "França · …").
+    expect(view.getByText('Paris · 22 – 31 de ago')).toBeTruthy();
+    expect(view.getByText('Trocar')).toBeTruthy();
+    expect(view.queryByText('Contexto ativo')).toBeNull();
+    expect(view.getByText('Paris · 22 – 31 de ago').props.numberOfLines).toBe(1);
+  });
+
+  it('não perde o rótulo acessível ao encolher', () => {
+    const { view } = montar();
+    // O que sumiu foi a altura, não a informação: o leitor de tela continua
+    // ouvindo cidade, país e período.
+    expect(
+      view.getByLabelText('Contexto ativo: Paris. França · 22 – 31 de ago.'),
+    ).toBeTruthy();
   });
 
   it('abre o seletor ao toque', () => {
-    const onPress = jest.fn();
-    const view = render(<TripContextCard trip={trip()} onPress={onPress} />);
+    const { view, onChangeTrip } = montar();
     fireEvent.press(view.getByLabelText(/Contexto ativo: Paris/));
-    expect(onPress).toHaveBeenCalled();
+    expect(onChangeTrip).toHaveBeenCalled();
+  });
+
+  it('mantém o novo chat visível ao lado, não escondido num menu', () => {
+    const { view, onNewChat } = montar();
+    fireEvent.press(view.getByLabelText('Novo chat'));
+    expect(onNewChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('não deixa iniciar um chat sem viagem — o gating continua de pé', () => {
+    const { view, onNewChat } = montar({ trip: null, newChatDisabled: true });
+    const botao = view.getByLabelText('Novo chat');
+
+    fireEvent.press(botao);
+
+    expect(onNewChat).not.toHaveBeenCalled();
+    expect(botao.props.accessibilityState.disabled).toBe(true);
+  });
+
+  it('as duas ações cabem na mesma linha, com a mesma altura', () => {
+    const { view } = montar();
+    const contexto = view.getByLabelText(/Contexto ativo: Paris/);
+
+    // A regressão a impedir é o empilhamento: contexto numa faixa, "Novo chat"
+    // noutra. Aqui os dois estão dentro do mesmo container `row`, e ambos medem
+    // exatamente um alvo de toque de altura — a barra inteira tem 44pt.
+    const novoChat = view.getByLabelText('Novo chat');
+    const linha = rowAncestor(novoChat);
+    expect(linha).not.toBeNull();
+    expect(within(linha!).getByLabelText(/Contexto ativo: Paris/)).toBeTruthy();
+
+    expect(styleOf(contexto).height).toBe(44);
+    expect(styleOf(novoChat).height).toBe(44);
   });
 });
 

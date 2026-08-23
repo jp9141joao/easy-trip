@@ -1,4 +1,4 @@
-import { ChevronRight, MapPin, Sparkles } from 'lucide-react-native';
+import { ChevronDown, MapPin, Plus, Sparkles } from 'lucide-react-native';
 import { Pressable, View } from 'react-native';
 
 import { AppText, BottomSheet, EmptyState } from '@/components/ui';
@@ -27,14 +27,32 @@ function tripSubtitle(trip: Trip): string {
   return `${trip.destinationCountry} · ${formatDateRange(trip.startDate, trip.endDate)}`;
 }
 
-export function TripContextCard({
+/**
+ * Barra compacta de contexto (hotfix de UX).
+ *
+ * O que existia aqui era um card: rótulo "CONTEXTO ATIVO" em uma linha, cidade
+ * em outra, país e datas em uma terceira — e, logo abaixo, o "Novo chat" em uma
+ * quarta linha só dele. Somava perto de 120pt de cabeçalho antes da primeira
+ * mensagem, e num aparelho pequeno a conversa cabia em pouco mais de meia tela.
+ *
+ * As duas funções continuam inteiras e continuam visíveis (nada foi para dentro
+ * de um menu de três pontos): a esquerda diz qual viagem a IA está lendo e abre
+ * o seletor, a direita começa uma conversa nova. O que saiu foi a altura — uma
+ * linha de `hitTarget`, que é o mínimo tocável, e não menos que isso.
+ */
+export function TripContextBar({
   trip,
-  onPress,
+  onChangeTrip,
+  onNewChat,
   disabled = false,
+  newChatDisabled = false,
 }: {
   trip: Trip | null;
-  onPress: () => void;
+  onChangeTrip: () => void;
+  onNewChat: () => void;
+  /** Enquanto a lista de viagens carrega, não há o que escolher. */
   disabled?: boolean;
+  newChatDisabled?: boolean;
 }) {
   const theme = useTheme();
 
@@ -43,65 +61,72 @@ export function TripContextCard({
     : 'Contexto da viagem. Nenhuma viagem selecionada.';
 
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityHint={trip ? 'Toque para trocar a viagem' : 'Toque para selecionar uma viagem'}
-      accessibilityState={{ disabled }}
-      style={({ pressed }) => ({
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: theme.spacing.md,
-        // Superfície com identidade da marca: este card não é "mais um card
-        // branco", é o que diz sobre o que a IA está falando (§4).
-        backgroundColor: theme.colors.surfaceAccent,
-        borderColor: theme.colors.surfaceAccentBorder,
-        borderWidth: 1,
-        borderRadius: theme.radius.card,
-        paddingHorizontal: theme.spacing.lg,
-        paddingVertical: theme.spacing.md,
-        minHeight: theme.hitTarget,
-        opacity: disabled ? 0.6 : pressed ? 0.85 : 1,
-      })}
-    >
-      <View
-        style={{
-          width: 36,
-          height: 36,
-          borderRadius: 18,
-          backgroundColor: theme.colors.primarySoft,
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
+      <Pressable
+        onPress={onChangeTrip}
+        disabled={disabled}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityHint={trip ? 'Toque para trocar a viagem' : 'Toque para selecionar uma viagem'}
+        accessibilityState={{ disabled }}
+        style={({ pressed }) => ({
+          flex: 1,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: theme.spacing.sm,
+          // Mesma superfície de marca do card antigo, mesmos tokens: o que
+          // mudou foi a caixa, não a paleta — claro e escuro seguem saindo do
+          // tema, sem nenhuma cor escrita à mão (§4).
+          backgroundColor: theme.colors.surfaceAccent,
+          borderColor: theme.colors.surfaceAccentBorder,
+          borderWidth: 1,
+          borderRadius: theme.radius.pill,
+          paddingLeft: theme.spacing.md,
+          paddingRight: theme.spacing.sm,
+          height: theme.hitTarget,
+          opacity: disabled ? 0.6 : pressed ? 0.85 : 1,
+        })}
+      >
+        <Sparkles size={16} color={theme.colors.primary} />
+
+        {/*
+          Cidade e período na mesma linha. `numberOfLines={1}` é o que garante
+          que um destino de nome comprido encolha em vez de empurrar a barra
+          para uma segunda linha — que era exatamente o problema a resolver.
+        */}
+        <AppText variant="bodySmall" weight="semibold" numberOfLines={1} style={{ flex: 1 }}>
+          {trip ? `${trip.destinationCity} · ${formatDateRange(trip.startDate, trip.endDate)}` : 'Selecionar viagem'}
+        </AppText>
+
+        <AppText variant="caption" color="brand" weight="semibold">
+          {trip ? 'Trocar' : 'Escolher'}
+        </AppText>
+        <ChevronDown size={16} color={theme.colors.primary} />
+      </Pressable>
+
+      <Pressable
+        onPress={onNewChat}
+        disabled={newChatDisabled}
+        accessibilityRole="button"
+        accessibilityLabel="Novo chat"
+        accessibilityHint="Inicia uma conversa nova com a viagem selecionada"
+        accessibilityState={{ disabled: newChatDisabled }}
+        hitSlop={theme.hitSlop}
+        style={({ pressed }) => ({
+          width: theme.hitTarget,
+          height: theme.hitTarget,
           alignItems: 'center',
           justifyContent: 'center',
-        }}
+          borderRadius: theme.radius.pill,
+          borderWidth: 1,
+          borderColor: theme.colors.border,
+          backgroundColor: pressed ? theme.colors.surfaceMuted : theme.colors.surface,
+          opacity: newChatDisabled ? 0.5 : 1,
+        })}
       >
-        <Sparkles size={18} color={theme.colors.primary} />
-      </View>
-
-      <View style={{ flex: 1, gap: 1 }}>
-        <AppText variant="label" color="brand" uppercase>
-          {trip ? 'Contexto ativo' : 'Contexto da viagem'}
-        </AppText>
-        <AppText variant="body" weight="semibold" numberOfLines={1}>
-          {trip ? trip.destinationCity : 'Selecionar viagem'}
-        </AppText>
-        {trip ? (
-          <AppText variant="caption" color="secondary" numberOfLines={1}>
-            {tripSubtitle(trip)}
-          </AppText>
-        ) : null}
-      </View>
-
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
-        {trip ? (
-          <AppText variant="caption" color="brand" weight="semibold">
-            Trocar viagem
-          </AppText>
-        ) : null}
-        <ChevronRight size={18} color={theme.colors.primary} />
-      </View>
-    </Pressable>
+        <Plus size={18} color={theme.colors.primary} />
+      </Pressable>
+    </View>
   );
 }
 

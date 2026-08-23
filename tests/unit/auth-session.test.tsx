@@ -32,6 +32,7 @@ const mockState = {
   gateRestore: false,
   releaseRestore: () => {},
   signInFails: false,
+  signOutFails: false,
   signUpOutcome: { status: 'signed-in', session: SESSION_A } as unknown,
   profileFails: false,
   initialUrl: null as string | null,
@@ -92,6 +93,7 @@ jest.mock('@/repositories', () => ({
     },
     signOut: async () => {
       mockCalls.signOut += 1;
+      if (mockState.signOutFails) throw new Error('sessão continua de pé');
     },
     requestPasswordReset: async (email: string, redirectTo?: string) => {
       mockCalls.reset.push({ email, redirectTo });
@@ -166,6 +168,7 @@ beforeEach(() => {
   mockState.restored = null;
   mockState.gateRestore = false;
   mockState.signInFails = false;
+  mockState.signOutFails = false;
   mockState.signUpOutcome = { status: 'signed-in', session: SESSION_A };
   mockState.profileFails = false;
   mockState.initialUrl = null;
@@ -363,6 +366,44 @@ describe('sair', () => {
     // P-06: sem isto, a próxima conta a entrar neste aparelho abriria apontando
     // para a viagem da conta anterior.
     expect(await prefsStorage.get('currentTripId', null)).toBeNull();
+  });
+
+  it('saída que falha não desloga ninguém nem limpa nada', async () => {
+    mockState.restored = SESSION_A;
+    mockState.signOutFails = true;
+    await prefsStorage.set('currentTripId', 'trip-atual');
+    const { result } = await mount();
+
+    await act(async () => {
+      await expect(result.current.signOut()).rejects.toThrow();
+    });
+
+    // Meia-saída é pior que nenhuma: sem sessão encerrada, o estado privado
+    // tem de continuar exatamente como estava (§8).
+    expect(result.current.isAuthenticated).toBe(true);
+    expect(result.current.session).not.toBeNull();
+    expect(result.current.profile?.userId).toBe('uid-a');
+    expect(await prefsStorage.get('currentTripId', null)).toBe('trip-atual');
+    expect(mockCalls.purgeLocalFiles).toEqual([]);
+  });
+
+  it('deixa tentar de novo depois de uma falha', async () => {
+    mockState.restored = SESSION_A;
+    mockState.signOutFails = true;
+    const { result } = await mount();
+
+    await act(async () => {
+      await expect(result.current.signOut()).rejects.toThrow();
+    });
+
+    // A trava contra toque duplo não pode virar uma trava permanente.
+    mockState.signOutFails = false;
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(mockCalls.signOut).toBe(2);
+    expect(result.current.isAuthenticated).toBe(false);
   });
 });
 

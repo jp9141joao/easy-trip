@@ -1,2 +1,12 @@
 export { AIComposer } from './AIComposer';
-export { TripContextCard, TripPickerSheet } from './TripContext';
+export { TripContextBar, TripPickerSheet } from './TripContext';
+export {
+  AIActionCard,
+  AIActionResult,
+  AIActionReviewSheet,
+  BudgetActionPreview,
+  ChecklistActionPreview,
+  ExpenseActionPreview,
+  GoalActionPreview,
+  ItineraryActionPreview,
+} from './actions';

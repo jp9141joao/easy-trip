@@ -4,11 +4,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
 
 import { prefsStorage } from '@/lib/storage';
+import { useAuth } from './AuthProvider';
 
 /**
  * The active trip (§11).
@@ -47,6 +49,29 @@ export function TripSelectionProvider({ children }: { children: ReactNode }) {
       active = false;
     };
   }, []);
+
+  /*
+   * A seleção pertence à conta, não ao aparelho.
+   *
+   * `clearPrivateState()` já apaga a chave no disco durante a saída, mas o
+   * valor também vive aqui, em estado React — e estado React não some porque
+   * um `AsyncStorage.removeItem` rodou. Sem isto, sair da conta deixava
+   * `currentTripId` apontando para a viagem da conta anterior até o aplicativo
+   * ser reaberto: exatamente o P-06, só que em memória.
+   *
+   * O gatilho é a troca do dono da sessão, o que cobre os dois casos de uma
+   * vez — sair (dono → `null`) e entrar com outra conta (dono → outro id).
+   */
+  const { user } = useAuth();
+  const ownerId = user?.id ?? null;
+  const previousOwner = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (previousOwner.current !== null && previousOwner.current !== ownerId) {
+      setCurrentTripIdState(null);
+    }
+    previousOwner.current = ownerId;
+  }, [ownerId]);
 
   const setCurrentTripId = useCallback((tripId: string | null) => {
     setCurrentTripIdState(tripId);

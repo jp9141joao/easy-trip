@@ -295,6 +295,40 @@ class LocalAuthAdapter implements AuthAdapter {
 
 /* ---------------------------- supabase adapter ---------------------------- */
 
+/**
+ * Teto para a ida ao servidor durante a saída.
+ *
+ * `auth.signOut()` não é uma operação local: ela revoga o refresh token no
+ * servidor e **só depois** apaga a sessão do aparelho. Numa rede móvel ruim
+ * essa promessa fica pendurada por dezenas de segundos, e como todo o resto da
+ * saída acontece depois dela, a interface continuava mostrando a conta logada
+ * nesse intervalo — enquanto o token no disco já tinha sido apagado. Era isso
+ * que produzia o "só sai depois de fechar e abrir o app".
+ */
+const SIGN_OUT_TIMEOUT_MS = 6_000;
+
+/**
+ * Espera `promise` por no máximo `ms`, devolvendo `null` quando o prazo estoura.
+ *
+ * Não cancela nada — não há como cancelar um `fetch` já em voo aqui, e nem
+ * seria desejável: se a revogação terminar depois, ela termina, e o
+ * `onAuthStateChange` avisa o aplicativo do jeito de sempre. O que este teto
+ * faz é impedir que a interface fique refém dela.
+ */
+async function withDeadline<T>(promise: PromiseLike<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 class SupabaseAuthAdapter implements AuthAdapter {
   readonly kind = 'supabase' as const;
   /** A Edge Function `delete-account` apaga arquivos e conta, nesta ordem (P-02). */
@@ -343,7 +377,29 @@ class SupabaseAuthAdapter implements AuthAdapter {
   }
 
   async signOut(): Promise<void> {
-    await getSupabaseClient().auth.signOut();
+    const client = getSupabaseClient();
+
+    const outcome = await withDeadline(client.auth.signOut(), SIGN_OUT_TIMEOUT_MS);
+
+    // Quem responde "a sessão acabou?" é o armazenamento local, não o retorno
+    // da chamada.
+    //
+    // O supabase-js apaga a sessão do aparelho em vários caminhos, inclusive
+    // em alguns que devolvem `error` (uma revogação recusada pelo servidor
+    // ainda desconecta este aparelho). E o contrário também existe: um erro ao
+    // carregar a sessão faz `signOut()` voltar cedo, sem apagar nada. Ler o
+    // retorno, portanto, produziria tanto falso sucesso — dizer que saiu sem
+    // ter saído — quanto falso fracasso. Perguntar direto não produz nenhum
+    // dos dois.
+    const verified = await withDeadline(client.auth.getSession(), SIGN_OUT_TIMEOUT_MS);
+    if (verified && !verified.data.session) return;
+
+    // Sessão ainda de pé (ou nem deu para conferir): a saída não aconteceu, e
+    // dizer o contrário deixaria o aplicativo num estado que ninguém pediu.
+    throw describeAuthFailure(
+      outcome?.error?.message ?? '',
+      'Não foi possível sair da conta. Tente novamente.',
+    );
   }
 
   async requestPasswordReset(email: string, redirectTo?: string): Promise<void> {

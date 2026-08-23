@@ -8,10 +8,10 @@ import type {
   Ticket,
   Trip,
 } from '@/domain/types';
-import { nowISO } from '@/lib/date';
 import { useAuth } from '@/providers/AuthProvider';
 import { dataSource, type UploadableFile } from '@/repositories';
 import { currencyService } from '@/services/currency';
+import { buildExpenseRecord, type ExpenseDraft } from '@/services/expenseWrite';
 import { queryKeys } from './queryKeys';
 
 /* -------------------------------- itinerary ------------------------------- */
@@ -107,18 +107,18 @@ export function useExpenses(tripId?: string) {
   });
 }
 
-export interface ExpenseDraft {
-  description: string;
-  category: Expense['category'];
-  amount: number;
-  currency: Expense['currency'];
-  transactionDate: string;
-}
+export type { ExpenseDraft } from '@/services/expenseWrite';
 
 /**
  * Creating an expense also resolves and *stores* the exchange rate used (§41).
  * If no trustworthy rate exists the expense is saved unconverted and the UI
  * flags it — we never fabricate a rate to make the totals look tidy.
+ *
+ * A montagem do registro vive em `buildExpenseRecord`, e não aqui, porque uma
+ * despesa também pode nascer de uma proposta aceita da IA. As duas passam pela
+ * mesma função de propósito: se a regra de câmbio existisse em duas cópias, a
+ * primeira correção deixaria uma delas para trás — e as duas continuariam
+ * gravando, cada uma do seu jeito.
  */
 export function useExpenseMutations(trip: Trip) {
   const queryClient = useQueryClient();
@@ -127,26 +127,8 @@ export function useExpenseMutations(trip: Trip) {
     queryClient.invalidateQueries({ queryKey: queryKeys.expenses(trip.id) });
 
   const create = useMutation({
-    mutationFn: async (draft: ExpenseDraft) => {
-      const conversion =
-        draft.currency === trip.budgetCurrency
-          ? null
-          : await currencyService.convert(draft.amount, draft.currency, trip.budgetCurrency);
-
-      return dataSource.expenses.create({
-        tripId: trip.id,
-        userId: user!.id,
-        description: draft.description,
-        category: draft.category,
-        amount: draft.amount,
-        currency: draft.currency,
-        transactionDate: draft.transactionDate,
-        amountInBudgetCurrency:
-          draft.currency === trip.budgetCurrency ? draft.amount : conversion?.value,
-        exchangeRate: conversion?.rate.rate,
-        exchangeRateTimestamp: conversion?.rate.timestamp ?? (conversion ? nowISO() : undefined),
-      });
-    },
+    mutationFn: async (draft: ExpenseDraft) =>
+      dataSource.expenses.create(await buildExpenseRecord(trip, user!.id, draft)),
     onSuccess: invalidate,
   });
 

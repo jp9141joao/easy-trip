@@ -1,10 +1,12 @@
 import { currencySymbol, formatMoney, parseMoneyInput } from '@/lib/currency';
+import { toISODate } from '@/lib/date';
 import {
   compareTimezones,
   describeDifference,
   formatOffsetLabel,
   getOffsetMinutes,
   getZoneClock,
+  getZoneDate,
   timezoneCityLabel,
 } from '@/services/timezone';
 
@@ -97,5 +99,27 @@ describe('timezone helpers (§63)', () => {
   it('labels cities from zone identifiers', () => {
     expect(timezoneCityLabel('America/Sao_Paulo')).toBe('Sao Paulo');
     expect(timezoneCityLabel('Europe/Paris')).toBe('Paris');
+  });
+});
+
+describe('data no destino (§21)', () => {
+  /**
+   * "Amanhã" é do destino, não do aparelho.
+   *
+   * Às 23h de São Paulo já é o dia seguinte em Tóquio. Um roteiro montado para
+   * "amanhã" precisa cair no dia certo do destino — e é por isso que a data de
+   * hoje que vai para o modelo é calculada na zona da viagem.
+   */
+  const instante = new Date('2026-08-22T02:00:00.000Z');
+
+  it('lê a data de calendário na zona pedida', () => {
+    // 02:00 UTC = 23:00 do dia 21 em São Paulo, e 11:00 do dia 22 em Tóquio.
+    expect(getZoneDate('America/Sao_Paulo', instante)).toBe('2026-08-21');
+    expect(getZoneDate('Asia/Tokyo', instante)).toBe('2026-08-22');
+    expect(getZoneDate('UTC', instante)).toBe('2026-08-22');
+  });
+
+  it('cai na data do aparelho quando a zona não existe, em vez de quebrar', () => {
+    expect(getZoneDate('Nao/Existe', instante)).toBe(toISODate(instante));
   });
 });

@@ -1,11 +1,18 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Bot, CalendarCheck, Info, Plus, Sparkles, UserRoundCheck } from 'lucide-react-native';
+import { Bot, CalendarCheck, Info, Sparkles, UserRoundCheck } from 'lucide-react-native';
 import { useEffect, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AIComposer, TripContextCard, TripPickerSheet } from '@/components/ai';
+import {
+  AIActionCard,
+  AIActionResult,
+  AIActionReviewSheet,
+  AIComposer,
+  TripContextBar,
+  TripPickerSheet,
+} from '@/components/ai';
 import { AdvisorCard } from '@/components/cards';
 import { Markdown } from '@/components/Markdown';
 import {
@@ -29,11 +36,16 @@ import {
 import { AuroraBackground } from '@/components/ui/Surface';
 import { DOCK_CLEARANCE } from '@/constants/layout';
 import { useKeyboardVisible } from '@/hooks/useKeyboard';
+import { buildReviewGroups, reviewToActions } from '@/domain/aiActionReview';
+import type { AITripAction } from '@/domain/aiActions';
 import { consultationSchema, type ConsultationInput } from '@/domain/schemas';
 import type { Advisor } from '@/domain/types';
 import { useAIConversation } from '@/hooks/useAI';
+import { AIActionBlockedError, useAIActionRunner } from '@/hooks/useAIActions';
 import { useAdvisors, useConsultations } from '@/hooks/useContent';
+import { useChecklist, useItinerary } from '@/hooks/useTripData';
 import { useTrips } from '@/hooks/useTrips';
+import type { AIActionReport } from '@/services/aiActionExecutor';
 import { useTripSelection } from '@/providers/TripSelectionProvider';
 import { CONSULTATION_STATUS_HINT, CONSULTATION_STATUS_LABEL } from '@/lib/labels';
 import { markdownToPlainText } from '@/lib/markdown';
@@ -297,9 +309,125 @@ function AITab() {
 
   const trip = trips.find((item) => item.id === aiTripId) ?? null;
 
-  const { messages, send, newChat, kind, isLoading } = useAIConversation(trip);
+  const {
+    messages,
+    send,
+    newChat,
+    kind,
+    isLoading,
+    actionsFor,
+    appliedActionIds,
+    markApplied,
+    unmarkApplied,
+  } = useAIConversation(trip);
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<ScrollView>(null);
+
+  /*
+   * Roteiro e checklist da viagem, aqui, por um motivo só: detectar duplicata
+   * antes de gravar (§22). O React Query já tem estas duas consultas em cache —
+   * a conversa da IA as usa para montar o contexto —, então isto não é uma
+   * busca a mais, é a mesma.
+   */
+  const { data: itinerary = [] } = useItinerary(trip?.id);
+  const { data: checklist = [] } = useChecklist(trip?.id);
+
+  const runner = useAIActionRunner(trip);
+
+  /** A proposta aberta na revisão, se houver. */
+  const [review, setReview] = useState<{ messageId: string; actions: AITripAction[] } | null>(null);
+  /** O resultado da última execução, preso à mensagem que o gerou. */
+  const [result, setResult] = useState<{ messageId: string; report: AIActionReport } | null>(null);
+
+  // Trocar a viagem invalida qualquer proposta aberta: a revisão na tela é de
+  // Paris, e a viagem agora é outra.
+  useEffect(() => {
+    setReview(null);
+    setResult(null);
+  }, [trip?.id]);
+
+  /**
+   * Aplica uma proposta já resolvida.
+   *
+   * O `try/catch` distingue os dois tipos de recusa: `AIActionBlockedError` é
+   * uma condição que o usuário pode resolver (sem rede, outra aplicação em
+   * curso) e a proposta continua na tela; qualquer outro erro é falha de
+   * gravação, e aí o relatório do executor já descreve o que entrou e o que
+   * não entrou.
+   */
+  const applyActions = async (messageId: string, actions: AITripAction[]) => {
+    if (actions.length === 0) return;
+    try {
+      const report = await runner.run(messageId, actions);
+      setReview(null);
+      setResult({ messageId, report });
+
+      /*
+       * A proposta é consumida assim que **qualquer coisa** entrou.
+       *
+       * A tentação é deixar o botão vivo numa execução parcial, para a pessoa
+       * tentar de novo. Só que "de novo" reexecutaria também o que já gravou, e
+       * o resultado seria uma duplicata silenciosa — o oposto do que a §22
+       * tenta evitar. Repetir só é seguro quando nada entrou; então é só nesse
+       * caso que o botão continua disponível.
+       */
+      if (report.outcomes.some((outcome) => outcome.succeeded > 0)) {
+        markApplied(actions.map((action) => action.id));
+      }
+
+      if (report.ok) {
+        toast.success(report.outcomes.map((outcome) => outcome.summary).join(' · '));
+      } else if (report.partial) {
+        toast.warning('Parte da sugestão não pôde ser adicionada. Veja os detalhes.');
+      } else {
+        toast.error('Não foi possível adicionar a sugestão.');
+      }
+    } catch (error) {
+      if (error instanceof AIActionBlockedError) {
+        toast.warning(error.message);
+        return;
+      }
+      toast.error('Não foi possível adicionar a sugestão. Tente novamente.');
+    }
+  };
+
+  /**
+   * "Implementar" abre a revisão ou aplica direto?
+   *
+   * Abre quando há mais de um bloco (um plano composto — §9 pede confirmação
+   * explícita para escolher o que entra) ou quando algum item veio marcado como
+   * possível duplicata ou fora do período da viagem. Nos dois casos existe uma
+   * decisão real a tomar, e tomá-la por conta própria seria gravar em silêncio.
+   *
+   * Aplica direto quando a proposta é um bloco só, limpo: o caso do "monte meu
+   * roteiro de amanhã" que volta com quatro itens dentro das datas certas. Aí a
+   * revisão seria uma confirmação sem conteúdo — e "Revisar" continua ao lado
+   * para quem quiser ajustar antes.
+   */
+  const implement = (messageId: string, actions: AITripAction[]) => {
+    if (!trip) return;
+    const groups = buildReviewGroups(actions, { trip, itinerary, checklist });
+    const needsDecision =
+      actions.length > 1 || groups.some((group) => group.items.some((item) => item.warnings.length > 0));
+
+    if (needsDecision) {
+      setReview({ messageId, actions });
+      return;
+    }
+    void applyActions(messageId, reviewToActions(groups));
+  };
+
+  const undoResult = async () => {
+    if (!result) return;
+    const { removed, failed } = await runner.undo(result.report);
+    unmarkApplied(actionsFor(result.messageId).map((action) => action.id));
+    setResult(null);
+    if (failed > 0) {
+      toast.warning(`${removed} ${removed === 1 ? 'registro removido' : 'registros removidos'}, ${failed} não.`);
+    } else {
+      toast.success(`${removed} ${removed === 1 ? 'registro removido' : 'registros removidos'}.`);
+    }
+  };
 
   // Abrir o teclado também reposiciona a conversa: quem começa a digitar quer
   // ver a última mensagem, não o topo do histórico (§12). O atraso curto deixa
@@ -375,49 +503,29 @@ function AITab() {
       behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
     >
-      {/* Contexto e "Novo chat" ficam fixos no topo: são os dois controles que
-          o usuário precisa achar sem rolar a conversa (§1, §2). */}
+      {/*
+        Contexto e "Novo chat" ficam fixos acima da conversa: são os dois
+        controles que o usuário precisa achar sem rolar (§1, §2). Fixos, não
+        sobrepostos — a barra está fora do ScrollView, então nenhuma mensagem
+        passa por baixo dela.
+
+        Antes eram três blocos empilhados (card de contexto + linha do "Novo
+        chat" + respiros), perto de 150pt de cabeçalho. Agora é uma linha de
+        `hitTarget`, e a diferença toda virou área de conversa.
+      */}
       <View
         style={{
           paddingHorizontal: theme.spacing.screen,
-          paddingTop: theme.spacing.lg,
-          gap: theme.spacing.sm,
+          paddingTop: theme.spacing.sm,
         }}
       >
-        <TripContextCard
+        <TripContextBar
           trip={trip}
-          onPress={() => setPickerOpen(true)}
+          onChangeTrip={() => setPickerOpen(true)}
+          onNewChat={requestNewChat}
           disabled={tripsLoading}
+          newChatDisabled={!trip || newChat.isPending}
         />
-
-        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-          <Pressable
-            onPress={requestNewChat}
-            disabled={!trip || newChat.isPending}
-            accessibilityRole="button"
-            accessibilityLabel="Novo chat"
-            accessibilityHint="Inicia uma conversa nova com a viagem selecionada"
-            accessibilityState={{ disabled: !trip || newChat.isPending }}
-            hitSlop={theme.hitSlop}
-            style={({ pressed }) => ({
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 6,
-              minHeight: 36,
-              paddingHorizontal: theme.spacing.md,
-              borderRadius: theme.radius.pill,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              backgroundColor: pressed ? theme.colors.surfaceMuted : theme.colors.surface,
-              opacity: !trip || newChat.isPending ? 0.5 : 1,
-            })}
-          >
-            <Plus size={14} color={theme.colors.primary} />
-            <AppText variant="caption" color="brand" weight="semibold">
-              Novo chat
-            </AppText>
-          </Pressable>
-        </View>
       </View>
 
       <ScrollView
@@ -431,8 +539,8 @@ function AITab() {
         keyboardDismissMode="on-drag"
         contentContainerStyle={{
           paddingHorizontal: theme.spacing.screen,
-          paddingTop: theme.spacing.lg,
-          paddingBottom: theme.spacing.xl,
+          paddingTop: theme.spacing.md,
+          paddingBottom: theme.spacing.lg,
           gap: theme.spacing.md,
         }}
       >
@@ -484,7 +592,41 @@ function AITab() {
             </View>
           </GlassCard>
         ) : (
-          messages.map((message) => <MessageBubble key={message.id} message={message} />)
+          messages.map((message) => {
+            const actions = actionsFor(message.id);
+            const applied =
+              actions.length > 0 && actions.every((action) => appliedActionIds.includes(action.id));
+
+            return (
+              <View key={message.id} style={{ gap: theme.spacing.sm }}>
+                <MessageBubble message={message} />
+
+                {/*
+                  O card só existe quando a resposta trouxe proposta. Pergunta
+                  de leitura — "quanto já gastei?" — não ganha botão nenhum
+                  (§17).
+                */}
+                {actions.length > 0 ? (
+                  <AIActionCard
+                    actions={actions}
+                    applied={applied}
+                    pending={runner.runningKey === message.id}
+                    onReview={() => setReview({ messageId: message.id, actions })}
+                    onImplement={() => implement(message.id, actions)}
+                  />
+                ) : null}
+
+                {result?.messageId === message.id ? (
+                  <AIActionResult
+                    report={result.report}
+                    undoing={runner.undoing}
+                    onUndo={result.report.undoable ? () => void undoResult() : undefined}
+                    onDismiss={() => setResult(null)}
+                  />
+                ) : null}
+              </View>
+            );
+          })
         )}
 
         {send.isPending ? <TypingIndicator /> : null}
@@ -521,6 +663,19 @@ function AITab() {
             : DOCK_CLEARANCE - theme.spacing.md
         }
       />
+
+      {trip && review ? (
+        <AIActionReviewSheet
+          visible
+          actions={review.actions}
+          trip={trip}
+          itinerary={itinerary}
+          checklist={checklist}
+          pending={runner.runningKey === review.messageId}
+          onCancel={() => setReview(null)}
+          onConfirm={(actions) => void applyActions(review.messageId, actions)}
+        />
+      ) : null}
 
       <TripPickerSheet
         visible={pickerOpen}

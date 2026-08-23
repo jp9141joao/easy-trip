@@ -7,6 +7,8 @@
  * come out right. Fixed numeric offsets are never used.
  */
 
+import { toISODate } from '@/lib/date';
+
 export interface ZoneClock {
   timezone: string;
   /** HH:mm in that zone. */
@@ -104,6 +106,32 @@ export function getZoneClock(timezone: string, at: Date = new Date()): ZoneClock
     isDay: hour >= 6 && hour < 18,
     hour,
   };
+}
+
+/**
+ * A data de calendário **no destino**, como `YYYY-MM-DD`.
+ *
+ * Existe por causa de uma pergunta banal: "monte meu roteiro de amanhã". Quando
+ * o viajante está em São Paulo às 23h e a viagem é para Tóquio, "amanhã" no
+ * aparelho e "amanhã" no destino são dias diferentes — e o item iria para a
+ * data errada sem que ninguém percebesse, porque as duas respostas parecem
+ * certas (§21).
+ *
+ * Mesmo truque de `getZoneClock`: desloca o instante pelo offset da zona e lê
+ * os campos UTC, o que atravessa horário de verão sem caso especial. Se o
+ * runtime não resolver zonas IANA, cai na data do aparelho — que é a melhor
+ * resposta disponível, e continua sendo uma data real.
+ */
+export function getZoneDate(timezone: string, at: Date = new Date()): string {
+  try {
+    const shifted = new Date(at.getTime() + getOffsetMinutes(timezone, at) * 60_000);
+    const year = shifted.getUTCFullYear();
+    const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(shifted.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  } catch {
+    return toISODate(at);
+  }
 }
 
 export function describeDifference(differenceMinutes: number): string {

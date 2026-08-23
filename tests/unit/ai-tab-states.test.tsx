@@ -87,8 +87,35 @@ jest.mock('@/hooks/useAI', () => ({
       },
       newChat: { isPending: false, mutateAsync: () => mockNewChat() },
       clear: { mutateAsync: jest.fn() },
+      // Nenhuma resposta desta suíte traz proposta — o que se mede aqui são os
+      // estados da aba, não o fluxo de ações (que tem suíte própria).
+      actionsFor: () => [],
+      appliedActionIds: [] as string[],
+      markApplied: jest.fn(),
+      unmarkApplied: jest.fn(),
     };
   },
+}));
+
+/*
+ * A aba lê roteiro e checklist da viagem para detectar duplicata antes de
+ * gravar. Aqui as duas viram listas vazias: sem `QueryClientProvider`, as
+ * consultas reais não teriam onde rodar, e o assunto desta suíte é outro.
+ */
+jest.mock('@/hooks/useTripData', () => ({
+  useItinerary: () => ({ data: [] }),
+  useChecklist: () => ({ data: [] }),
+}));
+
+jest.mock('@/hooks/useAIActions', () => ({
+  AIActionBlockedError: class extends Error {},
+  useAIActionRunner: () => ({
+    run: jest.fn(),
+    undo: jest.fn(),
+    runningKey: null,
+    undoing: false,
+    isBusy: false,
+  }),
 }));
 
 const abrirAbaIA = async () => {

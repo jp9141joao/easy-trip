@@ -32,6 +32,7 @@ import {
   ITINERARY_TYPE_LABEL,
 } from '@/lib/labels';
 import { postJson, ServiceError } from './http';
+import { getZoneDate } from './timezone';
 
 /** Structured context handed to the model (§47). */
 export interface AITripContext {
@@ -47,6 +48,15 @@ export interface AITripContext {
     remainingBudget: number;
     currency: CurrencyCode;
     timezone: string;
+    /**
+     * A data de hoje **no destino**, `YYYY-MM-DD`.
+     *
+     * Sem ela o modelo não tem como resolver "amanhã" — e um assistente que
+     * chuta a data de hoje coloca o item no dia errado com toda a confiança do
+     * mundo. Vai no contexto, e não no prompt do sistema, porque muda a cada
+     * pergunta (§21).
+     */
+    today: string;
   };
   expenses: { category: string; amount: number; currency: string; date: string; description: string }[];
   itinerary: { date: string; time?: string; type: string; title: string; placeName?: string }[];
@@ -59,6 +69,17 @@ export interface AIReply {
   content: string;
   /** True when produced locally instead of by Gemini — surfaced as a badge. */
   local: boolean;
+  /**
+   * Propostas estruturadas, **ainda cruas**.
+   *
+   * Deliberadamente `unknown[]`: este serviço não conhece `Trip`, e é por isso
+   * que ele não tem como carimbar o vínculo com a viagem. Quem valida e carimba
+   * é `parseAIActions`, no cliente, com a viagem em que a conversa está — ver
+   * `src/domain/aiActions.ts`. Enquanto o valor está aqui, ele é só o que
+   * chegou pela rede: nada que tenha passado por este campo tem autorização
+   * nenhuma.
+   */
+  actions: unknown[];
 }
 
 export interface AIService {
@@ -87,7 +108,7 @@ class RemoteAIService implements AIService {
     history: AIMessage[];
     accessToken?: string;
   }): Promise<AIReply> {
-    const response = await postJson<{ content?: string; error?: string }>(
+    const response = await postJson<{ content?: string; actions?: unknown; error?: string }>(
       `${config.bffUrl.replace(/\/$/, '')}/ai-chat`,
       {
         prompt,
@@ -101,7 +122,11 @@ class RemoteAIService implements AIService {
     if (!response.content) {
       throw new ServiceError('parse', response.error ?? 'O assistente não retornou resposta.');
     }
-    return { content: response.content, local: false };
+    return {
+      content: response.content,
+      local: false,
+      actions: Array.isArray(response.actions) ? response.actions : [],
+    };
   }
 }
 
@@ -125,6 +150,7 @@ class LocalAIService implements AIService {
           'Selecione uma viagem ativa para eu analisar seu roteiro, checklist e orçamento.\n\n' +
           LOCAL_NOTICE,
         local: true,
+        actions: [],
       };
     }
 
@@ -146,8 +172,58 @@ class LocalAIService implements AIService {
       }
     })();
 
-    return { content: `${body}\n\n${LOCAL_NOTICE}`, local: true };
+    return {
+      content: `${body}\n\n${LOCAL_NOTICE}`,
+      local: true,
+      actions: localActions(intent, context),
+    };
   }
+}
+
+/**
+ * O que o modo demonstração tem permissão para *propor*.
+ *
+ * A regra é a mesma que rege as respostas locais: só sai daqui o que o Easy
+ * Trip realmente sabe. Um checklist de essenciais de viagem é conhecimento do
+ * produto, não do destino — vale para Paris e para Tóquio, e não afirma nada
+ * sobre nenhum dos dois.
+ *
+ * Por isso o modo local **não** propõe roteiro nem despesa estimada: os dois
+ * exigiriam saber o que existe no destino e quanto custa, e inventar isso
+ * localmente seria exatamente a fabricação que o resto deste arquivo evita
+ * (§19, §25). Quem propõe roteiro e estimativa é o Gemini, com o rótulo de
+ * estimativa que a revisão exibe.
+ *
+ * A saída é crua de propósito: passa pelo mesmo `parseAIActions` do caminho
+ * remoto. Um item malformado aqui é descartado pela mesma porta.
+ */
+const LOCAL_CHECKLIST_ESSENTIALS: { label: string; category: string }[] = [
+  { label: 'Documento de identidade ou passaporte', category: 'documentos' },
+  { label: 'Seguro viagem', category: 'reservas' },
+  { label: 'Cartão de crédito habilitado para o exterior', category: 'financeiro' },
+  { label: 'Adaptador de tomada', category: 'mala' },
+  { label: 'Carregador portátil', category: 'mala' },
+  { label: 'Remédios de uso contínuo', category: 'saude' },
+];
+
+function localActions(intent: Intent, context: AITripContext): unknown[] {
+  if (intent !== 'checklist' && intent !== 'packing') return [];
+
+  const already = new Set(
+    context.checklist.map((item) => item.label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')),
+  );
+  const missing = LOCAL_CHECKLIST_ESSENTIALS.filter(
+    (item) => !already.has(item.label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')),
+  );
+  if (missing.length === 0) return [];
+
+  return [
+    {
+      type: 'checklist.add',
+      label: `Adicionar ${missing.length} ${missing.length === 1 ? 'item' : 'itens'} ao checklist`,
+      items: missing,
+    },
+  ];
 }
 
 type Intent = 'budget' | 'checklist' | 'itinerary' | 'packing' | 'restaurants' | 'overview';
@@ -346,8 +422,9 @@ export const aiService: AIService = config.hasBff ? new RemoteAIService() : new 
 
 /** Quick suggestion chips (§50). */
 export const AI_SUGGESTIONS = [
-  'Monte um resumo da minha viagem',
+  'Monte um roteiro para amanhã',
   'O que falta no meu checklist?',
+  'Quanto devo reservar para amanhã?',
   'Estou gastando demais?',
   'Como está meu roteiro?',
   'Sugira restaurantes',
@@ -379,6 +456,7 @@ export function buildTripContext(params: {
       remainingBudget: params.remainingBudget,
       currency: params.trip.budgetCurrency,
       timezone: params.trip.timezone,
+      today: getZoneDate(params.trip.timezone),
     },
     expenses: params.expenses.map((expense) => ({
       category: expense.category,

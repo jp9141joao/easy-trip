@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
+import { parseAIActions, type AITripAction } from '@/domain/aiActions';
 import {
   getDaysUntilTrip,
   getRemainingBudget,
@@ -47,10 +48,40 @@ export function useAIConversation(trip: Trip | null) {
    */
   const [openedConversationId, setOpenedConversationId] = useState<string | null>(null);
 
+  /**
+   * As propostas desta sessão, por mensagem do assistente.
+   *
+   * Vivem em memória, e não no banco, porque `ai_messages` tem exatamente três
+   * colunas de conteúdo — `role`, `content`, `created_at` — e nenhuma para
+   * metadado estruturado. Persistir action exigiria uma migration nova, e a §15
+   * pede o contrário: primeiro tentar sem. Uma proposta é uma oferta viva de
+   * uma conversa em andamento; reabrir um chat de três semanas atrás e
+   * encontrar um botão "Implementar roteiro" apontando para datas que já
+   * passaram seria pior do que não encontrar botão nenhum.
+   *
+   * Consequência assumida: reabrir o app deixa o histórico intacto e sem
+   * botões. O texto da resposta continua lá; basta pedir de novo para receber
+   * uma proposta nova, feita com os dados de hoje.
+   */
+  const [actionsByMessage, setActionsByMessage] = useState<Record<string, AITripAction[]>>({});
+
+  /**
+   * Propostas já aplicadas nesta sessão.
+   *
+   * É a trava contra o toque duplo e contra o "implementar" acidental duas
+   * vezes na mesma proposta (§10): o botão vira "Adicionado à viagem" e não
+   * volta atrás sozinho.
+   */
+  const [appliedActionIds, setAppliedActionIds] = useState<string[]>([]);
+
   // Trocar de viagem é trocar de conversa: a escolha manual não pode sobreviver
   // à troca, ou o chat de Tóquio continuaria escrevendo na thread de Paris.
+  // As propostas vão junto — uma sugestão de roteiro para Paris não pode
+  // sobreviver à troca para Tóquio nem como botão na tela (§14).
   useEffect(() => {
     setOpenedConversationId(null);
+    setActionsByMessage({});
+    setAppliedActionIds([]);
   }, [trip?.id]);
 
   const conversationQuery = useQuery({
@@ -102,12 +133,27 @@ export function useAIConversation(trip: Trip | null) {
         accessToken: session?.accessToken,
       });
 
-      await dataSource.ai.addMessage({
+      const message = await dataSource.ai.addMessage({
         conversationId,
         role: 'assistant',
         content: reply.content,
       });
-      return reply;
+
+      /*
+       * É aqui que a proposta ganha dono.
+       *
+       * `reply.actions` é o que chegou pela rede — cru, sem viagem, sem
+       * garantia nenhuma. `parseAIActions` valida contra o schema do domínio e
+       * carimba `tripId` com a viagem **desta** conversa, que é o `trip` que
+       * esta mutation capturou. O modelo nunca teve chance de escolher a
+       * viagem: ele não a viu e não tem campo para ela.
+       */
+      const actions = parseAIActions(reply.actions, trip);
+      if (actions.length > 0) {
+        setActionsByMessage((current) => ({ ...current, [message.id]: actions }));
+      }
+
+      return { ...reply, messageId: message.id, actions };
     },
     onSettled: () => {
       if (conversationId) {
@@ -132,6 +178,8 @@ export function useAIConversation(trip: Trip | null) {
       // antigo enquanto a lista de mensagens ainda não voltou.
       queryClient.setQueryData(queryKeys.aiMessages(conversation.id), []);
       setOpenedConversationId(conversation.id);
+      setActionsByMessage({});
+      setAppliedActionIds([]);
       send.reset();
       void queryClient.invalidateQueries({
         queryKey: queryKeys.aiConversation(user!.id, trip!.id),
@@ -145,9 +193,29 @@ export function useAIConversation(trip: Trip | null) {
       queryClient.invalidateQueries({ queryKey: queryKeys.aiMessages(conversationId!) }),
   });
 
+  const actionsFor = useCallback(
+    (messageId: string): AITripAction[] => actionsByMessage[messageId] ?? [],
+    [actionsByMessage],
+  );
+
+  const markApplied = useCallback((actionIds: string[]) => {
+    setAppliedActionIds((current) => [...new Set([...current, ...actionIds])]);
+  }, []);
+
+  const unmarkApplied = useCallback((actionIds: string[]) => {
+    const removed = new Set(actionIds);
+    setAppliedActionIds((current) => current.filter((id) => !removed.has(id)));
+  }, []);
+
   return {
     conversationId,
     messages: messagesQuery.data ?? [],
+    /** Propostas desta sessão para uma mensagem — vazio para conversas antigas. */
+    actionsFor,
+    appliedActionIds,
+    markApplied,
+    /** Usado pelo "Desfazer": o que foi removido volta a poder ser aplicado. */
+    unmarkApplied,
     isLoading: Boolean(trip) && (conversationQuery.isLoading || messagesQuery.isLoading),
     send,
     newChat,

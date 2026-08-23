@@ -78,6 +78,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    */
   const loadedFor = useRef<string | null>(null);
 
+  /** Uma saída de cada vez. Ver `signOut`. */
+  const signingOut = useRef(false);
+
   const loadProfile = useCallback(async (userId: string) => {
     try {
       const stored = await dataSource.profile.get(userId);
@@ -237,39 +240,84 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [applySession, queryClient],
   );
 
-  /** Tudo que é do usuário e vive no aparelho. Sai junto com a sessão. */
+  /**
+   * Tudo que é do usuário e vive no aparelho. Sai junto com a sessão.
+   *
+   * Cada passo é isolado: uma falha em apagar arquivo local não pode impedir o
+   * cache de ser esvaziado, nem vice-versa. Antes bastava um `throw` no meio
+   * para a limpeza parar pela metade — e, como a saída inteira acontecia numa
+   * chamada só, o que sobrasse ficaria sobrando até o próximo login.
+   */
   const clearPrivateState = useCallback(
     async (ownerId?: string) => {
-    // Clears cached reads only — remote records are untouched (§99, fluxo 14).
-    await cacheStorage.clearAll();
-    // O cache de leitura persistido some junto. `cacheStorage.clearAll()` já o
-    // apagaria por namespace; a chamada explícita existe para que mover a chave
-    // no futuro não reabra um vazamento em silêncio.
-    await clearPersistedQueries();
-    // As cópias locais dos documentos também são dado privado: um cartão de
-    // embarque que continua abrindo em modo avião depois da saída é o mesmo
-    // vazamento, só que em arquivo. A D-04 pede que a exclusão remova as duas
-    // pontas — esta é a de cá.
-    if (ownerId) dataSource.files.purgeLocalCopies(ownerId);
-    // A viagem selecionada é dado privado: mantê-la faria a próxima conta a
-    // entrar neste aparelho abrir apontando para a viagem da conta anterior
-    // (P-06). O registro no banco continua intacto — some só a seleção local.
-    await prefsStorage.remove('currentTripId');
-    queryClient.clear();
+      const step = async (run: () => void | Promise<void>) => {
+        try {
+          await run();
+        } catch {
+          // Sem nada a fazer aqui: o dado que não saiu agora sai na próxima
+          // entrada, quando `hydrateQueries` confere o dono do cache.
+        }
+      };
+
+      // O cache em memória primeiro: é ele que alimenta as telas, e enquanto
+      // existir há uma janela em que uma tela ainda desenha dado da conta que
+      // acabou de sair.
+      await step(() => queryClient.clear());
+      // Clears cached reads only — remote records are untouched (§99, fluxo 14).
+      await step(() => cacheStorage.clearAll());
+      // O cache de leitura persistido some junto. `cacheStorage.clearAll()` já o
+      // apagaria por namespace; a chamada explícita existe para que mover a chave
+      // no futuro não reabra um vazamento em silêncio.
+      await step(() => clearPersistedQueries());
+      // As cópias locais dos documentos também são dado privado: um cartão de
+      // embarque que continua abrindo em modo avião depois da saída é o mesmo
+      // vazamento, só que em arquivo. A D-04 pede que a exclusão remova as duas
+      // pontas — esta é a de cá.
+      if (ownerId) await step(() => dataSource.files.purgeLocalCopies(ownerId));
+      // A viagem selecionada é dado privado: mantê-la faria a próxima conta a
+      // entrar neste aparelho abrir apontando para a viagem da conta anterior
+      // (P-06). O registro no banco continua intacto — some só a seleção local.
+      //
+      // Isto apaga a chave no disco; quem zera a cópia em memória é o
+      // `TripSelectionProvider`, que observa o dono da sessão.
+      await step(() => prefsStorage.remove('currentTripId'));
     },
     [queryClient],
   );
 
+  /**
+   * Sair da conta, inteiro e numa execução só.
+   *
+   * Duas regras governam a ordem daqui:
+   *
+   * 1. Nada é limpo antes de o provedor de identidade confirmar que a sessão
+   *    acabou. Se `signOut` falhar, o erro sobe e o aplicativo continua
+   *    exatamente onde estava — sem meia-saída para o usuário descobrir depois.
+   * 2. Confirmado o encerramento, a sessão em memória cai **aqui**, e não
+   *    quando o aviso do provedor chegar. O aviso continua existindo e continua
+   *    sendo bem-vindo (é ele que cobre o token revogado por fora), mas o botão
+   *    "Sair" não pode depender dele: era essa dependência que deixava a
+   *    interface logada esperando uma resposta de rede.
+   */
   const signOut = useCallback(async () => {
+    // Dois toques no mesmo botão não podem virar duas saídas concorrentes —
+    // a segunda limparia estado que a primeira ainda está usando.
+    if (signingOut.current) return;
+    signingOut.current = true;
+
     const dono = session?.user.id;
-    await authAdapter.signOut();
-    // Zerar o perfil é o que zera o papel: como `role` é derivada e não um
-    // estado separado, não existe cópia da permissão anterior para esquecer de
-    // limpar. A próxima conta começa de `null`, isto é, sem privilégio (§26).
-    await applySession(null);
-    setRecoveryPending(false);
-    setRecoveryError(null);
-    await clearPrivateState(dono);
+    try {
+      await authAdapter.signOut();
+      // Zerar o perfil é o que zera o papel: como `role` é derivada e não um
+      // estado separado, não existe cópia da permissão anterior para esquecer de
+      // limpar. A próxima conta começa de `null`, isto é, sem privilégio (§26).
+      await applySession(null);
+      setRecoveryPending(false);
+      setRecoveryError(null);
+      await clearPrivateState(dono);
+    } finally {
+      signingOut.current = false;
+    }
   }, [session, applySession, clearPrivateState]);
 
   const requestPasswordReset = useCallback(async (email: string) => {
@@ -285,7 +333,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const cancelPasswordReset = useCallback(async () => {
     // A sessão do link de recuperação é uma sessão de verdade. Desistir sem
     // encerrá-la deixaria o aplicativo aberto com ela.
-    await authAdapter.signOut();
+    //
+    // Aqui, diferente do "Sair", uma falha na revogação não pode segurar a
+    // pessoa dentro do formulário: ela pediu para desistir, e a resposta certa
+    // é desistir. O que se perde num erro é a revogação remota de um token que
+    // expira sozinho em minutos — não o encerramento neste aparelho.
+    try {
+      await authAdapter.signOut();
+    } catch {
+      // Segue mesmo assim: o estado local é zerado logo abaixo.
+    }
     await applySession(null);
     setRecoveryPending(false);
     setRecoveryError(null);
