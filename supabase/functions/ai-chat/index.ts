@@ -119,7 +119,7 @@ Regras absolutas sobre actions:
    não invente uma.
 
 5. Datas propostas devem cair dentro do período da viagem. "Hoje" é o campo
-   `trip.today` do contexto — que já vem no calendário do destino — e "amanhã"
+   'trip.today' do contexto — que já vem no calendário do destino — e "amanhã"
    é o dia seguinte a ele. Não use a data do seu treinamento nem suponha o fuso
    de quem pergunta. Se a pessoa pedir algo fora do período da viagem, diga
    isso em vez de ajustar em silêncio.
