@@ -75,6 +75,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "typecheck": "tsc --noEmit",
+    "check:functions": "tsc -p supabase/functions/tsconfig.json",
     "seed:generate": "node scripts/generate-seed.mjs"
   },
   "private": true,

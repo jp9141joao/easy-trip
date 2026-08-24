@@ -9,6 +9,7 @@ import {
   AIActionCard,
   AIActionResult,
   AIActionReviewSheet,
+  type ActionVisibility,
   AIComposer,
   TripContextBar,
   TripPickerSheet,
@@ -37,16 +38,17 @@ import { AuroraBackground } from '@/components/ui/Surface';
 import { DOCK_CLEARANCE } from '@/constants/layout';
 import { useKeyboardVisible } from '@/hooks/useKeyboard';
 import { buildReviewGroups, reviewToActions } from '@/domain/aiActionReview';
-import type { AITripAction } from '@/domain/aiActions';
+import { isApplyConfirmation, type AITripAction } from '@/domain/aiActions';
 import { consultationSchema, type ConsultationInput } from '@/domain/schemas';
 import type { Advisor } from '@/domain/types';
-import { useAIConversation } from '@/hooks/useAI';
+import { AIRateLimitError, useAIConversation } from '@/hooks/useAI';
+import { useAITripContext } from '@/hooks/useAITripContext';
 import { AIActionBlockedError, useAIActionRunner } from '@/hooks/useAIActions';
 import { useAdvisors, useConsultations } from '@/hooks/useContent';
 import { useChecklist, useItinerary } from '@/hooks/useTripData';
 import { useTrips } from '@/hooks/useTrips';
 import type { AIActionReport } from '@/services/aiActionExecutor';
-import { useTripSelection } from '@/providers/TripSelectionProvider';
+import { useAuth } from '@/providers/AuthProvider';
 import { CONSULTATION_STATUS_HINT, CONSULTATION_STATUS_LABEL } from '@/lib/labels';
 import { markdownToPlainText } from '@/lib/markdown';
 import { AI_SUGGESTIONS } from '@/services/ai';
@@ -280,32 +282,28 @@ function AITab() {
   const keyboardVisible = useKeyboardVisible();
 
   /*
-   * Contexto da IA é estado desta tela, não o estado global do app (§1).
+   * CONTEXTO DA IA É UMA SELEÇÃO PRÓPRIA — E SÓ DELA.
    *
-   * `currentTripId` continua sendo "a viagem que o app está mostrando" e é
-   * usado aqui apenas como pré-seleção de conveniência — e só se aquele id
-   * estiver mesmo na lista do usuário. Escolher outra viagem para a IA não
-   * mexe na viagem ativa do restante do app: são duas perguntas diferentes
-   * ("o que estou vendo?" e "sobre o que estou perguntando?"), e amarrar as
-   * duas foi justamente o que deixou o contexto implícito.
+   * A viagem que a Home abre (`currentTripId`) e a viagem que a IA lê são duas
+   * perguntas diferentes: "o que estou vendo?" e "sobre o que estou
+   * perguntando?". Enquanto a segunda usava a primeira como pré-seleção,
+   * escolher Paris na Home trocava por baixo o contexto de uma conversa sobre
+   * Tóquio — sem toque, sem aviso, e com a resposta seguinte saindo com os
+   * dados da viagem errada.
+   *
+   * Por isso esta tela **não lê `currentTripId`**, nem como fallback. A
+   * seleção anterior vem de `aiTripContextId:<userId>`, é validada contra a
+   * lista real do usuário, e sem escolha anterior a tela pede uma escolha.
    */
-  const { data: trips = [], isLoading: tripsLoading } = useTrips();
-  const { currentTripId } = useTripSelection();
-  const [aiTripId, setAiTripId] = useState<string | null>(null);
-  const [chosen, setChosen] = useState(false);
+  const { data: trips = [], isLoading: tripsLoading, isSuccess: tripsLoaded } = useTrips();
+  const { user } = useAuth();
+  const {
+    tripId: aiTripId,
+    select: selectAiTrip,
+    restoring: contextRestoring,
+  } = useAITripContext(user?.id ?? null, trips, tripsLoaded);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmNewChat, setConfirmNewChat] = useState(false);
-
-  useEffect(() => {
-    if (chosen) return;
-    if (currentTripId && trips.some((item) => item.id === currentTripId)) setAiTripId(currentTripId);
-  }, [chosen, currentTripId, trips]);
-
-  // Viagem excluída não pode continuar sendo o contexto: a referência órfã sai
-  // e a tela volta ao estado "selecione uma viagem".
-  useEffect(() => {
-    if (aiTripId && !trips.some((item) => item.id === aiTripId)) setAiTripId(null);
-  }, [aiTripId, trips]);
 
   const trip = trips.find((item) => item.id === aiTripId) ?? null;
 
@@ -319,6 +317,8 @@ function AITab() {
     appliedActionIds,
     markApplied,
     unmarkApplied,
+    pendingProposal,
+    dismissProposal,
   } = useAIConversation(trip);
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<ScrollView>(null);
@@ -355,10 +355,14 @@ function AITab() {
    * gravação, e aí o relatório do executor já descreve o que entrou e o que
    * não entrou.
    */
-  const applyActions = async (messageId: string, actions: AITripAction[]) => {
+  const applyActions = async (
+    messageId: string,
+    actions: AITripAction[],
+    visibility?: ActionVisibility,
+  ) => {
     if (actions.length === 0) return;
     try {
-      const report = await runner.run(messageId, actions);
+      const report = await runner.run(messageId, actions, visibility);
       setReview(null);
       setResult({ messageId, report });
 
@@ -373,6 +377,16 @@ function AITab() {
        */
       if (report.outcomes.some((outcome) => outcome.succeeded > 0)) {
         markApplied(actions.map((action) => action.id));
+        /*
+         * E a proposta deixa de estar aberta.
+         *
+         * `markApplied` cobre o caso em que tudo entrou; este cobre o outro —
+         * a revisão em que a pessoa incluiu só parte dos blocos. O que não
+         * entrou não é "ainda pendente": foi desmarcado de propósito. Sem
+         * isto, um "pode aplicar" seguinte reabriria a revisão de uma proposta
+         * que a pessoa já resolveu, com o relatório dela ainda na tela.
+         */
+        dismissProposal(messageId);
       }
 
       if (report.ok) {
@@ -442,17 +456,39 @@ function AITab() {
     const prompt = text.trim();
     // Sem viagem escolhida a pergunta não sai — não existe contexto para ela.
     if (!prompt || !trip || send.isPending) return;
+
+    /*
+     * "Pode aplicar" com proposta aberta é confirmação, não pergunta.
+     *
+     * Mandar a frase ao Gemini custaria uma chamada para receber de volta
+     * "revise e confirme no aplicativo" — sobre a proposta que já está na tela
+     * e que o modelo não tem como reabrir. Foi exatamente o laço observado no
+     * aparelho. Aqui a revisão abre com os itens à vista: reconhecer a
+     * confirmação não é gravar sem mostrar.
+     */
+    if (pendingProposal && isApplyConfirmation(prompt)) {
+      setDraft('');
+      setReview({ messageId: pendingProposal.messageId, actions: pendingProposal.actions });
+      return;
+    }
+
     setDraft('');
     try {
       await send.mutateAsync(prompt);
-    } catch {
+    } catch (error) {
+      if (error instanceof AIRateLimitError) {
+        // O texto volta para o campo: a mensagem não saiu, e quem escreveu não
+        // deve ter de digitar de novo por causa de um limite nosso.
+        setDraft(prompt);
+        toast.warning(error.message);
+        return;
+      }
       toast.error('Não foi possível obter uma resposta agora. Tente novamente.');
     }
   };
 
   const selectTrip = (tripId: string) => {
-    setChosen(true);
-    setAiTripId(tripId);
+    selectAiTrip(tripId);
     setPickerOpen(false);
     // A conversa que aparece a seguir é a daquela viagem: contexto, histórico e
     // thread trocam juntos, então a próxima pergunta já sai com os dados novos
@@ -461,12 +497,21 @@ function AITab() {
     send.reset();
   };
 
+  /**
+   * Novo chat: a conversa anterior é apagada, não arquivada.
+   *
+   * A limpeza da tela acompanha o que o repositório fez — proposta aberta,
+   * revisão, resultado e rascunho saem juntos. Deixar qualquer um deles vivo
+   * apontaria para mensagens que já não existem.
+   */
   const startNewChat = async () => {
     setConfirmNewChat(false);
     try {
       await newChat.mutateAsync();
       setDraft('');
-      toast.success('Novo chat iniciado. A conversa anterior continua salva.');
+      setReview(null);
+      setResult(null);
+      toast.success('Novo chat iniciado. A conversa anterior foi apagada.');
     } catch {
       toast.error('Não foi possível iniciar um novo chat agora. Tente novamente.');
     }
@@ -523,13 +568,32 @@ function AITab() {
           trip={trip}
           onChangeTrip={() => setPickerOpen(true)}
           onNewChat={requestNewChat}
-          disabled={tripsLoading}
+          disabled={tripsLoading || contextRestoring}
           newChatDisabled={!trip || newChat.isPending}
         />
       </View>
 
       <ScrollView
         ref={scrollRef}
+        // Âncora estável para o teste de layout: o vão embaixo do composer era
+        // uma propriedade desta coluna, e o teste precisa apontar para ela sem
+        // depender da ordem em que as `ScrollView` da tela aparecem.
+        testID="ai-conversation"
+        /*
+         * `flex: 1` é a correção do vão embaixo do composer.
+         *
+         * Sem ele, a `ScrollView` de uma coluna flexível se dimensiona pelo
+         * conteúdo. Com a conversa vazia ou com duas mensagens ela ficava
+         * baixinha, o composer subia colado nela, e o espaço que sobrava caía
+         * **abaixo** do composer — o vão que aparecia em alguns estados e não
+         * em outros. Com muitas mensagens a lista enchia a tela e o mesmo
+         * layout parecia certo; era a mesma causa nos dois casos.
+         *
+         * Reivindicando o espaço, a `ScrollView` fica sempre entre a barra de
+         * contexto e o composer, e a folga passa a viver dentro dela. O
+         * composer encosta na navbar em todos os estados.
+         */
+        style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
         // Com o teclado aberto, um toque em algo interativo deve acionar o
         // elemento, não ser consumido só para fechar o teclado (§14).
@@ -538,6 +602,11 @@ function AITab() {
         // espera — sem precisar de um botão só para isso (§15).
         keyboardDismissMode="on-drag"
         contentContainerStyle={{
+          // `flexGrow` e não `flex`: com pouco conteúdo o contêiner cresce até
+          // preencher a área visível (e o `justifyContent` decide onde a folga
+          // fica); com muito, ele volta a crescer com o conteúdo e a lista
+          // rola. `flex: 1` prenderia a altura e cortaria a conversa longa.
+          flexGrow: 1,
           paddingHorizontal: theme.spacing.screen,
           paddingTop: theme.spacing.md,
           paddingBottom: theme.spacing.lg,
@@ -645,10 +714,12 @@ function AITab() {
 
       {/*
         O espaço reservado embaixo existe para o dock flutuante, não para o
-        teclado. Com o teclado aberto o dock sai de cena, então manter os 110pt
-        deixaria o composer boiando bem acima do teclado. Aqui ele cai para a
-        área segura do aparelho — continua sendo um valor do sistema, não um
-        número mágico atrelado a tamanho de teclado (§3, §6).
+        teclado. Com o teclado aberto o dock sai de cena (`(tabs)/_layout.tsx`
+        devolve `null`), então manter a folga dele deixaria o composer boiando
+        acima do teclado; aí a folga é só a área segura do aparelho.
+
+        Os dois valores são do sistema ou do tema — nenhum número mágico
+        atrelado a tamanho de teclado (§3, §6).
       */}
       <AIComposer
         value={draft}
@@ -672,8 +743,11 @@ function AITab() {
           itinerary={itinerary}
           checklist={checklist}
           pending={runner.runningKey === review.messageId}
+          isShared={(trip?.memberCount ?? 1) > 1}
           onCancel={() => setReview(null)}
-          onConfirm={(actions) => void applyActions(review.messageId, actions)}
+          onConfirm={(actions, visibility) =>
+            void applyActions(review.messageId, actions, visibility)
+          }
         />
       ) : null}
 
@@ -688,7 +762,7 @@ function AITab() {
       <ConfirmDialog
         visible={confirmNewChat}
         title="Iniciar novo chat?"
-        message="A conversa atual será encerrada nesta tela. Ela continua salva no seu histórico."
+        message="A conversa atual e suas mensagens serão apagadas."
         confirmLabel="Novo chat"
         cancelLabel="Cancelar"
         loading={newChat.isPending}

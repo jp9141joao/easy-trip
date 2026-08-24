@@ -43,6 +43,14 @@ const mockState = {
   /** Segura o `signOut` para observar a janela em que ele ainda não voltou. */
   gateSignOut: false,
   releaseSignOut: () => {},
+  /** Segura a limpeza de arquivos locais — o "e se ela demorar?" do aparelho. */
+  gatePurge: false,
+  releasePurge: () => {},
+  /** Segura a restauração inicial, para fazê-la voltar **depois** do logout. */
+  gateRestore: false,
+  releaseRestore: () => {},
+  /** Perfil devolvido por `profile.get` — muda para exercitar o caso admin. */
+  role: 'user' as 'user' | 'admin',
 };
 
 const mockCalls = {
@@ -65,7 +73,14 @@ jest.mock('@/repositories', () => ({
         mockListeners.delete(listener);
       };
     },
-    restore: async () => SESSION,
+    restore: async () => {
+      if (mockState.gateRestore) {
+        await new Promise<void>((resolve) => {
+          mockState.releaseRestore = resolve;
+        });
+      }
+      return SESSION;
+    },
     signOut: async () => {
       mockCalls.signOut += 1;
       if (mockState.gateSignOut) {
@@ -86,11 +101,16 @@ jest.mock('@/repositories', () => ({
         userId,
         name: 'Conta',
         defaultCurrency: 'BRL',
-        role: 'user' as const,
+        role: mockState.role,
       }),
     },
     files: {
-      purgeLocalCopies: (userId: string) => {
+      purgeLocalCopies: async (userId: string) => {
+        if (mockState.gatePurge) {
+          await new Promise<void>((resolve) => {
+            mockState.releasePurge = resolve;
+          });
+        }
         mockCalls.purgedFiles.push(userId);
       },
     },
@@ -121,10 +141,11 @@ jest.mock('@/services/emergency', () => ({ EMERGENCY_COVERAGE: 30 }));
  * onde a navegação de verdade tira a decisão.
  */
 function Gate() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isAdmin } = useAuth();
   return (
     <View>
       <Text>{isAuthenticated ? 'rota privada' : 'rota pública'}</Text>
+      {isAuthenticated && isAdmin ? <Text>painel admin</Text> : null}
       {isAuthenticated ? <SettingsScreen /> : null}
     </View>
   );
@@ -185,6 +206,9 @@ const confirmarSaida = async (view: RenderResult) => {
 beforeEach(async () => {
   mockState.signOutFails = false;
   mockState.gateSignOut = false;
+  mockState.gatePurge = false;
+  mockState.gateRestore = false;
+  mockState.role = 'user';
   Object.assign(mockCalls, { signOut: 0, subscribed: 0, unsubscribed: 0, purgedFiles: [] });
   mockListeners.clear();
   probe.currentTripId = null;
@@ -320,6 +344,150 @@ describe('D. uma fonte de verdade para a sessão', () => {
     await act(async () => {
       mockListeners.forEach((listener) => listener(null));
     });
+    expect(view.getByText('rota pública')).toBeTruthy();
+  });
+});
+
+/*
+ * ------------------------------------------------------------------------
+ * Os cenários que o teste em aparelho expôs, e que a rodada anterior não
+ * cobria. Todos partem do mesmo relato: "confirmei Sair e continuei dentro
+ * do app; só saiu depois de fechar e reabrir".
+ * ------------------------------------------------------------------------
+ */
+
+describe('E. a limpeza é lenta, a saída não é', () => {
+  it('desmonta a área privada mesmo com a limpeza de arquivos pendurada', async () => {
+    // O `signOut` do provedor resolveu; o que demora é a limpeza local. Se a
+    // interface esperasse por ela, a pessoa continuaria vendo a conta aberta —
+    // que é a forma exata do defeito, só que com outra causa.
+    mockState.gatePurge = true;
+    const view = await mount();
+
+    fireEvent.press(view.getByLabelText('Sair da conta'));
+    await act(async () => undefined);
+    fireEvent.press(view.getByLabelText('Sair'));
+    await act(async () => undefined);
+
+    // Aqui, agora: a sessão caiu antes de a limpeza terminar.
+    expect(view.getByText('rota pública')).toBeTruthy();
+    expect(mockCalls.purgedFiles).toEqual([]);
+
+    // E a limpeza continua acontecendo — ela é lenta, não é opcional.
+    await act(async () => {
+      mockState.releasePurge();
+    });
+    await waitFor(() => expect(mockCalls.purgedFiles).toEqual(['uid-a']));
+    expect(view.getByText('rota pública')).toBeTruthy();
+  });
+});
+
+describe('F. nada ressuscita a sessão que acabou de sair', () => {
+  it('uma restauração antiga que volta depois do logout é descartada', async () => {
+    /*
+     * A corrida: `restore()` foi pedido na montagem e ainda não voltou quando o
+     * logout acontece. A resposta traz a sessão **antiga** — aplicá-la
+     * colocaria a pessoa de volta na conta da qual ela pediu para sair.
+     */
+    mockState.gateRestore = true;
+
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+    });
+    const view = render(
+      <SafeAreaProvider initialMetrics={metrics}>
+        <QueryClientProvider client={queryClient}>
+          <ThemeProvider>
+            <ToastProvider>
+              <AuthProvider>
+                <TripSelectionProvider>
+                  <Probe />
+                  <Gate />
+                </TripSelectionProvider>
+              </AuthProvider>
+            </ToastProvider>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </SafeAreaProvider>,
+    );
+
+    // A sessão entra pelo aviso do provedor (token restaurado por fora), com a
+    // restauração ainda pendurada.
+    await act(async () => {
+      mockListeners.forEach((listener) => listener(SESSION));
+    });
+    await waitFor(() => expect(view.getByText('rota privada')).toBeTruthy());
+
+    await confirmarSaida(view);
+    expect(view.getByText('rota pública')).toBeTruthy();
+
+    // Só agora a restauração volta, trazendo a sessão vencida.
+    await act(async () => {
+      mockState.releaseRestore();
+    });
+    await act(async () => undefined);
+
+    expect(view.getByText('rota pública')).toBeTruthy();
+    expect(view.queryByText('rota privada')).toBeNull();
+  });
+
+  it('um aviso tardio do provedor com a sessão antiga não reautentica', async () => {
+    // O supabase-js pode ter uma renovação de token em voo quando a saída
+    // acontece. Ela volta emitindo a sessão antiga, e nenhum evento de fundo
+    // pode desfazer uma decisão que a pessoa tomou.
+    const view = await mount();
+    await confirmarSaida(view);
+    expect(view.getByText('rota pública')).toBeTruthy();
+
+    await act(async () => {
+      mockListeners.forEach((listener) => listener(SESSION));
+    });
+
+    expect(view.getByText('rota pública')).toBeTruthy();
+  });
+});
+
+describe('G. o privilégio sai junto', () => {
+  it('a conta admin perde o painel no mesmo instante', async () => {
+    mockState.role = 'admin';
+    const view = await mount();
+    await waitFor(() => expect(view.getByText('painel admin')).toBeTruthy());
+
+    await confirmarSaida(view);
+
+    // `role` é derivada de `profile`, não guardada à parte: zerar o perfil zera
+    // a permissão, e não sobra cópia para esquecer de limpar (§26).
+    expect(view.queryByText('painel admin')).toBeNull();
+    expect(view.getByText('rota pública')).toBeTruthy();
+  });
+
+  it('nem um aviso tardio devolve o painel', async () => {
+    mockState.role = 'admin';
+    const view = await mount();
+    await waitFor(() => expect(view.getByText('painel admin')).toBeTruthy());
+    await confirmarSaida(view);
+
+    await act(async () => {
+      mockListeners.forEach((listener) => listener(SESSION));
+    });
+
+    expect(view.queryByText('painel admin')).toBeNull();
+  });
+});
+
+describe('H. toque duplo', () => {
+  it('dois toques no botão de confirmar produzem uma saída só', async () => {
+    const view = await mount();
+
+    fireEvent.press(view.getByLabelText('Sair da conta'));
+    await act(async () => undefined);
+
+    const confirmar = view.getByLabelText('Sair');
+    fireEvent.press(confirmar);
+    fireEvent.press(confirmar);
+    await act(async () => undefined);
+
+    expect(mockCalls.signOut).toBe(1);
     expect(view.getByText('rota pública')).toBeTruthy();
   });
 });

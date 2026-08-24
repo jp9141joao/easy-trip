@@ -1,18 +1,24 @@
 /**
- * O encerramento da sessão no adaptador Supabase — a causa-raiz do defeito.
+ * O encerramento da sessão no adaptador Supabase — a causa-raiz do defeito, na
+ * segunda investigação.
  *
- * `auth.signOut()` não é uma operação local: ela vai ao servidor revogar o
- * refresh token e **só então** apaga a sessão do aparelho. Como toda a saída do
- * aplicativo acontecia depois dessa promessa, uma rede ruim segurava a interface
- * logada — enquanto o token no disco já tinha ido embora. Daí o sintoma
- * relatado: "só sai depois de fechar e abrir o app".
+ * O que a primeira rodada errou: ela colocou um teto na espera, mas manteve a
+ * conclusão pendurada na rede. `auth.signOut()` **não é uma operação local** em
+ * nenhum `scope` — ela chama `/logout` e só depois remove o token do aparelho.
+ * Quando essa ida fica pendurada (ou quando o token já venceu e a renovação
+ * embutida na própria chamada falha), a sessão **sobrevive**. O adaptador então
+ * lançava, a tela mostrava "não foi possível sair", e a pessoa continuava
+ * dentro do aplicativo — exatamente o sintoma relatado no aparelho.
  *
- * O que estes cenários fixam é o contrato novo:
+ * O contrato novo, que estes cenários fixam:
  *
- *  - a espera tem teto;
- *  - quem responde "saiu?" é o armazenamento local, não o retorno da chamada;
- *  - e quando a sessão sobrevive, o adaptador **lança** — a interface precisa
- *    poder dizer que não deu, em vez de fingir uma saída.
+ *  - o `scope` é `'local'`: o botão pede para sair **daqui**, não para revogar
+ *    as sessões dos outros aparelhos;
+ *  - se a sessão sobreviver à chamada, o adaptador **apaga o token ele mesmo**,
+ *    sem rede;
+ *  - quem responde "saiu?" é o armazenamento, nunca o retorno da chamada;
+ *  - a exceção fica reservada ao único caso em que a saída de fato não
+ *    aconteceu: nem a biblioteca nem a remoção direta conseguiram limpar.
  *
  * O dublê é o cliente do Supabase, que é a fronteira de rede. O adaptador
  * testado é o de verdade.
@@ -25,8 +31,15 @@ const mockAuth = {
   getSession: jest.fn(),
 };
 
+const mockForgetLocalSession = jest.fn(async () => {
+  // O efeito real: sem token no disco, a sessão acabou.
+  mockAuth.getSession.mockResolvedValue(semSessao);
+});
+
 jest.mock('@/repositories/supabase/client', () => ({
   getSupabaseClient: () => ({ auth: mockAuth }),
+  forgetLocalSession: () => mockForgetLocalSession(),
+  supabaseAuthStorageKey: () => 'sb-projeto-auth-token',
 }));
 
 /** Carrega o módulo com o ambiente de produção montado, para cair no adaptador Supabase. */
@@ -53,6 +66,7 @@ const semSessao = { data: { session: null } };
 beforeEach(() => {
   mockAuth.signOut.mockReset();
   mockAuth.getSession.mockReset();
+  mockForgetLocalSession.mockClear();
 });
 
 afterEach(() => {
@@ -68,6 +82,21 @@ describe('sair no adaptador Supabase', () => {
     await expect(authAdapter.signOut()).resolves.toBeUndefined();
 
     expect(mockAuth.signOut).toHaveBeenCalledTimes(1);
+    // Caminho limpo: a própria biblioteca apagou o token e emitiu `SIGNED_OUT`.
+    expect(mockForgetLocalSession).not.toHaveBeenCalled();
+  });
+
+  it('pede escopo local, e não global', async () => {
+    // O botão "Sair" encerra **esta** sessão. Revogar as sessões dos outros
+    // aparelhos da pessoa não foi pedido — e é o `scope: 'global'` (o padrão)
+    // que torna a chamada mais cara e mais fácil de pendurar.
+    mockAuth.signOut.mockResolvedValue({ error: null });
+    mockAuth.getSession.mockResolvedValue(semSessao);
+
+    const { authAdapter } = loadRepositories();
+    await authAdapter.signOut();
+
+    expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' });
   });
 
   it('não denuncia falha quando a sessão local já foi embora', async () => {
@@ -81,15 +110,21 @@ describe('sair no adaptador Supabase', () => {
     await expect(authAdapter.signOut()).resolves.toBeUndefined();
   });
 
-  it('lança quando a sessão continua de pé', async () => {
-    // O caso oposto: `signOut()` voltou cedo, sem apagar nada. Resolver aqui
-    // seria dizer que saiu — e o aplicativo limparia o estado de uma conta que
-    // continua autenticada.
+  it('apaga o token ele mesmo quando a chamada volta com a sessão de pé', async () => {
+    // O caso que derrubava o logout no aparelho: `signOut()` volta cedo (token
+    // vencido, renovação interna falhando) sem apagar nada. Antes, o adaptador
+    // lançava aqui e a pessoa continuava logada.
     mockAuth.signOut.mockResolvedValue({ error: { message: 'failed to fetch' } });
     mockAuth.getSession.mockResolvedValue(comSessao);
 
     const { authAdapter } = loadRepositories();
-    await expect(authAdapter.signOut()).rejects.toThrow(/conexão|internet/i);
+    await expect(authAdapter.signOut()).resolves.toBeUndefined();
+
+    expect(mockForgetLocalSession).toHaveBeenCalledTimes(1);
+    // E reconcilia a contabilidade da biblioteca com o disco já limpo — é essa
+    // segunda chamada, agora sem token para revogar, que emite `SIGNED_OUT` e
+    // invalida uma renovação em voo.
+    expect(mockAuth.signOut).toHaveBeenCalledTimes(2);
   });
 
   it('não fica presa numa rede que não responde', async () => {
@@ -101,25 +136,38 @@ describe('sair no adaptador Supabase', () => {
     const { authAdapter } = loadRepositories();
     const saida = authAdapter.signOut();
 
-    await jest.advanceTimersByTimeAsync(6_000);
+    await jest.advanceTimersByTimeAsync(3_000);
 
     // Antes, esta era a espera sem fim que deixava a interface logada.
     await expect(saida).resolves.toBeUndefined();
   });
 
-  it('estourado o prazo com a sessão viva, avisa em vez de fingir', async () => {
+  it('estourado o prazo com a sessão viva, sai assim mesmo', async () => {
     jest.useFakeTimers();
     mockAuth.signOut.mockReturnValue(pendurada());
     mockAuth.getSession.mockResolvedValue(comSessao);
 
     const { authAdapter } = loadRepositories();
     const saida = authAdapter.signOut();
-    const capturado = saida.catch((error: Error) => error);
 
-    await jest.advanceTimersByTimeAsync(6_000);
+    // Prazo da rede + conferência + a segunda chamada, também pendurada.
+    await jest.advanceTimersByTimeAsync(10_000);
 
-    const erro = await capturado;
-    expect(erro).toBeInstanceOf(Error);
-    expect((erro as Error).message).toBe('Não foi possível sair da conta. Tente novamente.');
+    await expect(saida).resolves.toBeUndefined();
+    expect(mockForgetLocalSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('só lança quando nem a remoção direta consegue apagar a sessão', async () => {
+    // O armazenamento do aparelho recusou a escrita. Aí a saída realmente não
+    // aconteceu, e dizer o contrário faria o app limpar o estado de uma conta
+    // que continua autenticada.
+    mockAuth.signOut.mockResolvedValue({ error: { message: 'failed to fetch' } });
+    mockAuth.getSession.mockResolvedValue(comSessao);
+    mockForgetLocalSession.mockImplementationOnce(async () => {
+      // Não muda nada: a sessão continua no disco.
+    });
+
+    const { authAdapter } = loadRepositories();
+    await expect(authAdapter.signOut()).rejects.toThrow(/conexão|internet/i);
   });
 });

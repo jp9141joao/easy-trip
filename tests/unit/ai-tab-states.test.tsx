@@ -49,7 +49,10 @@ const toquio = trip({
 
 const state = {
   trips: [] as Trip[],
+  /** A viagem que a **Home** está mostrando. A aba de IA não pode lê-la. */
   currentTripId: null as string | null,
+  /** A escolha anterior feita **na IA**, como estaria persistida no aparelho. */
+  aiTripContextId: null as string | null,
   messages: [] as AIMessage[],
 };
 
@@ -59,11 +62,28 @@ const mockNewChat = jest.fn(async () => undefined);
 const contextoRecebido: { current: Trip | null } = { current: null };
 
 jest.mock('@/hooks/useTrips', () => ({
-  useTrips: () => ({ data: state.trips, isLoading: false }),
+  useTrips: () => ({ data: state.trips, isLoading: false, isSuccess: true }),
 }));
 
-jest.mock('@/providers/TripSelectionProvider', () => ({
-  useTripSelection: () => ({ currentTripId: state.currentTripId }),
+jest.mock('@/providers/AuthProvider', () => ({
+  useAuth: () => ({ user: { id: 'u1' } }),
+}));
+
+/*
+ * O armazenamento da escolha da IA, em memória.
+ *
+ * `state.currentTripId` continua existindo nesta suíte de propósito: ele é a
+ * seleção da Home, e vários cenários o deixam apontando para uma viagem só
+ * para provar que a aba de IA **não** o consulta.
+ */
+jest.mock('@/lib/aiTripContext', () => ({
+  readAITripContext: async () => state.aiTripContextId,
+  writeAITripContext: async (_userId: string, tripId: string | null) => {
+    state.aiTripContextId = tripId;
+  },
+  clearAITripContext: async () => {
+    state.aiTripContextId = null;
+  },
 }));
 
 jest.mock('@/hooks/useContent', () => ({
@@ -86,7 +106,8 @@ jest.mock('@/hooks/useAI', () => ({
         reset: jest.fn(),
       },
       newChat: { isPending: false, mutateAsync: () => mockNewChat() },
-      clear: { mutateAsync: jest.fn() },
+      pendingProposal: null,
+      dismissProposal: jest.fn(),
       // Nenhuma resposta desta suíte traz proposta — o que se mede aqui são os
       // estados da aba, não o fluxo de ações (que tem suíte própria).
       actionsFor: () => [],
@@ -137,6 +158,7 @@ const abrirAbaIA = async () => {
 beforeEach(() => {
   state.trips = [];
   state.currentTripId = null;
+  state.aiTripContextId = null;
   state.messages = [];
   contextoRecebido.current = null;
   mockSend.mockClear();
@@ -180,24 +202,34 @@ describe('C. uma viagem selecionada', () => {
     state.trips = [paris, toquio];
   });
 
-  it('pré-seleciona a viagem ativa do app quando ela é do usuário', async () => {
+  it('NÃO herda a viagem que a Home está mostrando', async () => {
+    // A regra invertida em relação à versão anterior desta suíte, e o motivo é
+    // de produto: escolher Paris na Home não pode trocar o contexto de uma
+    // conversa sobre outra viagem. Sem escolha própria, a IA pergunta.
     state.currentTripId = 'trip-paris';
     const view = await abrirAbaIA();
 
-    expect(contextoRecebido.current?.id).toBe('trip-paris');
-    expect(view.getByLabelText(/Contexto ativo: Paris/)).toBeTruthy();
+    expect(contextoRecebido.current).toBeNull();
+    expect(view.getByText('Escolha uma viagem')).toBeTruthy();
   });
 
-  it('ignora um id ativo que não pertence à lista do usuário', async () => {
-    // Um `currentTripId` órfão (viagem de outra conta, ou já excluída) não pode
-    // virar contexto: ele não está na lista devolvida pelo DataSource.
-    state.currentTripId = 'trip-de-outra-conta';
+  it('restaura a última viagem escolhida na própria IA', async () => {
+    state.aiTripContextId = 'trip-toquio';
+    const view = await abrirAbaIA();
+
+    expect(contextoRecebido.current?.id).toBe('trip-toquio');
+    expect(view.getByLabelText(/Contexto ativo: Tóquio/)).toBeTruthy();
+  });
+
+  it('ignora uma escolha guardada que não pertence à lista do usuário', async () => {
+    // Viagem excluída, ou de outra conta: a referência órfã não vira contexto.
+    state.aiTripContextId = 'trip-de-outra-conta';
     await abrirAbaIA();
     expect(contextoRecebido.current).toBeNull();
   });
 
   it('libera a pergunta assim que existe contexto', async () => {
-    state.currentTripId = 'trip-paris';
+    state.aiTripContextId = 'trip-paris';
     const view = await abrirAbaIA();
 
     fireEvent.press(view.getByText('Estou gastando demais?'));
@@ -210,7 +242,7 @@ describe('C. uma viagem selecionada', () => {
 describe('D/E. troca Paris → Tóquio', () => {
   beforeEach(() => {
     state.trips = [paris, toquio];
-    state.currentTripId = 'trip-paris';
+    state.aiTripContextId = 'trip-paris';
   });
 
   it('troca o contexto e é a nova viagem que vale na próxima pergunta', async () => {
@@ -245,7 +277,7 @@ describe('F. novo chat', () => {
 
   beforeEach(() => {
     state.trips = [paris];
-    state.currentTripId = 'trip-paris';
+    state.aiTripContextId = 'trip-paris';
   });
 
   it('pergunta antes de encerrar uma conversa em andamento', async () => {
@@ -256,6 +288,8 @@ describe('F. novo chat', () => {
     await act(async () => undefined);
 
     expect(view.getByText('Iniciar novo chat?')).toBeTruthy();
+    // O aviso precisa dizer o que de fato acontece: a conversa é apagada.
+    expect(view.getByText('A conversa atual e suas mensagens serão apagadas.')).toBeTruthy();
     // Só cria depois da confirmação.
     expect(mockNewChat).not.toHaveBeenCalled();
 
@@ -294,7 +328,7 @@ describe('F. novo chat', () => {
 describe('H. resposta longa em Markdown', () => {
   it('mostra a resposta formatada, sem sintaxe crua', async () => {
     state.trips = [paris];
-    state.currentTripId = 'trip-paris';
+    state.aiTripContextId = 'trip-paris';
     state.messages = [
       {
         id: 'm1',

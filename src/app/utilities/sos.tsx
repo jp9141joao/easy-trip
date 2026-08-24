@@ -179,7 +179,7 @@ export default function SosScreen() {
                     title="Nenhuma apólice cadastrada"
                     message="Guarde o PDF da sua apólice nos documentos da viagem: ele fica disponível mesmo sem internet."
                     actionLabel="Abrir documentos da viagem"
-                    onAction={() => router.push(`/trip/${trip.id}/tickets`)}
+                    onAction={() => router.push(`/trip/${trip.id}/reservations`)}
                     compact
                   />
                 </GlassCard>

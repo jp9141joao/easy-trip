@@ -12,7 +12,7 @@ import { useTheme } from '@/theme';
 
 /**
  * Four primary destinations only (§21). Clima, SOS, mapa, comunidade, lugares
- * and tickets are contextual and reached from where they make sense — putting
+ * and reservations are contextual and reached from where they make sense — putting
  * them here would be exactly the cognitive overload the product fights.
  */
 const TABS: { name: string; label: string; icon: LucideIcon }[] = [

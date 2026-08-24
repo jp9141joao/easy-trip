@@ -13,6 +13,7 @@
  */
 
 import type { CurrencyCode, Expense, ExpenseCategory, ISODate, Trip } from '@/domain/types';
+import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
 import { nowISO } from '@/lib/date';
 import { currencyService } from './currency';
 
@@ -22,6 +23,18 @@ export interface ExpenseDraft {
   amount: number;
   currency: CurrencyCode;
   transactionDate: ISODate;
+  /**
+   * Quem vê esta despesa. Ausente = o default do domínio, que para despesa é
+   * `private` (§11). A tela da Carteira e a folha de revisão da IA passam o
+   * valor escolhido; qualquer outro caminho cai no conservador.
+   */
+  visibility?: Visibility;
+  /**
+   * Quem pagou. Ausente = quem está lançando. O campo existe para atribuição
+   * (§14): não há divisão de conta nesta fase, e é justamente por isso que o
+   * dado precisa ser gravado agora — reconstruí-lo depois seria impossível.
+   */
+  paidBy?: string;
 }
 
 /**
@@ -53,5 +66,8 @@ export async function buildExpenseRecord(
     exchangeRate: conversion?.rate.rate,
     exchangeRateTimestamp: conversion?.rate.timestamp ?? (conversion ? nowISO() : undefined),
     transactionDate: draft.transactionDate,
+    visibility: draft.visibility ?? DEFAULT_VISIBILITY.expense,
+    createdBy: userId,
+    paidBy: draft.paidBy ?? userId,
   };
 }

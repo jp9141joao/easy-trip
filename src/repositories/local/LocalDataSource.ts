@@ -26,16 +26,15 @@ import type {
   Profile,
   CurrencyCode,
   ReservationRequest,
-  Ticket,
   Trip,
 } from '@/domain/types';
 import { validateAvatar } from '@/domain/avatar';
+import { DEFAULT_VISIBILITY } from '@/domain/visibility';
 import { byEditorialOrder, isOfferLive } from '@/domain/offerWindow';
 import { parseUserRole } from '@/domain/roles';
 import { nowISO, todayISO } from '@/lib/date';
 import { deleteStoredFile, persistFile, purgeAllFiles, storedFileExists } from '@/lib/files';
 import {
-  ATTACHMENT_POLICY,
   CONTENT_IMAGE_POLICY,
   JOURNAL_POLICY,
   managedContentPath,
@@ -58,10 +57,20 @@ import type {
   PlaceRepository,
   ProfileRepository,
   ReservationRepository,
-  TicketRepository,
   TripRepository,
 } from '../types';
 import { LocalCollection } from './collection';
+import {
+  createLocalMembership,
+  createLocalSuggestions,
+  localNotificationRepository,
+  localReminderRepository,
+  localTravelReservationRepository,
+  notifications as notificationCollection,
+  reminders as reminderCollection,
+  suggestions as suggestionCollection,
+  travelReservations as travelReservationCollection,
+} from './collaboration';
 
 /* --------------------------- persistent collections ----------------------- */
 
@@ -69,7 +78,6 @@ const trips = new LocalCollection<Trip>('trips');
 const itinerary = new LocalCollection<ItineraryItem>('itinerary');
 const checklist = new LocalCollection<ChecklistItem>('checklist');
 const expenses = new LocalCollection<Expense>('expenses');
-const tickets = new LocalCollection<Ticket>('tickets');
 const journal = new LocalCollection<JournalEntry>('journal');
 const journalMedia = new LocalCollection<JournalMedia>('journalMedia');
 const goals = new LocalCollection<Goal>('goals');
@@ -106,7 +114,13 @@ const placeFavorites = new LocalCollection<{ id: string; userId: string; placeId
 const tripRepository: TripRepository = {
   async list(userId) {
     const rows = await trips.find((t) => t.userId === userId);
-    return rows.sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
+    return rows
+      .sort((a, b) => (a.startDate < b.startDate ? 1 : -1))
+      // No modo demonstração existe uma conta só, então toda viagem é própria
+      // e tem um viajante. Os campos são preenchidos ainda assim para que a
+      // interface não precise de dois caminhos: a mesma tela lê `role` aqui e
+      // no modo conectado (§68).
+      .map((trip) => ({ ...trip, role: 'owner' as const, memberCount: 1 }));
   },
   get: (tripId) => trips.byId(tripId),
   async create(input) {
@@ -120,15 +134,21 @@ const tripRepository: TripRepository = {
     const entryIds = new Set(entries.map((e) => e.id));
     const media = await journalMedia.find((m) => entryIds.has(m.journalEntryId));
     media.forEach((m) => deleteStoredFile(m.fileUrl));
-    const tripTickets = await tickets.find((t) => t.tripId === tripId);
-    tripTickets.forEach((t) => t.fileUrl && deleteStoredFile(t.fileUrl));
 
     await journalMedia.removeWhere((m) => entryIds.has(m.journalEntryId));
     await journal.removeWhere((j) => j.tripId === tripId);
     await itinerary.removeWhere((i) => i.tripId === tripId);
     await checklist.removeWhere((c) => c.tripId === tripId);
     await expenses.removeWhere((e) => e.tripId === tripId);
-    await tickets.removeWhere((t) => t.tripId === tripId);
+
+    // Nada sobrevive à viagem (§12). Reserva com documento anexado sai junto do
+    // arquivo; lembrete e sugestão sem viagem não têm o que abrir.
+    const tripReservations = await travelReservationCollection.find((r) => r.tripId === tripId);
+    tripReservations.forEach((r) => r.fileUrl && deleteStoredFile(r.fileUrl));
+    await travelReservationCollection.removeWhere((r) => r.tripId === tripId);
+    await reminderCollection.removeWhere((r) => r.tripId === tripId);
+    await suggestionCollection.removeWhere((s) => s.tripId === tripId);
+
     const tripConversations = await conversations.find((c) => c.tripId === tripId);
     const convIds = new Set(tripConversations.map((c) => c.id));
     await messages.removeWhere((m) => convIds.has(m.conversationId));
@@ -141,8 +161,14 @@ const tripRepository: TripRepository = {
 
 const itineraryRepository: ItineraryRepository = {
   listByTrip: (tripId) => itinerary.find((i) => i.tripId === tripId),
-  create: (input) => itinerary.insert({ ...input, id: createId() }),
-  update: (id, patch) => itinerary.update(id, patch),
+  create: (input) =>
+    itinerary.insert({
+      ...input,
+      visibility: input.visibility ?? DEFAULT_VISIBILITY.itinerary,
+      id: createId(),
+      updatedAt: nowISO(),
+    }),
+  update: (id, patch) => itinerary.update(id, { ...patch, updatedAt: nowISO() }),
   remove: (id) => itinerary.remove(id),
 };
 
@@ -150,7 +176,13 @@ const itineraryRepository: ItineraryRepository = {
 
 const checklistRepository: ChecklistRepository = {
   listByTrip: (tripId) => checklist.find((c) => c.tripId === tripId),
-  create: (input) => checklist.insert({ ...input, id: createId(), createdAt: nowISO() }),
+  create: (input) =>
+    checklist.insert({
+      ...input,
+      visibility: input.visibility ?? DEFAULT_VISIBILITY.checklist,
+      id: createId(),
+      createdAt: nowISO(),
+    }),
   update: (id, patch) => checklist.update(id, patch),
   remove: (id) => checklist.remove(id),
 };
@@ -162,30 +194,19 @@ const expenseRepository: ExpenseRepository = {
     const rows = await expenses.find((e) => e.tripId === tripId);
     return rows.sort((a, b) => (a.transactionDate < b.transactionDate ? 1 : -1));
   },
-  create: (input) => expenses.insert({ ...input, id: createId(), createdAt: nowISO() }),
+  create: (input) =>
+    expenses.insert({
+      ...input,
+      visibility: input.visibility ?? DEFAULT_VISIBILITY.expense,
+      // Quem lançou é quem pagou, até que a tela diga o contrário. Deixar
+      // `paidBy` vazio faria o filtro "Minhas" da Carteira perder a despesa.
+      paidBy: input.paidBy ?? input.userId,
+      createdBy: input.createdBy ?? input.userId,
+      id: createId(),
+      createdAt: nowISO(),
+    }),
   update: (id, patch) => expenses.update(id, patch),
   remove: (id) => expenses.remove(id),
-};
-
-/* -------------------------------- tickets --------------------------------- */
-
-const ticketRepository: TicketRepository = {
-  listByTrip: (tripId) => tickets.find((t) => t.tripId === tripId),
-  create: (input) => tickets.insert({ ...input, id: createId() }),
-  update: (id, patch) => tickets.update(id, patch),
-  async remove(id) {
-    const ticket = await tickets.byId(id);
-    if (ticket?.fileUrl) deleteStoredFile(ticket.fileUrl);
-    await tickets.remove(id);
-  },
-  async uploadAttachment(userId, tripId, file) {
-    // A mesma política do adaptador remoto. Ela mora nas duas fontes de
-    // propósito: sem isso, o que a tela aceita passaria a depender de o
-    // aplicativo estar em modo local ou conectado.
-    const validation = validateUpload(file, ATTACHMENT_POLICY);
-    if (!validation.ok) throw new Error(validation.message);
-    return persistFile(['tickets', tripId], file);
-  },
 };
 
 /* -------------------------------- journal --------------------------------- */
@@ -197,7 +218,14 @@ const journalRepository: JournalRepository = {
   },
   async create(input) {
     const timestamp = nowISO();
-    return journal.insert({ ...input, id: createId(), createdAt: timestamp, updatedAt: timestamp });
+    return journal.insert({
+      ...input,
+      visibility: input.visibility ?? DEFAULT_VISIBILITY.journal,
+      createdBy: input.createdBy ?? input.userId,
+      id: createId(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
   },
   update: (id, patch) => journal.update(id, { ...patch, updatedAt: nowISO() }),
   async remove(id) {
@@ -533,6 +561,13 @@ const aiRepository: AIRepository = {
   async clearConversation(conversationId) {
     await messages.removeWhere((m) => m.conversationId === conversationId);
   },
+  async deleteConversation(conversationId) {
+    // O modo local não tem cascade: a ordem é apagar as mensagens primeiro,
+    // para que uma falha no meio nunca deixe mensagens órfãs apontando para
+    // uma conversa que já não existe.
+    await messages.removeWhere((m) => m.conversationId === conversationId);
+    await conversations.remove(conversationId);
+  },
 };
 
 /* -------------------------------- insurance ------------------------------- */
@@ -551,7 +586,6 @@ export const localDataSource: DataSource = {
   itinerary: itineraryRepository,
   checklist: checklistRepository,
   expenses: expenseRepository,
-  tickets: ticketRepository,
   journal: journalRepository,
   goals: goalRepository,
   profile: profileRepository,
@@ -561,6 +595,13 @@ export const localDataSource: DataSource = {
   reservations: reservationRepository,
   ai: aiRepository,
   insurance: insuranceRepository,
+  members: createLocalMembership(async (tripId) => (await trips.byId(tripId))?.userId ?? null),
+  notifications: localNotificationRepository,
+  reminders: localReminderRepository,
+  travelReservations: localTravelReservationRepository,
+  suggestions: createLocalSuggestions(
+    async (tripId) => (await trips.byId(tripId))?.destinationCity ?? null,
+  ),
   /**
    * No modo local o arquivo **já é** local: `persistFile` copia o que o usuário
    * escolheu para o diretório do aplicativo, e é essa URI que fica gravada.
@@ -584,6 +625,8 @@ export const localDataSource: DataSource = {
     await articleLikes.removeWhere((l) => l.userId === userId);
     await placeFavorites.removeWhere((f) => f.userId === userId);
     await insurance.removeWhere((p) => p.userId === userId);
+    await notificationCollection.removeWhere((n) => n.userId === userId);
+    await reminderCollection.removeWhere((r) => r.userId === userId);
     const userConversations = await conversations.find((c) => c.userId === userId);
     const ids = new Set(userConversations.map((c) => c.id));
     await messages.removeWhere((m) => ids.has(m.conversationId));
@@ -600,9 +643,12 @@ export const localCollections = {
   itinerary,
   checklist,
   expenses,
-  tickets,
   journal,
   journalMedia,
   goals,
   profiles,
+  notifications: notificationCollection,
+  reminders: reminderCollection,
+  travelReservations: travelReservationCollection,
+  suggestions: suggestionCollection,
 };

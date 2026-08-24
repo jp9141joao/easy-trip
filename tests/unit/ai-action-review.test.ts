@@ -43,6 +43,7 @@ const existingItinerary: ItineraryItem[] = [
     title: 'Visitar Museu do Louvre',
     completed: false,
     sortOrder: 0,
+    visibility: 'shared',
   },
 ];
 
@@ -53,6 +54,7 @@ const existingChecklist: ChecklistItem[] = [
     label: 'Adaptador de tomada',
     category: 'mala',
     completed: false,
+    visibility: 'shared',
     createdAt: '2026-01-01T00:00:00.000Z',
   },
 ];

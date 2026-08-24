@@ -12,6 +12,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import type { TripRole } from '@/domain/collaboration';
 import type {
   AIConversation,
   AIMessage,
@@ -30,10 +31,10 @@ import type {
   Profile,
   ProfilePatch,
   ReservationRequest,
-  Ticket,
   Trip,
 } from '@/domain/types';
 import { avatarStoragePath, validateAvatar } from '@/domain/avatar';
+import { DEFAULT_VISIBILITY, parseVisibility } from '@/domain/visibility';
 import { parseUserRole } from '@/domain/roles';
 import { nowISO, todayISO } from '@/lib/date';
 import { createId } from '@/lib/id';
@@ -56,6 +57,14 @@ import {
   writeMirrorFromFile,
 } from '@/lib/fileMirror';
 import { deleteWithFiles, type FileLifecycleDeps } from './fileLifecycle';
+import {
+  createMembershipRepository,
+  createNotificationRepository,
+  createReminderRepository,
+  createSuggestionRepository,
+  createTravelReservationRepository,
+  type CollaborationDeps,
+} from './collaboration';
 import { getSupabaseClient } from './client';
 import type { DataSource, StoredFile, UploadableFile } from '../types';
 
@@ -194,6 +203,7 @@ const toTrip = (row: Row): Trip => ({
   budgetCurrency: row.budget_currency,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+  suggestionsRefreshedAt: row.suggestions_refreshed_at ?? undefined,
 });
 
 const fromTrip = (trip: Partial<Trip>): Row => prune({
@@ -224,9 +234,14 @@ const toItinerary = (row: Row): ItineraryItem => ({
   placeName: row.place_name ?? undefined,
   latitude: row.latitude ?? undefined,
   longitude: row.longitude ?? undefined,
+  address: row.address ?? undefined,
+  placeSource: row.place_source ?? undefined,
   reservationReference: row.reservation_reference ?? undefined,
   completed: row.completed,
   sortOrder: row.sort_order,
+  visibility: parseVisibility(row.visibility, DEFAULT_VISIBILITY.itinerary),
+  createdBy: row.created_by ?? undefined,
+  updatedAt: row.updated_at ?? undefined,
 });
 
 const fromItinerary = (item: Partial<ItineraryItem>): Row => prune({
@@ -240,9 +255,39 @@ const fromItinerary = (item: Partial<ItineraryItem>): Row => prune({
   place_name: item.placeName,
   latitude: item.latitude,
   longitude: item.longitude,
+  address: item.address,
+  place_source: item.placeSource,
   reservation_reference: item.reservationReference,
   completed: item.completed,
   sort_order: item.sortOrder,
+  visibility: item.visibility,
+  // `created_by` fica de fora de propósito: quem o escreve é o trigger
+  // `set_created_by` (0009), a partir de `auth.uid()`. Mandá-lo daqui seria
+  // deixar o cliente declarar a própria autoria.
+});
+
+/**
+ * A entrada de diário lida do banco.
+ *
+ * Existia em três cópias inline (listar, criar, atualizar). Com a visibilidade
+ * entrando no modelo, três cópias significariam três lugares para esquecer
+ * `visibility` — e uma entrada privada lida sem o campo cairia no default
+ * `shared` da função de leitura, que é exatamente o erro que não pode
+ * acontecer neste tipo de dado.
+ */
+const toJournal = (row: Row): JournalEntry => ({
+  id: row.id,
+  tripId: row.trip_id,
+  userId: row.user_id,
+  entryDate: row.entry_date,
+  content: row.content,
+  latitude: row.latitude ?? undefined,
+  longitude: row.longitude ?? undefined,
+  placeName: row.place_name ?? undefined,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  visibility: parseVisibility(row.visibility, DEFAULT_VISIBILITY.journal),
+  createdBy: row.created_by ?? undefined,
 });
 
 const toChecklist = (row: Row): ChecklistItem => ({
@@ -254,6 +299,8 @@ const toChecklist = (row: Row): ChecklistItem => ({
   priority: row.priority ?? undefined,
   dueDate: row.due_date ?? undefined,
   createdAt: row.created_at,
+  visibility: parseVisibility(row.visibility, DEFAULT_VISIBILITY.checklist),
+  createdBy: row.created_by ?? undefined,
 });
 
 const fromChecklist = (item: Partial<ChecklistItem>): Row => prune({
@@ -263,6 +310,7 @@ const fromChecklist = (item: Partial<ChecklistItem>): Row => prune({
   completed: item.completed,
   priority: item.priority,
   due_date: item.dueDate,
+  visibility: item.visibility,
 });
 
 const toExpense = (row: Row): Expense => ({
@@ -279,6 +327,9 @@ const toExpense = (row: Row): Expense => ({
   transactionDate: row.transaction_date,
   description: row.description,
   createdAt: row.created_at,
+  visibility: parseVisibility(row.visibility, DEFAULT_VISIBILITY.expense),
+  createdBy: row.created_by ?? undefined,
+  paidBy: row.paid_by ?? undefined,
 });
 
 const fromExpense = (expense: Partial<Expense>): Row => prune({
@@ -432,24 +483,109 @@ function prune(row: Row): Row {
   return Object.fromEntries(Object.entries(row).filter(([, value]) => value !== undefined));
 }
 
+/**
+ * Acrescenta papel e contagem de viajantes às viagens lidas.
+ *
+ * Os dois campos são derivados de `trip_members` e nunca gravados na linha da
+ * viagem: a mesma viagem tem papéis diferentes para pessoas diferentes, e uma
+ * coluna `role` em `trips` guardaria a resposta de uma pergunta que depende de
+ * quem pergunta.
+ *
+ * Uma consulta só para todas as viagens, e não uma por viagem: a Home lista
+ * dezenas, e N+1 aqui seria N+1 na abertura do aplicativo.
+ *
+ * `userId` nulo significa "use a sessão" — o caminho de `get`, onde quem lê é
+ * sempre quem está logado.
+ */
+async function decorateWithMembership(trips: Trip[], userId: string | null): Promise<Trip[]> {
+  if (trips.length === 0) return trips;
+
+  const viewer = userId ?? (await currentUserId());
+  const result = await db()
+    .from('trip_members')
+    .select('trip_id, user_id, role')
+    .in('trip_id', trips.map((trip) => trip.id));
+
+  if (result.error) return trips;
+
+  const counts = new Map<string, number>();
+  const roles = new Map<string, TripRole>();
+  for (const row of (result.data ?? []) as Row[]) {
+    counts.set(row.trip_id, (counts.get(row.trip_id) ?? 0) + 1);
+    if (viewer && row.user_id === viewer) roles.set(row.trip_id, row.role as TripRole);
+  }
+
+  return trips.map((trip) => ({
+    ...trip,
+    memberCount: counts.get(trip.id) ?? 1,
+    // Sem linha em `trip_members` mas com `user_id` próprio: viagem cujo
+    // backfill não rodou. `owner` é a resposta certa, e é a mesma que os
+    // helpers do Postgres dão nesse caso.
+    role: roles.get(trip.id) ?? (viewer && trip.userId === viewer ? 'owner' : undefined),
+  }));
+}
+
+/* --------------------------- colaboração (0008+) -------------------------- */
+
+/**
+ * O que os módulos de colaboração precisam deste arquivo.
+ *
+ * Passado como dependência em vez de importado: `db`, `prune`, `unwrap` e
+ * `openableUrl` são detalhes internos daqui, e exportá-los transformaria cada
+ * um numa API pública que qualquer arquivo poderia usar para falar com o
+ * Postgres por fora dos repositórios.
+ */
+const collaborationDeps: CollaborationDeps = {
+  db,
+  unwrap,
+  unwrapList,
+  prune,
+  openableUrl,
+  attachmentsBucket: BUCKET.attachments,
+  async uploadAttachment(userId, tripId, file) {
+    const validation = validateUpload(file, ATTACHMENT_POLICY);
+    if (!validation.ok) throw new Error(validation.message);
+    const path = attachmentStoragePath(userId, tripId, validation.extension, createId());
+    const stored = await uploadFile(BUCKET.attachments, path, {
+      ...file,
+      mimeType: validation.mimeType,
+    });
+    // D-04: o arquivo já está no aparelho — espelhá-lo agora custa muito menos
+    // do que baixá-lo de volta no aeroporto, que é onde não vai haver rede.
+    await writeMirrorFromFile(BUCKET.attachments, path, file.uri);
+    return stored;
+  },
+};
+
 /* ------------------------------- data source ------------------------------ */
 
 export const supabaseDataSource: DataSource = {
   kind: 'supabase',
 
   trips: {
+    /**
+     * As viagens da pessoa E as que compartilharam com ela (§56).
+     *
+     * O `.eq('user_id', userId)` saiu. Ele era a autorização e o filtro ao
+     * mesmo tempo — e agora seria só o filtro errado: uma viagem aceita por
+     * convite tem `user_id` de outra pessoa e nunca apareceria. Quem decide o
+     * que esta consulta enxerga é a policy `trips_select` (0008), que já
+     * responde "sou membro?".
+     *
+     * `userId` continua na assinatura porque é a chave de cache do React Query
+     * — e porque um cache reidratado nunca pode servir a viagem de outra conta.
+     */
     async list(userId) {
-      const result = await db()
-        .from('trips')
-        .select('*')
-        .eq('user_id', userId)
-        .order('start_date', { ascending: false });
-      return unwrapList<Row>(result).map(toTrip);
+      const result = await db().from('trips').select('*').order('start_date', { ascending: false });
+      const trips = unwrapList<Row>(result).map(toTrip);
+      return decorateWithMembership(trips, userId);
     },
     async get(tripId) {
       const result = await db().from('trips').select('*').eq('id', tripId).maybeSingle();
       if (result.error) throw new Error(result.error.message);
-      return result.data ? toTrip(result.data) : null;
+      if (!result.data) return null;
+      const [trip] = await decorateWithMembership([toTrip(result.data)], null);
+      return trip;
     },
     async create(input) {
       const result = await db().from('trips').insert(fromTrip(input)).select().single();
@@ -565,137 +701,6 @@ export const supabaseDataSource: DataSource = {
     },
   },
 
-  tickets: {
-    async listByTrip(tripId) {
-      const result = await db().from('tickets').select('*').eq('trip_id', tripId);
-      const rows = unwrapList<Row>(result);
-      return Promise.all(
-        rows.map(async (row) => ({
-          id: row.id,
-          tripId: row.trip_id,
-          userId: row.user_id,
-          type: row.type,
-          title: row.title,
-          provider: row.provider ?? undefined,
-          reference: row.reference ?? undefined,
-          startDateTime: row.start_date_time ?? undefined,
-          endDateTime: row.end_date_time ?? undefined,
-          origin: row.origin ?? undefined,
-          destination: row.destination ?? undefined,
-          filePath: row.file_path ?? undefined,
-        fileUrl: await openableUrl(BUCKET.attachments, row.file_path),
-          mimeType: row.mime_type ?? undefined,
-          notes: row.notes ?? undefined,
-        })) as Promise<Ticket>[],
-      );
-    },
-    async create(input) {
-      const result = await db()
-        .from('tickets')
-        .insert(
-          prune({
-            trip_id: input.tripId,
-            user_id: input.userId,
-            type: input.type,
-            title: input.title,
-            provider: input.provider,
-            reference: input.reference,
-            start_date_time: input.startDateTime,
-            end_date_time: input.endDateTime,
-            origin: input.origin,
-            destination: input.destination,
-            file_path: input.fileUrl,
-            mime_type: input.mimeType,
-            notes: input.notes,
-          }),
-        )
-        .select()
-        .single();
-      const row = unwrap<Row>(result);
-      return {
-        ...input,
-        id: row.id,
-        filePath: row.file_path ?? undefined,
-        fileUrl: await openableUrl(BUCKET.attachments, row.file_path),
-      } as Ticket;
-    },
-    async update(id, patch) {
-      const result = await db()
-        .from('tickets')
-        .update(
-          prune({
-            type: patch.type,
-            title: patch.title,
-            provider: patch.provider,
-            reference: patch.reference,
-            start_date_time: patch.startDateTime,
-            end_date_time: patch.endDateTime,
-            origin: patch.origin,
-            destination: patch.destination,
-            file_path: patch.fileUrl,
-            mime_type: patch.mimeType,
-            notes: patch.notes,
-          }),
-        )
-        .eq('id', id)
-        .select()
-        .single();
-      const row = unwrap<Row>(result);
-      return {
-        id: row.id,
-        tripId: row.trip_id,
-        userId: row.user_id,
-        type: row.type,
-        title: row.title,
-        provider: row.provider ?? undefined,
-        reference: row.reference ?? undefined,
-        startDateTime: row.start_date_time ?? undefined,
-        endDateTime: row.end_date_time ?? undefined,
-        origin: row.origin ?? undefined,
-        destination: row.destination ?? undefined,
-        filePath: row.file_path ?? undefined,
-        fileUrl: await openableUrl(BUCKET.attachments, row.file_path),
-        mimeType: row.mime_type ?? undefined,
-        notes: row.notes ?? undefined,
-      };
-    },
-    async remove(id) {
-      const existing = await db().from('tickets').select('file_path').eq('id', id).maybeSingle();
-      await deleteWithFiles(
-        await lifecycleDeps(),
-        BUCKET.attachments,
-        [existing.data?.file_path],
-        async () => {
-          const { error } = await db().from('tickets').delete().eq('id', id);
-          if (error) throw new Error(error.message);
-        },
-      );
-    },
-    async uploadAttachment(userId, tripId, file) {
-      // Tipo e tamanho antes de qualquer byte sair do aparelho (P-09). O
-      // controle de verdade é o bucket — `0007` põe `allowed_mime_types` e
-      // `file_size_limit` no servidor —, mas recusar aqui poupa o upload
-      // inteiro e devolve uma frase que a pessoa entende.
-      const validation = validateUpload(file, ATTACHMENT_POLICY);
-      if (!validation.ok) throw new Error(validation.message);
-
-      // Caminho construído, nunca recebido: o nome vindo do seletor pode conter
-      // barra, `..` ou percent-encoding, e é o primeiro segmento que a policy
-      // de Storage compara com `auth.uid()`.
-      const path = attachmentStoragePath(userId, tripId, validation.extension, createId());
-      const stored = await uploadFile(BUCKET.attachments, path, {
-        ...file,
-        mimeType: validation.mimeType,
-      });
-
-      // "Uma cópia local é gravada ao anexar" (D-04). O arquivo já está no
-      // aparelho — copiá-lo agora custa muito menos do que baixá-lo de volta
-      // no aeroporto, que é exatamente onde não vai haver rede.
-      await writeMirrorFromFile(BUCKET.attachments, path, file.uri);
-      return stored;
-    },
-  },
-
   journal: {
     async listByTrip(tripId) {
       const result = await db()
@@ -703,20 +708,7 @@ export const supabaseDataSource: DataSource = {
         .select('*')
         .eq('trip_id', tripId)
         .order('entry_date', { ascending: false });
-      return unwrapList<Row>(result).map(
-        (row): JournalEntry => ({
-          id: row.id,
-          tripId: row.trip_id,
-          userId: row.user_id,
-          entryDate: row.entry_date,
-          content: row.content,
-          latitude: row.latitude ?? undefined,
-          longitude: row.longitude ?? undefined,
-          placeName: row.place_name ?? undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
-      );
+      return unwrapList<Row>(result).map(toJournal);
     },
     async create(input) {
       const result = await db()
@@ -730,12 +722,12 @@ export const supabaseDataSource: DataSource = {
             latitude: input.latitude,
             longitude: input.longitude,
             place_name: input.placeName,
+            visibility: input.visibility ?? DEFAULT_VISIBILITY.journal,
           }),
         )
         .select()
         .single();
-      const row = unwrap<Row>(result);
-      return { ...input, id: row.id, createdAt: row.created_at, updatedAt: row.updated_at };
+      return toJournal(unwrap<Row>(result));
     },
     async update(id, patch) {
       const result = await db()
@@ -745,25 +737,14 @@ export const supabaseDataSource: DataSource = {
             entry_date: patch.entryDate,
             content: patch.content,
             place_name: patch.placeName,
+            visibility: patch.visibility,
             updated_at: nowISO(),
           }),
         )
         .eq('id', id)
         .select()
         .single();
-      const row = unwrap<Row>(result);
-      return {
-        id: row.id,
-        tripId: row.trip_id,
-        userId: row.user_id,
-        entryDate: row.entry_date,
-        content: row.content,
-        latitude: row.latitude ?? undefined,
-        longitude: row.longitude ?? undefined,
-        placeName: row.place_name ?? undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      };
+      return toJournal(unwrap<Row>(result));
     },
     async remove(id) {
       // Uma entrada pode ter várias mídias — ou nenhuma. As duas pontas contam:
@@ -1311,6 +1292,32 @@ export const supabaseDataSource: DataSource = {
     },
   },
 
+  members: createMembershipRepository(collaborationDeps),
+  notifications: createNotificationRepository(collaborationDeps),
+  reminders: createReminderRepository(collaborationDeps),
+  travelReservations: createTravelReservationRepository(collaborationDeps),
+  suggestions: createSuggestionRepository(
+    collaborationDeps,
+    async (tripId) => {
+      const result = await db()
+        .from('trips')
+        .select('id, destination_city, destination_country, start_date, end_date, suggestions_refreshed_at')
+        .eq('id', tripId)
+        .maybeSingle();
+      const row = result.data as Row | null;
+      if (!row) return null;
+      return {
+        id: row.id,
+        destinationCity: row.destination_city,
+        destinationCountry: row.destination_country,
+        startDate: row.start_date,
+        endDate: row.end_date,
+        suggestionsRefreshedAt: row.suggestions_refreshed_at ?? undefined,
+      };
+    },
+    async () => (await db().auth.getSession()).data.session?.access_token,
+  ),
+
   ai: {
     async listConversations(userId, tripId) {
       let query = db().from('ai_conversations').select('*').eq('user_id', userId);
@@ -1403,6 +1410,21 @@ export const supabaseDataSource: DataSource = {
         .from('ai_messages')
         .delete()
         .eq('conversation_id', conversationId);
+      if (error) throw new Error(error.message);
+    },
+    async deleteConversation(conversationId) {
+      // Uma chamada só: `ai_messages.conversation_id` é `on delete cascade`
+      // (0001), então o banco apaga as mensagens junto, na mesma transação.
+      // Apagá-las aqui antes seria trabalho duplicado com uma janela no meio.
+      //
+      // Não há filtro por usuário na cláusula, e não precisa haver: a política
+      // `ai_conversations_all` (0002) já restringe o DELETE às linhas cujo
+      // `user_id = auth.uid()`. Um id de conversa de outra conta simplesmente
+      // não casa com nenhuma linha visível.
+      const { error } = await db()
+        .from('ai_conversations')
+        .delete()
+        .eq('id', conversationId);
       if (error) throw new Error(error.message);
     },
   },

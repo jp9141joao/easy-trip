@@ -28,6 +28,12 @@ import {
 } from '@/components/ui';
 import { getChecklistProgress } from '@/domain/selectors';
 import { checklistItemSchema, type ChecklistItemInput } from '@/domain/schemas';
+import { VisibilityField } from '@/components/collaboration';
+import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
+import { useMemberNames, useTripPermissions } from '@/hooks/useCollaboration';
+import { authorshipLabel } from '@/domain/collaboration';
+import { useAuth } from '@/providers/AuthProvider';
+import { useTripRealtime } from '@/hooks/useTripRealtime';
 import {
   CHECKLIST_CATEGORIES,
   type ChecklistCategory,
@@ -49,8 +55,13 @@ export default function ChecklistScreen() {
   const toast = useToast();
   const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
 
+  useTripRealtime(tripId);
+
   const { data: items = [], isLoading: loadingItems } = useChecklist(tripId);
   const mutations = useChecklistMutations(tripId);
+  const permissions = useTripPermissions(tripId);
+  const memberNames = useMemberNames(tripId);
+  const { user } = useAuth();
 
   const [filter, setFilter] = useState<Filter>('all');
   const [editorOpen, setEditorOpen] = useState(false);
@@ -177,8 +188,8 @@ export default function ChecklistScreen() {
               icon={ListChecks}
               title="Seu checklist está vazio"
               message="Documentos, saúde, mala, reservas — organize o que não pode ser esquecido."
-              actionLabel="Adicionar primeiro item"
-              onAction={() => setEditorOpen(true)}
+              actionLabel={permissions.canEdit ? 'Adicionar primeiro item' : undefined}
+              onAction={permissions.canEdit ? () => setEditorOpen(true) : undefined}
             />
           ) : (
             grouped.map(([category, list]) => (
@@ -191,11 +202,17 @@ export default function ChecklistScreen() {
                   <ChecklistRow
                     key={item.id}
                     item={item}
-                    onToggle={() => void toggle(item)}
-                    onMenu={() => {
-                      setEditing(item);
-                      setEditorOpen(true);
-                    }}
+                    showVisibility={permissions.isShared}
+                    authorLabel={authorshipLabel(item.createdBy, user?.id, memberNames)}
+                    onToggle={() => permissions.canEdit && void toggle(item)}
+                    onMenu={
+                      permissions.canEdit
+                        ? () => {
+                            setEditing(item);
+                            setEditorOpen(true);
+                          }
+                        : undefined
+                    }
                   />
                 ))}
               </View>
@@ -204,7 +221,7 @@ export default function ChecklistScreen() {
         </FadeIn>
       </ScrollView>
 
-      {emptyCtaVisible ? null : (
+      {emptyCtaVisible || !permissions.canEdit ? null : (
         <FloatingActionButton
           icon={Plus}
           label="Item"
@@ -218,6 +235,7 @@ export default function ChecklistScreen() {
       <ChecklistEditorSheet
         visible={editorOpen}
         item={editing}
+        isShared={permissions.isShared}
         mutations={mutations}
         onClose={() => {
           setEditorOpen(false);
@@ -251,6 +269,7 @@ export default function ChecklistScreen() {
 function ChecklistEditorSheet({
   visible,
   item,
+  isShared,
   mutations,
   onClose,
   onSaved,
@@ -258,6 +277,7 @@ function ChecklistEditorSheet({
 }: {
   visible: boolean;
   item: ChecklistItem | null;
+  isShared: boolean;
   mutations: ReturnType<typeof useChecklistMutations>;
   onClose: () => void;
   onSaved: () => void;
@@ -265,6 +285,9 @@ function ChecklistEditorSheet({
 }) {
   const theme = useTheme();
   const toast = useToast();
+  const [visibility, setVisibility] = useState<Visibility>(
+    item?.visibility ?? DEFAULT_VISIBILITY.checklist,
+  );
 
   const { control, handleSubmit, reset, formState } = useForm<ChecklistItemInput>({
     resolver: zodResolver(checklistItemSchema),
@@ -286,6 +309,7 @@ function ChecklistEditorSheet({
             category: values.category as ChecklistCategory,
             priority: values.priority as Priority | undefined,
             dueDate: values.dueDate,
+            visibility,
           },
         });
       } else {
@@ -295,6 +319,7 @@ function ChecklistEditorSheet({
           priority: values.priority as Priority | undefined,
           dueDate: values.dueDate,
           completed: false,
+          visibility,
         });
       }
       reset();
@@ -374,6 +399,13 @@ function ChecklistEditorSheet({
               placeholder="Sem prazo"
             />
           )}
+        />
+
+        <VisibilityField
+          value={visibility}
+          onChange={setVisibility}
+          visible={isShared}
+          scope="Itens compartilhados aparecem no checklist de todos os viajantes."
         />
 
         <Button

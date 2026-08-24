@@ -53,6 +53,7 @@ const expense = (amount: number, overrides: Partial<Expense> = {}): Expense => (
   currency: 'BRL',
   transactionDate: '2026-09-12',
   description: 'Despesa',
+  visibility: 'private' as const,
   createdAt: '2026-09-12T10:00:00.000Z',
   ...overrides,
 });
@@ -161,6 +162,7 @@ describe('itinerary (§34)', () => {
     title: 'Atividade',
     completed: false,
     sortOrder: 0,
+    visibility: 'shared',
     ...overrides,
   });
 
@@ -191,6 +193,7 @@ describe('checklist and goals (§36, §43)', () => {
     label: 'Item',
     category: 'documentos',
     completed,
+    visibility: 'shared',
     createdAt: '2026-01-01T00:00:00.000Z',
   });
 

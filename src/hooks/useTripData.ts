@@ -5,11 +5,10 @@ import type {
   Expense,
   ItineraryItem,
   JournalEntry,
-  Ticket,
   Trip,
 } from '@/domain/types';
 import { useAuth } from '@/providers/AuthProvider';
-import { dataSource, type UploadableFile } from '@/repositories';
+import { dataSource, type UploadableFile, type WithOptionalVisibility } from '@/repositories';
 import { currencyService } from '@/services/currency';
 import { buildExpenseRecord, type ExpenseDraft } from '@/services/expenseWrite';
 import { queryKeys } from './queryKeys';
@@ -30,7 +29,7 @@ export function useItineraryMutations(tripId: string) {
     queryClient.invalidateQueries({ queryKey: queryKeys.itinerary(tripId) });
 
   const create = useMutation({
-    mutationFn: (input: Omit<ItineraryItem, 'id' | 'tripId'>) =>
+    mutationFn: (input: WithOptionalVisibility<Omit<ItineraryItem, 'id' | 'tripId'>>) =>
       dataSource.itinerary.create({ ...input, tripId }),
     onSuccess: invalidate,
   });
@@ -65,7 +64,7 @@ export function useChecklistMutations(tripId: string) {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: key });
 
   const create = useMutation({
-    mutationFn: (input: Omit<ChecklistItem, 'id' | 'tripId' | 'createdAt'>) =>
+    mutationFn: (input: WithOptionalVisibility<Omit<ChecklistItem, 'id' | 'tripId' | 'createdAt'>>) =>
       dataSource.checklist.create({ ...input, tripId }),
     onSuccess: invalidate,
   });
@@ -167,72 +166,6 @@ export function useExpenseMutations(trip: Trip) {
   return { create, update, remove };
 }
 
-/* --------------------------------- tickets -------------------------------- */
-
-export function useTickets(tripId?: string) {
-  return useQuery({
-    queryKey: queryKeys.tickets(tripId ?? 'none'),
-    queryFn: () => dataSource.tickets.listByTrip(tripId!),
-    enabled: Boolean(tripId),
-  });
-}
-
-export function useTicketMutations(tripId: string) {
-  const queryClient = useQueryClient();
-  const { user } = useAuth();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.tickets(tripId) });
-
-  const create = useMutation({
-    mutationFn: async ({
-      input,
-      file,
-    }: {
-      input: Omit<Ticket, 'id' | 'tripId' | 'userId' | 'fileUrl' | 'mimeType'>;
-      file?: UploadableFile;
-    }) => {
-      const stored = file
-        ? await dataSource.tickets.uploadAttachment(user!.id, tripId, file)
-        : undefined;
-      return dataSource.tickets.create({
-        ...input,
-        tripId,
-        userId: user!.id,
-        fileUrl: stored?.url,
-        mimeType: stored?.mimeType,
-      });
-    },
-    onSuccess: invalidate,
-  });
-
-  const update = useMutation({
-    mutationFn: async ({
-      id,
-      patch,
-      file,
-    }: {
-      id: string;
-      patch: Partial<Ticket>;
-      file?: UploadableFile;
-    }) => {
-      const stored = file
-        ? await dataSource.tickets.uploadAttachment(user!.id, tripId, file)
-        : undefined;
-      return dataSource.tickets.update(id, {
-        ...patch,
-        ...(stored ? { fileUrl: stored.url, mimeType: stored.mimeType } : {}),
-      });
-    },
-    onSuccess: invalidate,
-  });
-
-  const remove = useMutation({
-    mutationFn: (id: string) => dataSource.tickets.remove(id),
-    onSuccess: invalidate,
-  });
-
-  return { create, update, remove };
-}
-
 /* --------------------------------- journal -------------------------------- */
 
 export function useJournal(tripId?: string) {
@@ -266,7 +199,9 @@ export function useJournalMutations(tripId: string) {
       input,
       files,
     }: {
-      input: Omit<JournalEntry, 'id' | 'tripId' | 'userId' | 'createdAt' | 'updatedAt'>;
+      input: WithOptionalVisibility<
+        Omit<JournalEntry, 'id' | 'tripId' | 'userId' | 'createdAt' | 'updatedAt'>
+      >;
       files?: UploadableFile[];
     }) => {
       const entry = await dataSource.journal.create({ ...input, tripId, userId: user!.id });

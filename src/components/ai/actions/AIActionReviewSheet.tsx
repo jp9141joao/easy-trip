@@ -15,6 +15,8 @@ import {
 } from '@/domain/aiActionReview';
 import type { AITripAction } from '@/domain/aiActions';
 import type { ChecklistItem, ItineraryItem, Trip } from '@/domain/types';
+import { VisibilityField } from '@/components/collaboration';
+import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
 import { useTheme } from '@/theme';
 import { ChecklistActionPreview } from './ChecklistActionPreview';
 import { ExpenseActionPreview } from './ExpenseActionPreview';
@@ -43,6 +45,7 @@ export function AIActionReviewSheet({
   itinerary,
   checklist,
   pending,
+  isShared = false,
   onCancel,
   onConfirm,
 }: {
@@ -52,12 +55,32 @@ export function AIActionReviewSheet({
   itinerary: ItineraryItem[];
   checklist: ChecklistItem[];
   pending: boolean;
+  /** A viagem tem mais de um viajante? Só então a visibilidade é uma escolha. */
+  isShared?: boolean;
   onCancel: () => void;
-  onConfirm: (actions: AITripAction[]) => void;
+  onConfirm: (actions: AITripAction[], visibility: ActionVisibility) => void;
 }) {
   const theme = useTheme();
   const [groups, setGroups] = useState<ReviewGroup[]>([]);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  /**
+   * A visibilidade do que a IA vai criar (§16).
+   *
+   * Uma escolha por TIPO de conteúdo, e não uma só para tudo, porque os
+   * defaults são diferentes por um motivo: roteiro e checklist são logística
+   * do grupo, despesa é o extrato de alguém. Uma chave única forçaria a pessoa
+   * a escolher entre expor o gasto ou esconder o roteiro.
+   */
+  const [itineraryVisibility, setItineraryVisibility] = useState<Visibility>(
+    DEFAULT_VISIBILITY.itinerary,
+  );
+  const [checklistVisibility, setChecklistVisibility] = useState<Visibility>(
+    DEFAULT_VISIBILITY.checklist,
+  );
+  const [expenseVisibility, setExpenseVisibility] = useState<Visibility>(
+    DEFAULT_VISIBILITY.expense,
+  );
 
   useEffect(() => {
     if (!visible) return;
@@ -69,6 +92,18 @@ export function AIActionReviewSheet({
   }, [visible]);
 
   const selected = countSelected(groups);
+
+  /**
+   * Quais tipos de conteúdo esta revisão contém.
+   *
+   * Um seletor de visibilidade para uma categoria que não está sendo criada
+   * seria uma pergunta sobre nada — e a folha já é longa.
+   */
+  const kinds = {
+    itinerary: groups.some((group) => group.enabled && group.action.type === 'itinerary.add'),
+    checklist: groups.some((group) => group.enabled && group.action.type === 'checklist.add'),
+    expense: groups.some((group) => group.enabled && group.action.type === 'expenses.add'),
+  };
   const warned = groups.some((group) => group.items.some((item) => item.warnings.length > 0));
 
   return (
@@ -134,6 +169,37 @@ export function AIActionReviewSheet({
           ))}
         </ScrollView>
 
+        {/*
+          Os seletores ficam no fim, depois da lista: a pergunta "quem vê isto"
+          só faz sentido depois de a pessoa ter decidido o que entra. E somem
+          inteiros em viagem individual — lá as duas opções são a mesma coisa.
+        */}
+        {isShared ? (
+          <View style={{ gap: theme.spacing.md, paddingTop: theme.spacing.md }}>
+            {kinds.itinerary ? (
+              <VisibilityField
+                value={itineraryVisibility}
+                onChange={setItineraryVisibility}
+                scope="Visibilidade dos itens de roteiro"
+              />
+            ) : null}
+            {kinds.checklist ? (
+              <VisibilityField
+                value={checklistVisibility}
+                onChange={setChecklistVisibility}
+                scope="Visibilidade dos itens de checklist"
+              />
+            ) : null}
+            {kinds.expense ? (
+              <VisibilityField
+                value={expenseVisibility}
+                onChange={setExpenseVisibility}
+                scope="Visibilidade das despesas"
+              />
+            ) : null}
+          </View>
+        ) : null}
+
         <ButtonRow>
           <View style={{ flex: 1 }}>
             <Button label="Cancelar" variant="secondary" fullWidth onPress={onCancel} disabled={pending} />
@@ -145,7 +211,13 @@ export function AIActionReviewSheet({
               loading={pending}
               disabled={selected === 0}
               haptic
-              onPress={() => onConfirm(reviewToActions(groups))}
+              onPress={() =>
+                onConfirm(reviewToActions(groups), {
+                  itinerary: itineraryVisibility,
+                  checklist: checklistVisibility,
+                  expense: expenseVisibility,
+                })
+              }
             />
           </View>
         </ButtonRow>
@@ -226,4 +298,11 @@ function ActionGroupPreview({
         />
       );
   }
+}
+
+/** O que a folha devolve junto com as ações revisadas. */
+export interface ActionVisibility {
+  itinerary: Visibility;
+  checklist: Visibility;
+  expense: Visibility;
 }

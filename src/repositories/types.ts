@@ -14,6 +14,7 @@ import type {
   AIConversation,
   AIMessage,
   Advisor,
+  AppNotification,
   Article,
   ChecklistItem,
   Consultation,
@@ -26,12 +27,30 @@ import type {
   Place,
   Profile,
   ProfilePatch,
+  Reminder,
+  Reservation,
   ReservationRequest,
-  Ticket,
   Trip,
+  TripInvite,
+  TripMember,
+  TripSuggestion,
   ItineraryItem,
 } from '@/domain/types';
+import type { InvitableRole, TripRole } from '@/domain/collaboration';
+import type { Visibility } from '@/domain/visibility';
 import type { ContentImageKind } from '@/domain/upload';
+
+/**
+ * Entrada de criação em que a visibilidade é opcional.
+ *
+ * A tela informa quando o usuário escolheu; quando não informa, o adaptador
+ * aplica `DEFAULT_VISIBILITY` do domínio. O default mora numa constante única
+ * de propósito: espalhado por chamada, "despesa nasce privada" viraria uma
+ * regra que vale em algumas telas e não em outras — que é o mesmo que não
+ * valer (§11).
+ */
+export type WithOptionalVisibility<T extends { visibility: Visibility }> =
+  Omit<T, 'visibility'> & { visibility?: Visibility };
 
 /** A local file selected by the user, ready to be uploaded. */
 export interface UploadableFile {
@@ -58,37 +77,28 @@ export interface TripRepository {
 
 export interface ItineraryRepository {
   listByTrip(tripId: string): Promise<ItineraryItem[]>;
-  create(input: Omit<ItineraryItem, 'id'>): Promise<ItineraryItem>;
+  create(input: WithOptionalVisibility<Omit<ItineraryItem, 'id'>>): Promise<ItineraryItem>;
   update(id: string, patch: Partial<ItineraryItem>): Promise<ItineraryItem>;
   remove(id: string): Promise<void>;
 }
 
 export interface ChecklistRepository {
   listByTrip(tripId: string): Promise<ChecklistItem[]>;
-  create(input: Omit<ChecklistItem, 'id' | 'createdAt'>): Promise<ChecklistItem>;
+  create(input: WithOptionalVisibility<Omit<ChecklistItem, 'id' | 'createdAt'>>): Promise<ChecklistItem>;
   update(id: string, patch: Partial<ChecklistItem>): Promise<ChecklistItem>;
   remove(id: string): Promise<void>;
 }
 
 export interface ExpenseRepository {
   listByTrip(tripId: string): Promise<Expense[]>;
-  create(input: Omit<Expense, 'id' | 'createdAt'>): Promise<Expense>;
+  create(input: WithOptionalVisibility<Omit<Expense, 'id' | 'createdAt'>>): Promise<Expense>;
   update(id: string, patch: Partial<Expense>): Promise<Expense>;
   remove(id: string): Promise<void>;
 }
 
-export interface TicketRepository {
-  listByTrip(tripId: string): Promise<Ticket[]>;
-  create(input: Omit<Ticket, 'id'>): Promise<Ticket>;
-  update(id: string, patch: Partial<Ticket>): Promise<Ticket>;
-  remove(id: string): Promise<void>;
-  /** Persists the attachment and returns a URL the app can actually open. */
-  uploadAttachment(userId: string, tripId: string, file: UploadableFile): Promise<StoredFile>;
-}
-
 export interface JournalRepository {
   listByTrip(tripId: string): Promise<JournalEntry[]>;
-  create(input: Omit<JournalEntry, 'id' | 'createdAt' | 'updatedAt'>): Promise<JournalEntry>;
+  create(input: WithOptionalVisibility<Omit<JournalEntry, 'id' | 'createdAt' | 'updatedAt'>>): Promise<JournalEntry>;
   update(id: string, patch: Partial<JournalEntry>): Promise<JournalEntry>;
   remove(id: string): Promise<void>;
   listMedia(entryIds: string[]): Promise<JournalMedia[]>;
@@ -241,20 +251,116 @@ export interface AIRepository {
   listConversations(userId: string, tripId?: string): Promise<AIConversation[]>;
   /** A conversa mais recente da viagem, ou uma nova se ainda não houver. */
   getOrCreateConversation(userId: string, tripId?: string): Promise<AIConversation>;
-  /**
-   * Abre uma conversa nova sem tocar nas anteriores — é o que "Novo chat"
-   * faz. Deliberadamente diferente de `clearConversation`: começar de novo não
-   * pode significar apagar o histórico que o usuário já tinha.
-   */
+  /** Abre uma conversa nova. Não toca nas anteriores. */
   createConversation(userId: string, tripId?: string): Promise<AIConversation>;
   listMessages(conversationId: string): Promise<AIMessage[]>;
   addMessage(input: Omit<AIMessage, 'id' | 'createdAt'>): Promise<AIMessage>;
+  /** Apaga as mensagens, mantendo a conversa. */
   clearConversation(conversationId: string): Promise<void>;
+  /**
+   * Apaga a conversa **e** as mensagens dela.
+   *
+   * É o que "Novo chat" faz desde a decisão de produto de não manter histórico
+   * de conversas da IA: começar de novo apaga a anterior, e não a esconde numa
+   * lista que ninguém abre. Fechar e reabrir o aplicativo não a traz de volta,
+   * porque ela não existe mais.
+   *
+   * No Supabase o `on delete cascade` de `ai_messages.conversation_id` (0001)
+   * remove as mensagens junto — não há migration nova para isto, e a RLS
+   * continua sendo quem decide: `ai_conversations_all` só deixa apagar linha
+   * cujo `user_id` é o da sessão.
+   */
+  deleteConversation(conversationId: string): Promise<void>;
 }
 
 export interface InsuranceRepository {
   listByUser(userId: string): Promise<InsurancePolicy[]>;
   create(input: Omit<InsurancePolicy, 'id'>): Promise<InsurancePolicy>;
+  remove(id: string): Promise<void>;
+}
+
+/* ------------------------------- colaboração ------------------------------ */
+
+/**
+ * Membros e convites.
+ *
+ * Nenhum método aqui recebe o `userId` de quem age. Isso é deliberado: no
+ * adaptador remoto quem age é a sessão, e todas as regras (só o proprietário
+ * convida, só o convidado aceita, o proprietário não sai) são decididas por
+ * funções `security definer` no Postgres — ver a 0008. Passar um `userId` daria
+ * a impressão de que o cliente escolhe em nome de quem está falando.
+ */
+export interface MembershipRepository {
+  listMembers(tripId: string): Promise<TripMember[]>;
+  /** Só o proprietário enxerga convites pendentes da viagem. */
+  listInvites(tripId: string): Promise<TripInvite[]>;
+  /** Convites que a pessoa recebeu e ainda não respondeu. */
+  listPendingInvitesForUser(userId: string): Promise<TripInvite[]>;
+  /**
+   * Resolve o e-mail para uma conta e cria o convite.
+   *
+   * A resolução acontece inteiramente no servidor: o cliente nunca consulta
+   * `auth.users`, nunca recebe uma lista, e um e-mail sem conta volta como erro
+   * com mensagem própria — não como "usuário encontrado, id oculto" (§5).
+   */
+  invite(tripId: string, email: string, role: InvitableRole): Promise<TripInvite>;
+  acceptInvite(inviteId: string): Promise<TripMember>;
+  declineInvite(inviteId: string): Promise<void>;
+  cancelInvite(inviteId: string): Promise<void>;
+  setRole(tripId: string, userId: string, role: InvitableRole): Promise<TripMember>;
+  removeMember(tripId: string, userId: string): Promise<void>;
+  leave(tripId: string): Promise<void>;
+  /** O papel da sessão nesta viagem. `null` quando não participa. */
+  myRole(tripId: string, userId: string): Promise<TripRole | null>;
+}
+
+export interface NotificationRepository {
+  list(userId: string): Promise<AppNotification[]>;
+  markRead(id: string): Promise<void>;
+  markAllRead(userId: string): Promise<void>;
+  remove(id: string): Promise<void>;
+  /**
+   * Converte em notificação os lembretes do usuário que já venceram.
+   *
+   * Existe porque não há push do sistema operacional nesta fase (§33): o
+   * lembrete vira aviso no primeiro momento em que o aplicativo abre depois do
+   * horário. Devolve quantos foram entregues, para a tela poder recarregar a
+   * lista só quando algo mudou.
+   */
+  deliverDueReminders(userId: string): Promise<number>;
+}
+
+export interface ReminderRepository {
+  listByTrip(tripId: string, userId: string): Promise<Reminder[]>;
+  /**
+   * Cria ou substitui o lembrete daquele usuário para aquela âncora.
+   *
+   * Upsert e não insert: reabrir a reserva e escolher "1 hora antes" no lugar
+   * de "1 dia antes" é trocar o lembrete, não somar um segundo.
+   */
+  upsert(input: Omit<Reminder, 'id' | 'createdAt' | 'sentAt'>): Promise<Reminder>;
+  remove(id: string): Promise<void>;
+  removeForEntity(userId: string, entityId: string, anchor: Reminder['anchor']): Promise<void>;
+}
+
+export interface TravelReservationRepository {
+  listByTrip(tripId: string): Promise<Reservation[]>;
+  create(input: WithOptionalVisibility<Omit<Reservation, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Reservation>;
+  update(id: string, patch: Partial<Reservation>): Promise<Reservation>;
+  remove(id: string): Promise<void>;
+  uploadDocument(userId: string, tripId: string, file: UploadableFile): Promise<StoredFile>;
+}
+
+export interface SuggestionRepository {
+  listByTrip(tripId: string): Promise<TripSuggestion[]>;
+  /**
+   * Garante o mínimo de sugestões da viagem (§41).
+   *
+   * `force` é o botão "Atualizar sugestões". Sem ele, a operação só faz alguma
+   * coisa quando a viagem tem menos que o mínimo — abrir a tela não gasta
+   * geração nenhuma (§43).
+   */
+  ensure(tripId: string, options?: { force?: boolean }): Promise<TripSuggestion[]>;
   remove(id: string): Promise<void>;
 }
 
@@ -265,7 +371,6 @@ export interface DataSource {
   itinerary: ItineraryRepository;
   checklist: ChecklistRepository;
   expenses: ExpenseRepository;
-  tickets: TicketRepository;
   journal: JournalRepository;
   goals: GoalRepository;
   profile: ProfileRepository;
@@ -275,6 +380,11 @@ export interface DataSource {
   reservations: ReservationRepository;
   ai: AIRepository;
   insurance: InsuranceRepository;
+  members: MembershipRepository;
+  notifications: NotificationRepository;
+  reminders: ReminderRepository;
+  travelReservations: TravelReservationRepository;
+  suggestions: SuggestionRepository;
   files: OfflineFileRepository;
   /** Removes every record owned by the user (§94 — account deletion). */
   purgeUserData(userId: string): Promise<void>;

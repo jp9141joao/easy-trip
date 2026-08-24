@@ -1,7 +1,7 @@
-import { CalendarDays, MapPin, Wallet } from 'lucide-react-native';
+import { CalendarDays, MapPin, Users, Wallet } from 'lucide-react-native';
 import { View } from 'react-native';
 
-import { AppImage, AppText, GlassCard } from '@/components/ui';
+import { AppImage, AppText, Badge, GlassCard } from '@/components/ui';
 import { TripStatusChip } from '@/components/trip';
 import { getCountdownLabel, getTripTimingLabel } from '@/domain/selectors';
 import type { Trip } from '@/domain/types';
@@ -21,6 +21,7 @@ export function TripCard({
 }) {
   const theme = useTheme();
   const timing = getTripTimingLabel(trip);
+  const shared = (trip.memberCount ?? 1) > 1;
   const remaining = spent === undefined ? undefined : trip.budgetTotal - spent;
 
   return (
@@ -28,7 +29,19 @@ export function TripCard({
       padded={false}
       elevation="md"
       onPress={onPress}
-      accessibilityLabel={`${trip.destinationCity}, ${trip.destinationCountry}. ${formatDateRange(trip.startDate, trip.endDate)}. ${getCountdownLabel(trip)}`}
+      accessibilityLabel={[
+        `${trip.destinationCity}, ${trip.destinationCountry}`,
+        formatDateRange(trip.startDate, trip.endDate),
+        getCountdownLabel(trip),
+        // §70: o "👥 2" não pode ser a única forma de saber que a viagem é
+        // compartilhada.
+        shared
+          ? `Compartilhada com ${trip.memberCount! - 1} ${trip.memberCount! - 1 === 1 ? 'viajante' : 'viajantes'}`
+          : null,
+        trip.role && trip.role !== 'owner' ? 'Compartilhada com você' : null,
+      ]
+        .filter(Boolean)
+        .join('. ')}
       accessibilityHint="Abre os detalhes da viagem"
     >
       <AppImage
@@ -43,8 +56,21 @@ export function TripCard({
           position: 'absolute',
           top: theme.spacing.lg,
           right: theme.spacing.lg,
+          flexDirection: 'row',
+          gap: theme.spacing.sm,
         }}
       >
+        {/*
+          O indicador de viagem compartilhada (§55).
+
+          Só aparece quando há mais de um viajante — num aplicativo em que a
+          maioria das viagens é individual, uma etiqueta "👥 1" em todo card
+          seria ruído puro. E é um contador discreto, não um bloco: quem abre a
+          lista está procurando o destino, não a composição do grupo.
+        */}
+        {shared ? (
+          <Badge label={String(trip.memberCount)} tone="brand" icon={Users} />
+        ) : null}
         <TripStatusChip trip={trip} />
       </View>
 

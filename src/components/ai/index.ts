@@ -4,6 +4,7 @@ export {
   AIActionCard,
   AIActionResult,
   AIActionReviewSheet,
+  type ActionVisibility,
   BudgetActionPreview,
   ChecklistActionPreview,
   ExpenseActionPreview,

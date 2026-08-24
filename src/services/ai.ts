@@ -23,6 +23,7 @@ import type {
   Trip,
   TripStatus,
 } from '@/domain/types';
+import { AIRateLimitError } from '@/domain/aiRateLimit';
 import { config } from '@/lib/config';
 import { formatMoney } from '@/lib/currency';
 import { formatShortDate, formatWeekdayDate } from '@/lib/date';
@@ -32,6 +33,7 @@ import {
   ITINERARY_TYPE_LABEL,
 } from '@/lib/labels';
 import { postJson, ServiceError } from './http';
+import type { Visibility } from '@/domain/visibility';
 import { getZoneDate } from './timezone';
 
 /** Structured context handed to the model (§47). */
@@ -58,9 +60,32 @@ export interface AITripContext {
      */
     today: string;
   };
-  expenses: { category: string; amount: number; currency: string; date: string; description: string }[];
+  /**
+   * `mine` distingue o que é desta pessoa do que é do grupo (§57).
+   *
+   * Existe porque "quanto EU gastei" e "quanto NÓS vamos gastar" são perguntas
+   * diferentes com respostas diferentes, e sem esta marca o modelo só
+   * conseguiria responder a segunda. `mine` é sobre autoria/pagamento, não
+   * sobre visibilidade: uma despesa compartilhada que esta pessoa pagou é dela
+   * e do grupo ao mesmo tempo.
+   */
+  expenses: {
+    category: string;
+    amount: number;
+    currency: string;
+    date: string;
+    description: string;
+    shared: boolean;
+    mine: boolean;
+  }[];
   itinerary: { date: string; time?: string; type: string; title: string; placeName?: string }[];
   checklist: { label: string; category: string; completed: boolean }[];
+  /**
+   * A viagem tem mais de um viajante? Muda como o modelo escreve — "seu
+   * roteiro" contra "o roteiro de vocês" — e o que ele pode assumir sobre
+   * quem fez o quê.
+   */
+  collaboration?: { memberCount: number; isShared: boolean };
   profile: { travelStyle?: string; defaultCurrency: string };
   places?: { name: string; type: string; rating?: number }[];
 }
@@ -108,16 +133,27 @@ class RemoteAIService implements AIService {
     history: AIMessage[];
     accessToken?: string;
   }): Promise<AIReply> {
-    const response = await postJson<{ content?: string; actions?: unknown; error?: string }>(
-      `${config.bffUrl.replace(/\/$/, '')}/ai-chat`,
-      {
-        prompt,
-        context,
-        // Only the recent turns travel — the BFF caps and sanitises anyway.
-        history: history.slice(-12).map(({ role, content }) => ({ role, content })),
-      },
-      { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} },
-    );
+    let response: { content?: string; actions?: unknown; error?: string };
+    try {
+      response = await postJson<{ content?: string; actions?: unknown; error?: string }>(
+        `${config.bffUrl.replace(/\/$/, '')}/ai-chat`,
+        {
+          prompt,
+          context,
+          // Only the recent turns travel — the BFF caps and sanitises anyway.
+          history: history.slice(-12).map(({ role, content }) => ({ role, content })),
+        },
+        { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} },
+      );
+    } catch (error) {
+      // 429 é o limite do servidor. Chega aqui quando o limitador do cliente não
+      // pegou — outro aparelho da mesma conta, ou o app reaberto, que zera a
+      // janela local. É espera, não falha: a tela precisa saber a diferença.
+      if (error instanceof ServiceError && error.status === 429) {
+        throw new AIRateLimitError(0);
+      }
+      throw error;
+    }
 
     if (!response.content) {
       throw new ServiceError('parse', response.error ?? 'O assistente não retornou resposta.');
@@ -431,6 +467,32 @@ export const AI_SUGGESTIONS = [
 ] as const;
 
 /** Builds the model context from the app's real records. */
+/**
+ * Monta o contexto do modelo a partir dos registros reais da viagem.
+ *
+ * PRIVACIDADE — A REGRA MAIS IMPORTANTE DESTE ARQUIVO (§15)
+ *
+ * A IA de João não pode receber o diário privado de Maria, nem as despesas
+ * privadas dela, nem o checklist privado dela. Nunca.
+ *
+ * Isso é garantido em duas camadas independentes, e as duas existem de
+ * propósito:
+ *
+ *  1. **A RLS.** As consultas que alimentam `params` passam pelas policies da
+ *     0009, que só devolvem `shared` ou `created_by = auth.uid()`. O conteúdo
+ *     privado alheio nunca chega ao aparelho — não é escondido aqui, ele não
+ *     existe aqui.
+ *
+ *  2. **O filtro abaixo.** Redundante hoje, e é bom que seja. Ele cobre a fonte
+ *     local (que não tem Postgres para aplicar policy) e o dia em que uma
+ *     consulta nova esquecer um filtro. Custa uma passada por três arrays; o
+ *     que ele evita é vazar o diário de alguém para dentro de um prompt, de
+ *     onde não há como tirar depois.
+ *
+ * O diário NUNCA entra no contexto, privado ou compartilhado. É a decisão mais
+ * simples e a mais segura: o diário é o que a pessoa escreve para si, e não há
+ * pergunta que a IA responda melhor por tê-lo lido.
+ */
 export function buildTripContext(params: {
   trip: Trip;
   status: TripStatus;
@@ -442,7 +504,17 @@ export function buildTripContext(params: {
   checklist: ChecklistItem[];
   profile: Profile | null;
   places?: Place[];
+  /** Quem está perguntando. Sem isto, nada privado entra — nem o próprio. */
+  viewerId?: string;
+  memberCount?: number;
 }): AITripContext {
+  const visible = <T extends { visibility?: Visibility; createdBy?: string }>(item: T) =>
+    item.visibility !== 'private' || (Boolean(params.viewerId) && item.createdBy === params.viewerId);
+
+  const expenses = params.expenses.filter(visible);
+  const itinerary = params.itinerary.filter(visible);
+  const checklist = params.checklist.filter(visible);
+
   return {
     trip: {
       destinationCity: params.trip.destinationCity,
@@ -458,21 +530,25 @@ export function buildTripContext(params: {
       timezone: params.trip.timezone,
       today: getZoneDate(params.trip.timezone),
     },
-    expenses: params.expenses.map((expense) => ({
+    expenses: expenses.map((expense) => ({
       category: expense.category,
       amount: expense.amountInBudgetCurrency ?? expense.amount,
       currency: params.trip.budgetCurrency,
       date: expense.transactionDate,
       description: expense.description,
+      shared: expense.visibility === 'shared',
+      mine:
+        Boolean(params.viewerId) &&
+        (expense.paidBy === params.viewerId || expense.createdBy === params.viewerId),
     })),
-    itinerary: params.itinerary.map((item) => ({
+    itinerary: itinerary.map((item) => ({
       date: item.date,
       time: item.startTime,
       type: item.type,
       title: item.title,
       placeName: item.placeName,
     })),
-    checklist: params.checklist.map((item) => ({
+    checklist: checklist.map((item) => ({
       label: item.label,
       category: item.category,
       completed: item.completed,
@@ -486,5 +562,9 @@ export function buildTripContext(params: {
       type: place.type,
       rating: place.rating,
     })),
+    collaboration:
+      params.memberCount === undefined
+        ? undefined
+        : { memberCount: params.memberCount, isShared: params.memberCount > 1 },
   };
 }

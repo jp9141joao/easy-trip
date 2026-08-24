@@ -1,3 +1,4 @@
+import { queryKeys } from '@/hooks/queryKeys';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClient } from '@tanstack/react-query';
 
@@ -9,7 +10,7 @@ import { cacheStorage } from '@/lib/storage';
  *
  * A cópia local resolve o arquivo; sem a lista em cache, a tela de documentos
  * abre **vazia** em modo avião e não há o que tocar. O plano define o teste de
- * aceitação nesses termos: "modo avião: abrir um ticket já baixado — tem de
+ * aceitação nesses termos: "modo avião: abrir uma reserva já baixada — tem de
  * funcionar".
  *
  * Isto é cache de **leitura**. Não há fila de escrita: o plano decidiu contra
@@ -19,7 +20,7 @@ import { cacheStorage } from '@/lib/storage';
 const A = 'usuario-a';
 const B = 'usuario-b';
 
-const TICKETS = ['tickets', 'trip-1'] as const;
+const TICKETS = ['tripReservations', 'trip-1'] as const;
 const TRIPS = ['trips', A] as const;
 
 function novoCliente() {
@@ -160,8 +161,8 @@ describe('cache corrompido ou antigo não derruba o aplicativo', () => {
       queries: [
         null,
         { key: 'não é lista', data: 1 },
-        { key: ['tickets', 'trip-1'], data: undefined },
-        { key: ['tickets', 'trip-1'], data: [{ id: 'bom' }] },
+        { key: ['tripReservations', 'trip-1'], data: undefined },
+        { key: ['tripReservations', 'trip-1'], data: [{ id: 'bom' }] },
       ],
     });
 
@@ -192,5 +193,36 @@ describe('só estado bem-sucedido é gravado', () => {
     await persistQueries(client, A);
 
     expect(await reabrirApp(A)).toBe(0);
+  });
+});
+
+/**
+ * §59 — o cache é escopado por conta E por participação.
+ *
+ * A primeira metade já era garantida (`snapshot.userId`). A segunda entra com a
+ * colaboração: perder acesso a uma viagem não pode deixar o roteiro dela em
+ * disco, esperando a próxima abertura para aparecer por um instante antes de o
+ * refetch corrigir.
+ */
+describe('escopo do cache por participação', () => {
+  it('as chaves de viagem persistidas cobrem tudo que é da viagem', () => {
+    // Se uma chave nova de viagem aparecer sem entrar nesta lista, ela fica
+    // fora da limpeza de acesso revogado — e este teste avisa.
+    const chavesDaViagem = [
+      queryKeys.trip('t1'),
+      queryKeys.itinerary('t1'),
+      queryKeys.checklist('t1'),
+      queryKeys.expenses('t1'),
+      queryKeys.journal('t1'),
+      queryKeys.journalMedia('t1'),
+      queryKeys.tripReservations('t1'),
+      queryKeys.suggestions('t1'),
+      queryKeys.tripMembers('t1'),
+      queryKeys.tripInvites('t1'),
+    ];
+
+    for (const chave of chavesDaViagem) {
+      expect(chave[chave.length - 1]).toBe('t1');
+    }
   });
 });

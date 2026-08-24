@@ -6,6 +6,9 @@ import { Controller, useForm, useWatch } from 'react-hook-form';
 import { ScrollView, View } from 'react-native';
 
 import { ActivityCard } from '@/components/cards';
+import { VisibilityField } from '@/components/collaboration';
+import { ActivityWeather, DayRouteCard } from '@/components/trip';
+import { MembersSummary } from '@/components/collaboration/MemberRow';
 import {
   BottomSheet,
   Button,
@@ -31,6 +34,11 @@ import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffol
 import { RoteiroModules } from '@/features/trip/RoteiroModules';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useItinerary, useItineraryMutations } from '@/hooks/useTripData';
+import { useMemberNames, useTripInvites, useTripPermissions } from '@/hooks/useCollaboration';
+import { useTripRealtime } from '@/hooks/useTripRealtime';
+import { authorshipLabel } from '@/domain/collaboration';
+import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
+import { useAuth } from '@/providers/AuthProvider';
 import { formatWeekdayDate, isWithin } from '@/lib/date';
 import { ITINERARY_TYPE_LABEL } from '@/lib/labels';
 import { useTheme } from '@/theme';
@@ -40,9 +48,16 @@ export default function ItineraryScreen() {
   const router = useRouter();
   const toast = useToast();
   const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
+  const { user } = useAuth();
+
+  // A viagem aberta é a única assinada (§8, §58). Sai da tela, sai a assinatura.
+  useTripRealtime(tripId);
 
   const { data: items = [], isLoading: loadingItems } = useItinerary(tripId);
   const mutations = useItineraryMutations(tripId);
+  const permissions = useTripPermissions(tripId);
+  const memberNames = useMemberNames(tripId);
+  const { data: invites = [] } = useTripInvites(tripId, permissions.canManageMembers);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<ItineraryItem | null>(null);
@@ -116,9 +131,24 @@ export default function ItineraryScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 120 }}
       >
-        <TripHero trip={trip} onEdit={() => router.push(`/trip/${tripId}/edit`)} />
+        <TripHero
+          trip={trip}
+          onEdit={
+            // Editar destino, datas e orçamento é do proprietário (§3). Sem
+            // isto, um editor veria o lápis e receberia a recusa da RLS.
+            permissions.role === 'owner' ? () => router.push(`/trip/${tripId}/edit`) : undefined
+          }
+        />
         <TripTabs tripId={tripId} active="itinerary" />
         <RoteiroModules tripId={tripId} active="itinerary" />
+
+        <View style={{ paddingHorizontal: theme.spacing.screen, paddingBottom: theme.spacing.md }}>
+          <MembersSummary
+            count={permissions.memberCount}
+            pendingInvites={invites.length}
+            onPress={() => router.push(`/trip/${tripId}/members`)}
+          />
+        </View>
 
         <FadeIn style={{ paddingHorizontal: theme.spacing.screen }}>
           {loadingItems ? (
@@ -128,8 +158,8 @@ export default function ItineraryScreen() {
               icon={CalendarClock}
               title="Nenhuma atividade planejada ainda"
               message="Comece pela chegada, a hospedagem e o que você não quer perder."
-              actionLabel="Adicionar atividade"
-              onAction={() => openEditor()}
+              actionLabel={permissions.canEdit ? 'Adicionar atividade' : undefined}
+              onAction={permissions.canEdit ? () => openEditor() : undefined}
             />
           ) : (
             days.map((day) => (
@@ -142,18 +172,39 @@ export default function ItineraryScreen() {
                   <ActivityCard
                     key={item.id}
                     item={item}
-                    onPress={() => openEditor(item)}
-                    onToggle={() => void toggleComplete(item)}
-                    onMenu={() => setDeleting(item)}
+                    onPress={permissions.canEdit ? () => openEditor(item) : undefined}
+                    onToggle={permissions.canEdit ? () => void toggleComplete(item) : undefined}
+                    onMenu={permissions.canEdit ? () => setDeleting(item) : undefined}
+                    showVisibility={permissions.isShared}
+                    authorLabel={authorshipLabel(item.createdBy, user?.id, memberNames)}
+                    weather={
+                      <ActivityWeather
+                        latitude={item.latitude}
+                        longitude={item.longitude}
+                        date={item.date}
+                        startTime={item.startTime}
+                      />
+                    }
                   />
                 ))}
+
+                {/*
+                  A rota entra DEPOIS da lista do dia, e não antes: o roteiro é
+                  o conteúdo, o mapa é a leitura dele. O card não aparece com
+                  menos de duas paradas com coordenada — ver `buildDayRoute`.
+                */}
+                <DayRouteCard
+                  items={day.items}
+                  date={day.date}
+                  onOpenFullMap={() => router.push('/utilities/map')}
+                />
               </View>
             ))
           )}
         </FadeIn>
       </ScrollView>
 
-      {emptyCtaVisible ? null : (
+      {emptyCtaVisible || !permissions.canEdit ? null : (
         <FloatingActionButton icon={Plus} label="Atividade" onPress={() => openEditor()} />
       )}
 
@@ -163,6 +214,7 @@ export default function ItineraryScreen() {
         tripStart={trip.startDate}
         tripEnd={trip.endDate}
         nextSortOrder={sortItinerary(items).length}
+        isShared={permissions.isShared}
         onClose={() => setEditorOpen(false)}
         onSaved={() => {
           setEditorOpen(false);
@@ -185,6 +237,30 @@ export default function ItineraryScreen() {
   );
 }
 
+/* ------------------------------ coordenadas ------------------------------- */
+
+/**
+ * Texto do campo → número, ou nada.
+ *
+ * "Ou nada" é a parte que importa: campo vazio tem de virar `undefined`, e não
+ * `0`. Latitude 0 e longitude 0 são um ponto real no Atlântico, e uma atividade
+ * que caísse lá apareceria no mini mapa com um marcador numerado — sem que
+ * ninguém tivesse digitado coordenada nenhuma.
+ */
+function parseCoordinate(value?: string): number | undefined {
+  if (!value?.trim()) return undefined;
+  const parsed = Number(value.trim().replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** A pessoa mexeu na coordenada? Só então a origem passa a ser `manual`. */
+function coordinatesChanged(item: ItineraryItem, values: ItineraryItemInput): boolean {
+  return (
+    parseCoordinate(values.latitude) !== item.latitude ||
+    parseCoordinate(values.longitude) !== item.longitude
+  );
+}
+
 /* ----------------------------- activity editor ---------------------------- */
 
 function ActivityEditorSheet({
@@ -193,6 +269,7 @@ function ActivityEditorSheet({
   tripStart,
   tripEnd,
   nextSortOrder,
+  isShared,
   onClose,
   onSaved,
   mutations,
@@ -202,6 +279,7 @@ function ActivityEditorSheet({
   tripStart: string;
   tripEnd: string;
   nextSortOrder: number;
+  isShared: boolean;
   onClose: () => void;
   onSaved: () => void;
   mutations: ReturnType<typeof useItineraryMutations>;
@@ -209,6 +287,9 @@ function ActivityEditorSheet({
   const theme = useTheme();
   const toast = useToast();
   const [confirmOutside, setConfirmOutside] = useState(false);
+  const [visibility, setVisibility] = useState<Visibility>(
+    item?.visibility ?? DEFAULT_VISIBILITY.itinerary,
+  );
 
   const { control, handleSubmit, reset, formState } = useForm<ItineraryItemInput>({
     resolver: zodResolver(itineraryItemSchema),
@@ -221,6 +302,9 @@ function ActivityEditorSheet({
       title: item?.title ?? '',
       description: item?.description,
       placeName: item?.placeName,
+      address: item?.address,
+      latitude: item?.latitude !== undefined ? String(item.latitude) : undefined,
+      longitude: item?.longitude !== undefined ? String(item.longitude) : undefined,
       reservationReference: item?.reservationReference,
     },
   });
@@ -241,7 +325,12 @@ function ActivityEditorSheet({
             title: values.title,
             description: values.description,
             placeName: values.placeName,
+            address: values.address,
+            latitude: parseCoordinate(values.latitude),
+            longitude: parseCoordinate(values.longitude),
+            placeSource: coordinatesChanged(item, values) ? 'manual' : item.placeSource,
             reservationReference: values.reservationReference,
+            visibility,
           },
         });
       } else {
@@ -253,9 +342,14 @@ function ActivityEditorSheet({
           title: values.title,
           description: values.description,
           placeName: values.placeName,
+          address: values.address,
+          latitude: parseCoordinate(values.latitude),
+          longitude: parseCoordinate(values.longitude),
+          placeSource: parseCoordinate(values.latitude) === undefined ? undefined : 'manual',
           reservationReference: values.reservationReference,
           completed: false,
           sortOrder: nextSortOrder,
+          visibility,
         });
       }
       reset();
@@ -373,12 +467,80 @@ function ActivityEditorSheet({
           render={({ field, fieldState }) => (
             <TextField
               label="Local"
-              placeholder="Nome do lugar ou endereço"
+              placeholder="Nome do lugar"
               value={field.value}
               onChangeText={field.onChange}
               error={fieldState.error?.message}
             />
           )}
+        />
+
+        {/*
+          Localização (§17).
+
+          O endereço é texto livre; as coordenadas são o que faz o item entrar
+          no mapa do dia, na distância e na previsão por horário. Sem elas o
+          item continua perfeitamente válido — só não é desenhável.
+
+          O caminho preferido para preencher isto não é digitar: é adicionar
+          pelo módulo Sugestões, que já traz a coordenada do catálogo. Estes
+          campos existem para o caso em que a pessoa tem o ponto e quer
+          registrá-lo à mão.
+        */}
+        <Controller
+          control={control}
+          name="address"
+          render={({ field, fieldState }) => (
+            <TextField
+              label="Endereço"
+              placeholder="Rua, número, bairro"
+              value={field.value}
+              onChangeText={field.onChange}
+              error={fieldState.error?.message}
+            />
+          )}
+        />
+
+        <View style={{ flexDirection: 'row', gap: theme.spacing.md }}>
+          <Controller
+            control={control}
+            name="latitude"
+            render={({ field, fieldState }) => (
+              <View style={{ flex: 1 }}>
+                <TextField
+                  label="Latitude"
+                  placeholder="48.8606"
+                  value={field.value}
+                  onChangeText={field.onChange}
+                  error={fieldState.error?.message}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+            )}
+          />
+          <Controller
+            control={control}
+            name="longitude"
+            render={({ field, fieldState }) => (
+              <View style={{ flex: 1 }}>
+                <TextField
+                  label="Longitude"
+                  placeholder="2.3376"
+                  value={field.value}
+                  onChangeText={field.onChange}
+                  error={fieldState.error?.message}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+            )}
+          />
+        </View>
+
+        <VisibilityField
+          value={visibility}
+          onChange={setVisibility}
+          visible={isShared}
+          scope="Itens compartilhados aparecem no roteiro de todos os viajantes."
         />
 
         <Controller

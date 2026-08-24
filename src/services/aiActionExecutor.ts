@@ -36,6 +36,7 @@ import {
   type AIActionType,
 } from '@/domain/aiActions';
 import type { Trip } from '@/domain/types';
+import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
 import { formatMoney } from '@/lib/currency';
 import { isValidISODate } from '@/lib/date';
 import { dataSource as defaultDataSource } from '@/repositories';
@@ -47,6 +48,19 @@ export interface AIActionContext {
   userId: string;
   /** Injetável para teste; em produção é sempre o adaptador da sessão. */
   source?: DataSource;
+  /**
+   * Quem vê o que a IA acabou de criar (§16).
+   *
+   * Escolhido na folha de revisão, por tipo de conteúdo. Ausente = os defaults
+   * do domínio, que já são os certos: roteiro e checklist compartilhados,
+   * despesa privada. A folha só oferece a escolha quando a viagem tem mais de
+   * um viajante — numa viagem individual as duas opções são a mesma coisa.
+   */
+  visibility?: {
+    itinerary?: Visibility;
+    checklist?: Visibility;
+    expense?: Visibility;
+  };
 }
 
 /** Um registro que este executor criou — a matéria-prima do "Desfazer". */
@@ -168,6 +182,7 @@ async function runItinerary(
         placeName: item.placeName,
         completed: false,
         sortOrder,
+        visibility: ctx.visibility?.itinerary ?? DEFAULT_VISIBILITY.itinerary,
       });
       created.push({ kind: 'itinerary', id: record.id });
       nextOrder.set(item.date, sortOrder + 1);
@@ -204,6 +219,7 @@ async function runChecklist(
         priority: item.priority,
         dueDate: item.dueDate,
         completed: false,
+        visibility: ctx.visibility?.checklist ?? DEFAULT_VISIBILITY.checklist,
       });
       created.push({ kind: 'checklist', id: record.id });
       succeeded += 1;
@@ -243,6 +259,7 @@ async function runExpenses(
           amount: item.amount,
           currency: item.currency,
           transactionDate: item.transactionDate,
+          visibility: ctx.visibility?.expense ?? DEFAULT_VISIBILITY.expense,
         }),
       );
       created.push({ kind: 'expense', id: record.id });
@@ -350,6 +367,7 @@ export async function executeAIActions(
     trip: context.trip,
     userId: context.userId,
     source: context.source ?? defaultDataSource,
+    visibility: context.visibility ?? {},
   };
 
   const outcomes: AIActionOutcome[] = [];

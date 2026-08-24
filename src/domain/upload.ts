@@ -59,7 +59,7 @@ const MB = 1024 * 1024;
  * 2 MB, e menor que o disparate porque nada aqui é vídeo.
  *
  * A lista acompanha `type: ['application/pdf', 'image/*']` do `DocumentPicker`
- * em `app/trip/[tripId]/tickets.tsx`. O filtro do seletor é uma sugestão ao
+ * em `app/trip/[tripId]/reservations.tsx`. O filtro do seletor é uma sugestão ao
  * sistema operacional, não uma garantia: no Android o usuário costuma
  * conseguir escolher "todos os arquivos". Por isso a conferência é aqui.
  */

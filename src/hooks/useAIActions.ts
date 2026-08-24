@@ -26,6 +26,7 @@ import { useConnectivity } from '@/providers/ConnectivityProvider';
 import {
   executeAIActions,
   undoAIActions,
+  type AIActionContext,
   type AIActionReport,
 } from '@/services/aiActionExecutor';
 import { queryKeys } from './queryKeys';
@@ -54,7 +55,11 @@ export function useAIActionRunner(trip: Trip | null) {
   }, [queryClient, trip, user]);
 
   const run = useCallback(
-    async (key: string, actions: AITripAction[]): Promise<AIActionReport> => {
+    async (
+      key: string,
+      actions: AITripAction[],
+      visibility?: AIActionContext['visibility'],
+    ): Promise<AIActionReport> => {
       if (!trip || !user) {
         throw new AIActionBlockedError('Selecione uma viagem antes de aplicar a sugestão.');
       }
@@ -71,7 +76,7 @@ export function useAIActionRunner(trip: Trip | null) {
 
       setRunningKey(key);
       try {
-        const report = await executeAIActions(actions, { trip, userId: user.id });
+        const report = await executeAIActions(actions, { trip, userId: user.id, visibility });
         await invalidate();
         return report;
       } finally {

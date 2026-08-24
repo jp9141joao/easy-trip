@@ -97,21 +97,31 @@ describe('ciclo create → read → update → read → delete → read', () => 
     expect((await source.expenses.listByTrip(trip.id)).map((e) => e.id)).not.toContain(gasto.id);
   });
 
-  it('bilhetes', async () => {
+  it('reservas', async () => {
     const trip = await source.trips.create(TRIP);
-    const bilhete = await source.tickets.create({
+    const reserva = await source.travelReservations.create({
       tripId: trip.id,
-      userId: TRIP.userId,
-      type: 'voo',
+      createdBy: TRIP.userId,
+      type: 'flight',
       title: 'TAP 1234',
+      status: 'confirmed',
+      details: { flightNumber: 'TP1234' },
     });
-    expect((await source.tickets.listByTrip(trip.id)).map((t) => t.id)).toContain(bilhete.id);
+    expect((await source.travelReservations.listByTrip(trip.id)).map((t) => t.id)).toContain(
+      reserva.id,
+    );
+    // Sem escolha explícita, a reserva nasce compartilhada (§11).
+    expect(reserva.visibility).toBe('shared');
 
-    await source.tickets.update(bilhete.id, { title: 'TAP 5678' });
-    expect((await source.tickets.listByTrip(trip.id)).find((t) => t.id === bilhete.id)?.title).toBe('TAP 5678');
+    await source.travelReservations.update(reserva.id, { title: 'TAP 5678' });
+    expect(
+      (await source.travelReservations.listByTrip(trip.id)).find((t) => t.id === reserva.id)?.title,
+    ).toBe('TAP 5678');
 
-    await source.tickets.remove(bilhete.id);
-    expect((await source.tickets.listByTrip(trip.id)).map((t) => t.id)).not.toContain(bilhete.id);
+    await source.travelReservations.remove(reserva.id);
+    expect((await source.travelReservations.listByTrip(trip.id)).map((t) => t.id)).not.toContain(
+      reserva.id,
+    );
   });
 
   it('diário', async () => {

@@ -13,7 +13,7 @@ import type { RoteiroSection } from './TripScaffold';
  *
  * As três tentativas anteriores falharam pelo mesmo motivo de fundo: todas eram
  * uma *fileira horizontal de rótulos com um selecionado*, que é exatamente a
- * forma de `Roteiro · Carteira · Tickets` logo acima. Trocar o preenchimento por
+ * forma de `Roteiro · Carteira · Reservas` logo acima. Trocar o preenchimento por
  * sublinhado, e depois por chips, mudou a decoração e não a forma — por isso a
  * tela continuava lendo como duas barras empilhadas.
  *

@@ -15,6 +15,7 @@ import type { Profile, UserRole, User } from '@/domain/types';
 import { parseRecoveryLink, toRecoveryGrant, RECOVERY_PATH } from '@/lib/authLinking';
 import { config } from '@/lib/config';
 import { createRedirectUrl, getInitialUrl, subscribeToUrls } from '@/lib/deepLink';
+import { clearAITripContext } from '@/lib/aiTripContext';
 import { clearPersistedQueries } from '@/lib/queryPersistence';
 import { cacheStorage, prefsStorage } from '@/lib/storage';
 import { authAdapter, dataSource, type AuthSession, type SignUpOutcome } from '@/repositories';
@@ -81,6 +82,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   /** Uma saída de cada vez. Ver `signOut`. */
   const signingOut = useRef(false);
 
+  /**
+   * De qual conta o aplicativo **acabou de sair**.
+   *
+   * É a trava contra a ressurreição. `signOut` apaga a sessão do aparelho, mas
+   * o supabase-js pode ter uma renovação de token em voo, e uma restauração
+   * (`restore()`) pedida antes da saída pode voltar depois dela. Nos dois casos
+   * chega um aviso com a sessão *antiga* — e aplicá-lo colocaria a pessoa de
+   * volta dentro da conta da qual ela pediu para sair.
+   *
+   * Nenhum evento de fundo pode reautenticar esta conta. Só uma entrada
+   * explícita — `signIn`, `signUp`, ou o resgate de um link de recuperação —
+   * levanta a trava, porque só ela é uma decisão de quem está no aparelho.
+   */
+  const signedOutUserId = useRef<string | null>(null);
+
+  /**
+   * Contador de operações de sessão.
+   *
+   * Toda leitura assíncrona guarda o valor de quando começou e o confere antes
+   * de aplicar o que leu. Uma restauração lenta que volte depois de um logout
+   * carrega uma geração vencida, e é descartada em vez de sobrescrever o
+   * estado atual.
+   */
+  const generation = useRef(0);
+
   const loadProfile = useCallback(async (userId: string) => {
     try {
       const stored = await dataSource.profile.get(userId);
@@ -107,7 +133,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * estados de autenticação discordando um do outro.
    */
   const applySession = useCallback(
-    async (next: AuthSession | null) => {
+    async (next: AuthSession | null, bornAt = generation.current) => {
+      // Chegou tarde: outra operação de sessão aconteceu enquanto esta leitura
+      // estava no ar. O que ela traz já não descreve o presente.
+      if (bornAt !== generation.current) return;
+      // Aviso de fundo carregando a conta da qual acabamos de sair. Ver
+      // `signedOutUserId`.
+      if (next && next.user.id === signedOutUserId.current) return;
+
       setSession(next);
 
       const nextId = next?.user.id ?? null;
@@ -137,10 +170,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     (async () => {
+      const bornAt = generation.current;
       try {
         const restored = await authAdapter.restore();
         if (!active) return;
-        if (restored) await applySession(restored);
+        if (restored) await applySession(restored, bornAt);
       } catch {
         // A broken session is treated as signed-out.
       } finally {
@@ -178,6 +212,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const next = await authAdapter.redeemRecovery(grant);
         if (!active) return;
+        signedOutUserId.current = null;
+        generation.current += 1;
         setRecoveryError(null);
         // A ordem importa: marcar a pendência antes de aplicar a sessão evita
         // um quadro em que o usuário está autenticado e o aplicativo já abriu.
@@ -204,6 +240,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(
     async (email: string, password: string) => {
       const next = await authAdapter.signIn(email, password);
+      // Entrada explícita: a trava contra ressurreição existe para eventos de
+      // fundo, não para uma pessoa decidindo entrar de novo.
+      signedOutUserId.current = null;
+      generation.current += 1;
       await applySession(next);
       await queryClient.invalidateQueries();
     },
@@ -219,6 +259,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // completa os dados é a primeira entrada, depois da confirmação.
       if (outcome.status === 'confirmation-required') return outcome;
 
+      signedOutUserId.current = null;
+      generation.current += 1;
       await applySession(outcome.session);
 
       // O perfil já existe: o gatilho `handle_new_user` (0001) o cria na mesma
@@ -281,23 +323,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Isto apaga a chave no disco; quem zera a cópia em memória é o
       // `TripSelectionProvider`, que observa o dono da sessão.
       await step(() => prefsStorage.remove('currentTripId'));
+      // O contexto da IA é uma seleção separada da viagem ativa da Home
+      // (`src/lib/aiTripContext.ts`) e é dado privado do mesmo jeito.
+      if (ownerId) await step(() => clearAITripContext(ownerId));
     },
     [queryClient],
   );
 
   /**
-   * Sair da conta, inteiro e numa execução só.
+   * Sair da conta.
    *
-   * Duas regras governam a ordem daqui:
+   * A ordem é a regra inteira, e ela mudou depois do teste em aparelho:
    *
-   * 1. Nada é limpo antes de o provedor de identidade confirmar que a sessão
-   *    acabou. Se `signOut` falhar, o erro sobe e o aplicativo continua
-   *    exatamente onde estava — sem meia-saída para o usuário descobrir depois.
-   * 2. Confirmado o encerramento, a sessão em memória cai **aqui**, e não
-   *    quando o aviso do provedor chegar. O aviso continua existindo e continua
-   *    sendo bem-vindo (é ele que cobre o token revogado por fora), mas o botão
-   *    "Sair" não pode depender dele: era essa dependência que deixava a
+   * 1. **Encerrar a sessão do aparelho.** O adaptador só volta sem exceção
+   *    quando o token realmente não está mais no disco — com rede, sem rede ou
+   *    com o servidor pendurado (ver `SupabaseAuthAdapter.signOut`). Se ele
+   *    lançar, nada é limpo e o aplicativo continua exatamente onde estava:
+   *    meia-saída seria pior que a falha.
+   *
+   * 2. **Derrubar a sessão em memória, aqui, na mesma ação.** Não se espera o
+   *    aviso do provedor. O aviso continua existindo e continua sendo
+   *    bem-vindo (é ele que cobre o token revogado por fora), mas o botão
+   *    "Sair" não pode depender dele — era essa dependência que deixava a
    *    interface logada esperando uma resposta de rede.
+   *
+   * 3. **Limpar o resto sem segurar a interface.** Cache, arquivos locais e
+   *    preferências saem depois, e de propósito **fora** do caminho crítico:
+   *    a árvore privada já desmontou no passo 2, e uma limpeza lenta não pode
+   *    atrasar o que o usuário vê. A limpeza continua garantida — o `await`
+   *    daqui só existe para quem quiser observá-la.
    */
   const signOut = useCallback(async () => {
     // Dois toques no mesmo botão não podem virar duas saídas concorrentes —
@@ -308,16 +362,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const dono = session?.user.id;
     try {
       await authAdapter.signOut();
-      // Zerar o perfil é o que zera o papel: como `role` é derivada e não um
-      // estado separado, não existe cópia da permissão anterior para esquecer de
-      // limpar. A próxima conta começa de `null`, isto é, sem privilégio (§26).
-      await applySession(null);
-      setRecoveryPending(false);
-      setRecoveryError(null);
-      await clearPrivateState(dono);
-    } finally {
+    } catch (error) {
       signingOut.current = false;
+      throw error;
     }
+
+    // A partir daqui a saída aconteceu. Nada abaixo pode falhar de um jeito
+    // que devolva a pessoa para dentro da conta.
+    signedOutUserId.current = dono ?? null;
+    generation.current += 1;
+    // Zerar o perfil é o que zera o papel: como `role` é derivada e não um
+    // estado separado, não existe cópia da permissão anterior para esquecer de
+    // limpar. A próxima conta começa de `null`, isto é, sem privilégio (§26).
+    await applySession(null);
+    setRecoveryPending(false);
+    setRecoveryError(null);
+    signingOut.current = false;
+
+    await clearPrivateState(dono);
   }, [session, applySession, clearPrivateState]);
 
   const requestPasswordReset = useCallback(async (email: string) => {
@@ -338,16 +400,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // pessoa dentro do formulário: ela pediu para desistir, e a resposta certa
     // é desistir. O que se perde num erro é a revogação remota de um token que
     // expira sozinho em minutos — não o encerramento neste aparelho.
+    const dono = session?.user.id;
     try {
       await authAdapter.signOut();
     } catch {
       // Segue mesmo assim: o estado local é zerado logo abaixo.
     }
+    signedOutUserId.current = dono ?? null;
+    generation.current += 1;
     await applySession(null);
     setRecoveryPending(false);
     setRecoveryError(null);
-    await clearPrivateState();
-  }, [applySession, clearPrivateState]);
+    await clearPrivateState(dono);
+  }, [session, applySession, clearPrivateState]);
 
   const deleteAccount = useCallback(async () => {
     if (!session) return;
@@ -361,6 +426,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     await authAdapter.deleteAccount(session);
 
+    signedOutUserId.current = session.user.id;
+    generation.current += 1;
     await applySession(null);
     await clearPrivateState(session.user.id);
   }, [session, applySession, clearPrivateState]);

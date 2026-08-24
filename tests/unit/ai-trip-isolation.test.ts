@@ -47,6 +47,9 @@ const despesaParis: Expense = {
   currency: 'BRL',
   transactionDate: '2026-08-23',
   createdAt: '2026-08-23T00:00:00.000Z',
+  visibility: 'private',
+  createdBy: 'u1',
+  paidBy: 'u1',
 };
 
 const roteiroParis: ItineraryItem = {
@@ -57,6 +60,7 @@ const roteiroParis: ItineraryItem = {
   title: 'Museu do Louvre',
   completed: false,
   sortOrder: 0,
+  visibility: 'shared',
 };
 
 const checklistToquio: ChecklistItem = {
@@ -65,6 +69,7 @@ const checklistToquio: ChecklistItem = {
   label: 'Comprar JR Pass',
   category: 'documentos',
   completed: false,
+  visibility: 'shared',
   createdAt: '2026-08-01T00:00:00.000Z',
 };
 
@@ -74,6 +79,7 @@ const contexto = (
     expenses?: Expense[];
     itinerary?: ItineraryItem[];
     checklist?: ChecklistItem[];
+    viewerId?: string;
   } = {},
 ) =>
   buildTripContext({
@@ -86,6 +92,10 @@ const contexto = (
     itinerary: registros.itinerary ?? [],
     checklist: registros.checklist ?? [],
     profile: null,
+    // Sem `viewerId` o contexto descarta tudo que é privado — inclusive o do
+    // próprio usuário. É o lado seguro do erro, e os cenários abaixo medem os
+    // dois casos.
+    viewerId: registros.viewerId,
   });
 
 describe('contexto da IA por viagem', () => {
@@ -98,7 +108,11 @@ describe('contexto da IA por viagem', () => {
   });
 
   it('não carrega nada de Paris depois da troca para Tóquio', () => {
-    const antes = contexto(paris, { expenses: [despesaParis], itinerary: [roteiroParis] });
+    const antes = contexto(paris, {
+      expenses: [despesaParis],
+      itinerary: [roteiroParis],
+      viewerId: 'u1',
+    });
     const depois = contexto(toquio, { checklist: [checklistToquio] });
 
     const serializado = JSON.stringify(depois);

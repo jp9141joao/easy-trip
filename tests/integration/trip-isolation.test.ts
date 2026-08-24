@@ -85,7 +85,7 @@ describe('expenses stay inside their trip (CA-01, CA-03)', () => {
     expect(getRemainingBudget(kyotoExpenses, kyoto)).toBe(2000);
   });
 
-  it('keeps itinerary, checklist, journal and tickets scoped per trip', async () => {
+  it('keeps itinerary, checklist, journal and reservations scoped per trip', async () => {
     const paris = await createTrip('Paris', 'França', 1000);
     const kyoto = await createTrip('Kyoto', 'Japão', 2000);
 
@@ -109,22 +109,24 @@ describe('expenses stay inside their trip (CA-01, CA-03)', () => {
       entryDate: '2026-09-11',
       content: 'Primeiro dia em Paris',
     });
-    await localDataSource.tickets.create({
+    await localDataSource.travelReservations.create({
       tripId: paris.id,
-      userId: USER,
-      type: 'voo',
+      createdBy: USER,
+      type: 'flight',
       title: 'GRU → CDG',
+      status: 'confirmed',
+      details: {},
     });
 
     expect(await localDataSource.itinerary.listByTrip(paris.id)).toHaveLength(1);
     expect(await localDataSource.checklist.listByTrip(paris.id)).toHaveLength(1);
     expect(await localDataSource.journal.listByTrip(paris.id)).toHaveLength(1);
-    expect(await localDataSource.tickets.listByTrip(paris.id)).toHaveLength(1);
+    expect(await localDataSource.travelReservations.listByTrip(paris.id)).toHaveLength(1);
 
     expect(await localDataSource.itinerary.listByTrip(kyoto.id)).toHaveLength(0);
     expect(await localDataSource.checklist.listByTrip(kyoto.id)).toHaveLength(0);
     expect(await localDataSource.journal.listByTrip(kyoto.id)).toHaveLength(0);
-    expect(await localDataSource.tickets.listByTrip(kyoto.id)).toHaveLength(0);
+    expect(await localDataSource.travelReservations.listByTrip(kyoto.id)).toHaveLength(0);
   });
 });
 

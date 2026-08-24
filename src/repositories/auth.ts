@@ -17,7 +17,7 @@ import type { User } from '@/domain/types';
 import { nowISO } from '@/lib/date';
 import { createId } from '@/lib/id';
 import { jsonStorage, secureStorage } from '@/lib/storage';
-import { getSupabaseClient } from './supabase/client';
+import { forgetLocalSession, getSupabaseClient } from './supabase/client';
 import { config } from '@/lib/config';
 
 export interface AuthSession {
@@ -296,34 +296,37 @@ class LocalAuthAdapter implements AuthAdapter {
 /* ---------------------------- supabase adapter ---------------------------- */
 
 /**
- * Teto para a ida ao servidor durante a saída.
+ * Teto para cada ida ao servidor durante a saída.
  *
- * `auth.signOut()` não é uma operação local: ela revoga o refresh token no
- * servidor e **só depois** apaga a sessão do aparelho. Numa rede móvel ruim
- * essa promessa fica pendurada por dezenas de segundos, e como todo o resto da
- * saída acontece depois dela, a interface continuava mostrando a conta logada
- * nesse intervalo — enquanto o token no disco já tinha sido apagado. Era isso
- * que produzia o "só sai depois de fechar e abrir o app".
+ * Curto de propósito. Nada abaixo depende do resultado da rede: se a revogação
+ * não voltar a tempo, a sessão é apagada aqui mesmo. O prazo existe só para
+ * dar ao caminho normal — servidor respondendo — a chance de encerrar do jeito
+ * limpo, emitindo `SIGNED_OUT` pela própria biblioteca.
  */
-const SIGN_OUT_TIMEOUT_MS = 6_000;
+const SIGN_OUT_NETWORK_BUDGET_MS = 2_500;
+
+/** Teto para conferir o armazenamento local. Não é rede; é leitura de disco. */
+const SIGN_OUT_CHECK_MS = 2_000;
+
+/** Marca de "o prazo estourou", distinguível de um `null` legítimo. */
+const TIMED_OUT: unique symbol = Symbol('timed-out');
+type TimedOut = typeof TIMED_OUT;
 
 /**
- * Espera `promise` por no máximo `ms`, devolvendo `null` quando o prazo estoura.
+ * Espera `promise` por no máximo `ms`, devolvendo `TIMED_OUT` quando estoura.
  *
  * Não cancela nada — não há como cancelar um `fetch` já em voo aqui, e nem
- * seria desejável: se a revogação terminar depois, ela termina, e o
- * `onAuthStateChange` avisa o aplicativo do jeito de sempre. O que este teto
+ * seria desejável: se a revogação terminar depois, ela termina. O que este teto
  * faz é impedir que a interface fique refém dela.
  */
-async function withDeadline<T>(promise: PromiseLike<T>, ms: number): Promise<T | null> {
+async function withDeadline<T>(promise: PromiseLike<T>, ms: number): Promise<T | TimedOut> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      promise,
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), ms);
-      }),
-    ]);
+    const raced: Promise<T | TimedOut> = Promise.resolve(promise).catch(() => TIMED_OUT);
+    const deadline = new Promise<TimedOut>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), ms);
+    });
+    return await Promise.race([raced, deadline]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -376,28 +379,61 @@ class SupabaseAuthAdapter implements AuthAdapter {
     return { status: 'signed-in', session: toSession(data.session) };
   }
 
+  /**
+   * A sessão local ainda existe?
+   *
+   * Quem responde é o armazenamento, não o retorno de `signOut()`. O retorno
+   * produz os dois erros: um `error` acompanhado de sessão já apagada (a
+   * revogação recusada que ainda desconecta este aparelho) e um `error: null`
+   * com sessão de pé (a saída que voltou cedo). Perguntar direto não produz
+   * nenhum dos dois. Prazo estourado conta como "ainda existe": não se afirma
+   * uma saída que não foi possível conferir.
+   */
+  private async localSessionGone(client: ReturnType<typeof getSupabaseClient>): Promise<boolean> {
+    const checked = await withDeadline(client.auth.getSession(), SIGN_OUT_CHECK_MS);
+    return checked !== TIMED_OUT && !checked?.data?.session;
+  }
+
+  /**
+   * Encerrar **esta** sessão, neste aparelho, agora.
+   *
+   * Três passos, e o segundo é o que faltava:
+   *
+   * 1. `signOut({ scope: 'local' })` com prazo. `local` porque o pedido do
+   *    botão é sair daqui — revogar as sessões dos outros aparelhos da pessoa
+   *    não foi pedido, e é justamente o `scope: 'global'` (o padrão) que
+   *    transforma a saída numa operação mais cara e mais fácil de pendurar.
+   *
+   * 2. Se a sessão sobreviveu — rede pendurada, token vencido cuja renovação
+   *    interna falhou, servidor fora do ar —, ela é apagada **aqui**, sem rede
+   *    (`forgetLocalSession`). Sem este passo, uma rede ruim mantinha o
+   *    aplicativo autenticado: era essa a causa-raiz do defeito relatado.
+   *
+   * 3. Um segundo `signOut({ scope: 'local' })`, agora sem token no disco para
+   *    revogar, entra no ramo puramente local da biblioteca: ele reconcilia o
+   *    estado interno, invalida uma renovação em voo e emite `SIGNED_OUT`.
+   *
+   * Só há exceção se, depois de tudo isso, a sessão **ainda** estiver de pé —
+   * o que significa que o armazenamento do aparelho recusou a escrita. Aí a
+   * saída realmente não aconteceu, e dizer o contrário seria mentir.
+   */
   async signOut(): Promise<void> {
     const client = getSupabaseClient();
 
-    const outcome = await withDeadline(client.auth.signOut(), SIGN_OUT_TIMEOUT_MS);
+    const outcome = await withDeadline(
+      client.auth.signOut({ scope: 'local' }),
+      SIGN_OUT_NETWORK_BUDGET_MS,
+    );
 
-    // Quem responde "a sessão acabou?" é o armazenamento local, não o retorno
-    // da chamada.
-    //
-    // O supabase-js apaga a sessão do aparelho em vários caminhos, inclusive
-    // em alguns que devolvem `error` (uma revogação recusada pelo servidor
-    // ainda desconecta este aparelho). E o contrário também existe: um erro ao
-    // carregar a sessão faz `signOut()` voltar cedo, sem apagar nada. Ler o
-    // retorno, portanto, produziria tanto falso sucesso — dizer que saiu sem
-    // ter saído — quanto falso fracasso. Perguntar direto não produz nenhum
-    // dos dois.
-    const verified = await withDeadline(client.auth.getSession(), SIGN_OUT_TIMEOUT_MS);
-    if (verified && !verified.data.session) return;
+    if (await this.localSessionGone(client)) return;
 
-    // Sessão ainda de pé (ou nem deu para conferir): a saída não aconteceu, e
-    // dizer o contrário deixaria o aplicativo num estado que ninguém pediu.
+    await forgetLocalSession();
+    await withDeadline(client.auth.signOut({ scope: 'local' }), SIGN_OUT_CHECK_MS);
+
+    if (await this.localSessionGone(client)) return;
+
     throw describeAuthFailure(
-      outcome?.error?.message ?? '',
+      outcome !== TIMED_OUT ? (outcome?.error?.message ?? '') : '',
       'Não foi possível sair da conta. Tente novamente.',
     );
   }
@@ -452,7 +488,10 @@ class SupabaseAuthAdapter implements AuthAdapter {
     const client = getSupabaseClient();
     const { error } = await client.functions.invoke('delete-account');
     if (error) throw new AuthError('Não foi possível excluir a conta agora.', 'network');
-    await client.auth.signOut();
+    // A conta já não existe do outro lado: revogar remotamente não tem alvo, e
+    // uma falha de rede aqui não pode deixar o aparelho autenticado numa conta
+    // apagada. Vale a mesma saída local do botão "Sair".
+    await this.signOut().catch(() => undefined);
   }
 }
 

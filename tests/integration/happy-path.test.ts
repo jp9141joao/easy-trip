@@ -81,21 +81,23 @@ describe('caminho feliz completo', () => {
     });
 
     /* 8. Documento com arquivo. */
-    const anexo = await db.tickets.uploadAttachment(A, viagem.id, {
+    const anexo = await db.travelReservations.uploadDocument(A, viagem.id, {
       uri: 'file:///cache/bilhete.pdf',
       name: 'bilhete.pdf',
       mimeType: 'application/pdf',
       size: 4096,
     });
-    const bilhete = await db.tickets.create({
+    const reserva = await db.travelReservations.create({
       tripId: viagem.id,
-      userId: A,
-      type: 'voo',
+      createdBy: A,
+      type: 'flight',
       title: 'Voo GRU → LIS',
+      status: 'confirmed',
+      details: { flightNumber: 'TP1234' },
       fileUrl: anexo.url,
       mimeType: anexo.mimeType,
     });
-    expect(bilhete.fileUrl).toBeTruthy();
+    expect(reserva.fileUrl).toBeTruthy();
 
     /* 9. Diário com foto. */
     const registro = await db.journal.create({
@@ -134,7 +136,7 @@ describe('caminho feliz completo', () => {
 
     expect((await db.itinerary.listByTrip(viagem.id))).toHaveLength(1);
     expect((await db.checklist.listByTrip(viagem.id))[0].completed).toBe(true);
-    expect((await db.tickets.listByTrip(viagem.id))).toHaveLength(1);
+    expect((await db.travelReservations.listByTrip(viagem.id))).toHaveLength(1);
     expect((await db.journal.listMedia([registro.id]))).toHaveLength(1);
     expect((await db.goals.list(A))[0]).toMatchObject({ currentValue: 5000, status: 'completed' });
 

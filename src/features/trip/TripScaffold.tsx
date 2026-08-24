@@ -17,7 +17,7 @@ import { formatDateRange } from '@/lib/date';
 import { formatMoney } from '@/lib/currency';
 import { useTheme } from '@/theme';
 
-export type TripSection = 'itinerary' | 'finance' | 'tickets';
+export type TripSection = 'itinerary' | 'finance' | 'reservations' | 'suggestions';
 export type RoteiroSection = 'itinerary' | 'checklist' | 'journal';
 
 /**
@@ -46,7 +46,7 @@ export function TripHero({
         style={{ height: 240 + insets.top, width: '100%' }}
         fallbackLabel={trip.destinationCity}
         overlay
-        // Roteiro, Carteira e Tickets desenham este mesmo hero. Sem zerar o
+        // As quatro seções da viagem desenham este mesmo hero. Sem zerar o
         // fade, a foto reaparece animada a cada troca de aba e a tela lê como
         // três telas batendo uma na outra em vez de uma só (§2).
         transition={0}
@@ -163,7 +163,17 @@ export function TripHero({
   );
 }
 
-/** Primary trip tabs: Roteiro · Carteira · Tickets (§33). */
+/**
+ * As seções da viagem: Roteiro · Carteira · Reservas · Sugestões (§39).
+ *
+ * "Tickets" virou "Reservas" — mudança de produto, não de rótulo: a área
+ * deixou de guardar um documento com título e passou a guardar uma reserva com
+ * modalidade, localizador e horários (§22–§24).
+ *
+ * A quarta entrada obrigou a barra a rolar. `scrollable` em vez de espremer:
+ * com quatro pastilhas de largura igual, "Sugestões" ficaria truncado em
+ * aparelho de 320 pt, e um rótulo cortado é pior do que um gesto a mais.
+ */
 export function TripTabs({ tripId, active }: { tripId: string; active: TripSection }) {
   const theme = useTheme();
   const router = useRouter();
@@ -171,7 +181,8 @@ export function TripTabs({ tripId, active }: { tripId: string; active: TripSecti
   const items: SegmentedTabItem<TripSection>[] = [
     { value: 'itinerary', label: 'Roteiro' },
     { value: 'finance', label: 'Carteira' },
-    { value: 'tickets', label: 'Tickets' },
+    { value: 'reservations', label: 'Reservas' },
+    { value: 'suggestions', label: 'Sugestões' },
   ];
 
   return (
@@ -179,6 +190,7 @@ export function TripTabs({ tripId, active }: { tripId: string; active: TripSecti
       <SegmentedTabs<TripSection>
         items={items}
         value={active}
+        scrollable
         onChange={(value) => {
           if (value === active) return;
           router.replace(`/trip/${tripId}/${value}`);

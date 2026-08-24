@@ -7,8 +7,23 @@
  * they live in `src/domain/selectors.ts`.
  */
 
+import type { TripRole } from './collaboration';
+import type { Visibility } from './visibility';
+
 export type ISODate = string; // YYYY-MM-DD
 export type ISODateTime = string; // ISO 8601 UTC
+
+/**
+ * O vocabulário de colaboração vive em módulos próprios — são conceitos com
+ * regra, não só forma. Reexportados aqui para que as telas continuem tendo um
+ * único ponto de entrada do domínio.
+ */
+export type { Visibility } from './visibility';
+export type { TripRole, TripMember, TripInvite, InvitableRole } from './collaboration';
+export type { Reservation, ReservationType } from './reservations';
+export type { Reminder } from './reminders';
+export type { AppNotification, NotificationType } from './notifications';
+export type { TripSuggestion, SuggestionCategory } from './suggestions';
 
 /**
  * Texto de agenda escrito pela pessoa — **não** é data (P-03).
@@ -176,6 +191,17 @@ export interface Trip {
   budgetCurrency: CurrencyCode;
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
+  /** Marca d'água do último refresh de sugestões (§43). */
+  suggestionsRefreshedAt?: ISODateTime;
+  /**
+   * Papel de quem está lendo, quando conhecido. Derivado de `trip_members`,
+   * nunca gravado na linha da viagem: a mesma viagem tem papéis diferentes
+   * para pessoas diferentes, e guardá-lo aqui seria guardar a resposta de uma
+   * pergunta que depende de quem pergunta.
+   */
+  role?: TripRole;
+  /** Quantos viajantes participam. Para o "👥 2" do card (§55). */
+  memberCount?: number;
 }
 
 /** Derived, never persisted (§31). */
@@ -200,6 +226,15 @@ export const ITINERARY_TYPES: readonly ItineraryType[] = [
   'outro',
 ] as const;
 
+/**
+ * De onde veio a coordenada de um item de roteiro.
+ *
+ * Existe porque `latitude` sozinha não diz se dá para confiar nela: um ponto
+ * escolhido no mapa e um ponto adivinhado por geocodificação de "restaurante
+ * legal" merecem tratamento diferente na hora de desenhar uma rota.
+ */
+export type PlaceSource = 'catalog' | 'geocoding' | 'manual' | 'suggestion';
+
 export interface ItineraryItem {
   id: string;
   tripId: string;
@@ -211,11 +246,25 @@ export interface ItineraryItem {
   title: string;
   description?: string;
   placeName?: string;
+  /** Endereço legível, quando houver. Não substitui as coordenadas. */
+  address?: string;
+  /**
+   * Coordenadas. Sempre as duas ou nenhuma — o CHECK `itinerary_coords_pair`
+   * (0011) garante isso no banco, porque meia coordenada entraria no mapa como
+   * um ponto no Golfo da Guiné.
+   */
   latitude?: number;
   longitude?: number;
+  placeSource?: PlaceSource;
   reservationReference?: string;
   completed: boolean;
   sortOrder: number;
+  /** §10 — quem vê este item. Default de criação: `shared`. */
+  visibility: Visibility;
+  /** Quem criou. Escrito pelo banco (trigger `set_created_by`, 0009). */
+  createdBy?: string;
+  /** Para o "atualizado agora" de §53 (last-write-wins). */
+  updatedAt?: ISODateTime;
 }
 
 export type ChecklistCategory =
@@ -246,6 +295,9 @@ export interface ChecklistItem {
   priority?: Priority;
   dueDate?: ISODate;
   createdAt: ISODateTime;
+  /** §10 — default de criação: `shared`. */
+  visibility: Visibility;
+  createdBy?: string;
 }
 
 export type ExpenseCategory =
@@ -284,6 +336,20 @@ export interface Expense {
   transactionDate: ISODate;
   description: string;
   createdAt: ISODateTime;
+  /**
+   * §11 — despesa nasce **privada**. É a única categoria em que o default
+   * conservador custa um toque a mais e evita expor o extrato de alguém para
+   * quem foi convidado depois.
+   */
+  visibility: Visibility;
+  createdBy?: string;
+  /**
+   * Quem pagou, que pode não ser quem lançou. Guardado para atribuição (§14) —
+   * não há divisão de conta, acerto nem Pix nesta fase, e o campo existe para
+   * que a evolução futura encontre o dado registrado em vez de precisar
+   * adivinhá-lo retroativamente.
+   */
+  paidBy?: string;
 }
 
 export interface JournalEntry {
@@ -297,6 +363,14 @@ export interface JournalEntry {
   placeName?: string;
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
+  /**
+   * §11, §63 — diário nasce **privado**, e é o dado mais sensível do produto.
+   * Nem o proprietário da viagem lê o diário privado de outro membro: a policy
+   * da 0009 não tem exceção de dono, e o teste `rls_collaboration` existe
+   * principalmente para essa linha.
+   */
+  visibility: Visibility;
+  createdBy?: string;
 }
 
 export interface JournalMedia {
@@ -323,48 +397,19 @@ export interface JournalMedia {
   sortOrder: number;
 }
 
-export type TicketType = 'voo' | 'hospedagem' | 'atracao' | 'transporte' | 'outro';
-
-export const TICKET_TYPES: readonly TicketType[] = [
-  'voo',
-  'hospedagem',
-  'atracao',
-  'transporte',
-  'outro',
-] as const;
-
-export interface Ticket {
-  id: string;
-  tripId: string;
-  userId: string;
-  type: TicketType;
-  title: string;
-  provider?: string;
-  reference?: string;
-  startDateTime?: ISODateTime;
-  endDateTime?: ISODateTime;
-  origin?: string;
-  destination?: string;
-  /**
-   * A chave do objeto no Storage — a identidade durável do arquivo (§11).
-   *
-   * É o que fica gravado. `fileUrl` é derivado dele a cada leitura e não deve
-   * voltar para o banco: era esse exato embaralhamento que fazia a foto de
-   * perfil sumir na F5, quando uma URL assinada expirada era regravada por
-   * cima do caminho.
-   */
-  filePath?: string;
-  /**
-   * Como abrir o arquivo **agora**. Derivado, nunca gravado.
-   *
-   * Aponta para a cópia local quando ela existe — e é isso que faz o documento
-   * abrir em modo avião (D-04) — e para uma URL assinada de uma hora quando
-   * não existe.
-   */
-  fileUrl?: string;
-  mimeType?: string;
-  notes?: string;
-}
+/**
+ * `Ticket` saiu do domínio na F-Colaboração.
+ *
+ * O tipo descrevia "um documento guardado com título e anexo". O produto passou
+ * a ter `Reservation` (§22–§29): modalidade, localizador, horários e os campos
+ * específicos de voo, hotel, carro, ingresso, trem e ônibus. Manter os dois
+ * lado a lado daria dois modelos para a mesma tabela, e a primeira tela escrita
+ * distraidamente leria o antigo.
+ *
+ * A tabela `tickets` continua existindo no Postgres — o nome é histórico e
+ * renomeá-lo custaria uma migration destrutiva sobre dados em produção sem
+ * mudar nada que o usuário veja. Ver o cabeçalho da 0011.
+ */
 
 export type GoalType = 'economia' | 'destino' | 'preparacao' | 'frequencia';
 

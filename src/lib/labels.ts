@@ -4,6 +4,7 @@
  * different ways across screens.
  */
 
+import { RESERVATION_CATEGORIES, type ReservationType } from '@/domain/reservations';
 import type {
   AdvisorStatus,
   ChecklistCategory,
@@ -14,7 +15,6 @@ import type {
   ItineraryType,
   PlaceType,
   Priority,
-  TicketType,
   TravelStyle,
 } from '@/domain/types';
 
@@ -46,13 +46,17 @@ export const EXPENSE_CATEGORY_LABEL: Record<ExpenseCategory, string> = {
   outros: 'Outros',
 };
 
-export const TICKET_TYPE_LABEL: Record<TicketType, string> = {
-  voo: 'Voo',
-  hospedagem: 'Hospedagem',
-  atracao: 'Atração',
-  transporte: 'Transporte',
-  outro: 'Outro',
-};
+/**
+ * O rótulo de cada modalidade de reserva.
+ *
+ * Fonte única: `RESERVATION_CATEGORIES` já carrega rótulo, plural e emoji, e
+ * derivá-lo aqui evita duas listas que se afastam — foi assim que "Tickets"
+ * sobreviveu em três telas depois de o produto passar a chamar isto de
+ * Reservas.
+ */
+export const RESERVATION_TYPE_LABEL: Record<ReservationType, string> = Object.fromEntries(
+  RESERVATION_CATEGORIES.map((category) => [category.type, category.label]),
+) as Record<ReservationType, string>;
 
 export const GOAL_TYPE_LABEL: Record<GoalType, string> = {
   economia: 'Economia',

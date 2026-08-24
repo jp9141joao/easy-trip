@@ -10,7 +10,7 @@ import { queryKeys } from '@/hooks/queryKeys';
  *
  * O texto da decisão: *"o usuário abriria o aplicativo no aeroporto sem sinal e
  * não veria o próprio cartão de embarque"*. O plano transforma isso em critério
- * de aceite: *"modo avião: abrir um ticket já baixado — tem de funcionar"*.
+ * de aceite: *"modo avião: abrir uma reserva já baixada — tem de funcionar"*.
  *
  * O "modo avião" aqui é uma fronteira de rede controlada — a fonte de dados
  * simplesmente falha, como falharia sem sinal. O que se mede é o comportamento
@@ -86,7 +86,7 @@ async function reabrir(userId = UID) {
 describe('o cartão de embarque no aeroporto', () => {
   it('ONLINE: carrega, guarda o arquivo e persiste a lista', async () => {
     const bilhetes = await rede.carregarBilhetes();
-    client.setQueryData(queryKeys.tickets(TRIP), bilhetes);
+    client.setQueryData(queryKeys.tripReservations(TRIP), bilhetes);
     await persistQueries(client, UID);
 
     // "Uma cópia local é gravada ao anexar e ao baixar".
@@ -97,7 +97,7 @@ describe('o cartão de embarque no aeroporto', () => {
 
   it('OFFLINE depois de reabrir: a lista aparece e o arquivo abre', async () => {
     // --- com rede ---
-    client.setQueryData(queryKeys.tickets(TRIP), await rede.carregarBilhetes());
+    client.setQueryData(queryKeys.tripReservations(TRIP), await rede.carregarBilhetes());
     await persistQueries(client, UID);
     await writeMirrorFromBytes('attachments', CAMINHO, await rede.baixarArquivo(CAMINHO));
 
@@ -105,7 +105,7 @@ describe('o cartão de embarque no aeroporto', () => {
     rede.online = false;
     await reabrir();
 
-    const lista = client.getQueryData<(typeof BILHETE)[]>(queryKeys.tickets(TRIP));
+    const lista = client.getQueryData<(typeof BILHETE)[]>(queryKeys.tripReservations(TRIP));
     expect(lista).toHaveLength(1);
     expect(lista![0].title).toBe('TAP 1234 — GRU/LIS');
 
@@ -116,14 +116,14 @@ describe('o cartão de embarque no aeroporto', () => {
   });
 
   it('OFFLINE sem ter baixado: a lista aparece, mas o arquivo não — e isso é dito', async () => {
-    client.setQueryData(queryKeys.tickets(TRIP), await rede.carregarBilhetes());
+    client.setQueryData(queryKeys.tripReservations(TRIP), await rede.carregarBilhetes());
     await persistQueries(client, UID);
     // Ninguém abriu o arquivo com rede, então não há cópia.
 
     rede.online = false;
     await reabrir();
 
-    expect(client.getQueryData(queryKeys.tickets(TRIP))).toHaveLength(1);
+    expect(client.getQueryData(queryKeys.tripReservations(TRIP))).toHaveLength(1);
     // A honestidade do §10: sem cópia local, não há como abrir — e a tela tem
     // de saber disso em vez de anunciar "disponível offline".
     expect(await comoAbrir(rede, CAMINHO)).toBeUndefined();
@@ -145,7 +145,7 @@ describe('o cartão de embarque no aeroporto', () => {
     // §38: nada de servir o catálogo de demonstração como se fosse do usuário.
     rede.online = false;
     expect(await reabrir()).toBe(0);
-    expect(client.getQueryData(queryKeys.tickets(TRIP))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.tripReservations(TRIP))).toBeUndefined();
     await expect(rede.carregarBilhetes()).rejects.toThrow('Network request failed');
   });
 });
@@ -171,13 +171,13 @@ describe('escrita continua exigindo rede — e falha de forma limpa', () => {
 
 describe('isolamento entre contas no aparelho', () => {
   it('o cache e os arquivos de A não aparecem para B', async () => {
-    client.setQueryData(queryKeys.tickets(TRIP), await rede.carregarBilhetes());
+    client.setQueryData(queryKeys.tripReservations(TRIP), await rede.carregarBilhetes());
     await persistQueries(client, UID);
     await writeMirrorFromBytes('attachments', CAMINHO, await rede.baixarArquivo(CAMINHO));
 
     // B entra neste mesmo aparelho.
     expect(await reabrir(OUTRO)).toBe(0);
-    expect(client.getQueryData(queryKeys.tickets(TRIP))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.tripReservations(TRIP))).toBeUndefined();
 
     // O arquivo de A continua no disco até a saída de A o expurgar — mas B não
     // tem como chegar nele: nenhum registro de B cita o caminho de A, e o

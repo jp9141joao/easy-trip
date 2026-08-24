@@ -1,7 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { buildReviewGroups, reviewToActions, toggleItem } from '@/domain/aiActionReview';
-import { parseAIActions } from '@/domain/aiActions';
+import { isApplyConfirmation, parseAIActions } from '@/domain/aiActions';
+import { readModelOutput } from '../../supabase/functions/ai-chat/protocol';
+import { readAITripContext, writeAITripContext } from '@/lib/aiTripContext';
+import { prefsStorage } from '@/lib/storage';
 import { getRemainingBudget, getTripTotalSpent } from '@/domain/selectors';
 import type { Trip } from '@/domain/types';
 import { localDataSource as db } from '@/repositories/local/LocalDataSource';
@@ -264,5 +267,152 @@ describe('IA acionável, do pedido ao registro', () => {
     // E nada do USER_A vazou para a lista do USER_B.
     const viagensB = await db.trips.list(USER_B);
     expect(viagensB.map((trip) => trip.id)).toEqual([toquio.id]);
+  });
+});
+
+/*
+ * ---------------------------------------------------------------------------
+ * O fluxo crítico do hotfix, ponta a ponta: a resposta crua do Gemini entra
+ * pelo mesmo lugar por onde ela entra em produção — `readModelOutput`, na Edge
+ * Function — e sai como registro no roteiro real. É a costura que faltava: os
+ * testes anteriores começavam da proposta já validada, e o defeito no aparelho
+ * estava justamente **antes** disso.
+ * ---------------------------------------------------------------------------
+ */
+
+describe('do Gemini ao roteiro, sem atalho', () => {
+  const USER_C = 'user-ia-acionavel-c';
+  let lisboa: Awaited<ReturnType<typeof db.trips.create>>;
+
+  /** O corpo cru que a API do Gemini devolve, incluindo a parte de raciocínio. */
+  const respostaCrua = {
+    candidates: [
+      {
+        content: {
+          parts: [
+            { text: 'Preciso usar trip.today para resolver "amanhã".', thought: true },
+            {
+              text: JSON.stringify({
+                content:
+                  'Preparei uma sugestão para amanhã com três lugares. ' +
+                  'Revise e confirme a aplicação no aplicativo.',
+                actions: [
+                  {
+                    type: 'itinerary.add',
+                    label: 'Adicionar 3 itens ao roteiro',
+                    items: [
+                      { title: 'Mosteiro dos Jerónimos', date: '2026-09-02', startTime: '09:30', type: 'atracao' },
+                      { title: 'Torre de Belém', date: '2026-09-02', startTime: '11:30', type: 'atracao' },
+                      { title: 'Time Out Market', date: '2026-09-02', startTime: '13:00', type: 'refeicao' },
+                    ],
+                  },
+                ],
+              }),
+            },
+          ],
+        },
+      },
+    ],
+  };
+
+  const juntarPartes = (data: typeof respostaCrua) =>
+    data.candidates[0].content.parts
+      .filter((part) => (part as { thought?: boolean }).thought !== true)
+      .map((part) => part.text ?? '')
+      .join('')
+      .trim();
+
+  beforeAll(async () => {
+    await db.purgeUserData(USER_C);
+    lisboa = await db.trips.create({
+      userId: USER_C,
+      destinationCity: 'Lisboa',
+      destinationCountry: 'Portugal',
+      countryCode: 'PT',
+      timezone: 'Europe/Lisbon',
+      startDate: '2026-09-01',
+      endDate: '2026-09-10',
+      budgetTotal: 20000,
+      budgetCurrency: 'BRL',
+    });
+    await writeAITripContext(USER_C, lisboa.id);
+  });
+
+  it('a resposta crua vira três itens no roteiro real', async () => {
+    /* 1. O servidor lê a resposta: raciocínio fora, proposta dentro. */
+    const saida = readModelOutput(juntarPartes(respostaCrua));
+    expect(saida.actions).toHaveLength(1);
+    // A promessa do texto é verdadeira, então ela permanece.
+    expect(saida.content).toMatch(/Revise e confirme/i);
+
+    /* 2. O cliente valida de novo e carimba a viagem da conversa. */
+    const propostas = parseAIActions(saida.actions, lisboa);
+    expect(propostas).toHaveLength(1);
+    expect(propostas[0].tripId).toBe(lisboa.id);
+
+    /* 3. A tela mostraria o card: há proposta, e ela tem três itens. */
+    expect(propostas[0].type === 'itinerary.add' && propostas[0].items).toHaveLength(3);
+
+    /* 4. "Pode aplicar" abre a revisão da proposta que já existe. */
+    expect(isApplyConfirmation('Pode aplicar')).toBe(true);
+    const grupos = buildReviewGroups(propostas, {
+      trip: lisboa,
+      itinerary: await db.itinerary.listByTrip(lisboa.id),
+      checklist: await db.checklist.listByTrip(lisboa.id),
+    });
+    expect(grupos[0].items).toHaveLength(3);
+    expect(grupos[0].items.every((item) => item.included)).toBe(true);
+
+    /* 5. Confirmação → gravação. */
+    const relatorio = await executeAIActions(reviewToActions(grupos), {
+      trip: lisboa,
+      userId: USER_C,
+      source: db,
+    });
+    expect(relatorio.ok).toBe(true);
+
+    /* 6. E a aba Roteiro passa a mostrar os três. */
+    const roteiro = await db.itinerary.listByTrip(lisboa.id);
+    expect(roteiro.map((item) => item.title).sort()).toEqual([
+      'Mosteiro dos Jerónimos',
+      'Time Out Market',
+      'Torre de Belém',
+    ]);
+  });
+
+  it('fechar e reabrir mantém os três', async () => {
+    // A durabilidade real: o que está no AsyncStorage é o que a próxima
+    // abertura hidrata.
+    const bruto = await AsyncStorage.getItem('et:data:itinerary');
+    const gravados = JSON.parse(bruto ?? '[]') as { tripId: string; title: string }[];
+
+    expect(gravados.filter((item) => item.tripId === lisboa.id)).toHaveLength(3);
+  });
+
+  it('novo chat apaga a conversa, e o roteiro continua lá', async () => {
+    const conversa = await db.ai.getOrCreateConversation(USER_C, lisboa.id);
+    await db.ai.addMessage({
+      conversationId: conversa.id,
+      role: 'user',
+      content: 'Monte um roteiro para amanhã com 3 lugares.',
+    });
+
+    await db.ai.deleteConversation(conversa.id);
+    const nova = await db.ai.createConversation(USER_C, lisboa.id);
+
+    expect(await db.ai.listMessages(nova.id)).toEqual([]);
+    expect((await db.ai.getOrCreateConversation(USER_C, lisboa.id)).id).toBe(nova.id);
+    // O que foi aplicado é registro da viagem, não da conversa: apagar o chat
+    // não desfaz o roteiro.
+    expect(await db.itinerary.listByTrip(lisboa.id)).toHaveLength(3);
+  });
+
+  it('a Home muda de viagem e a IA continua em Lisboa', async () => {
+    // As duas seleções são independentes (ver `ai-context-independence`). Aqui
+    // a verificação é de ponta: mexer numa não move a outra, em disco.
+    await prefsStorage.set('currentTripId', paris.id);
+
+    expect(await readAITripContext(USER_C)).toBe(lisboa.id);
+    expect(await prefsStorage.get('currentTripId', null)).toBe(paris.id);
   });
 });

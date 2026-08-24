@@ -196,6 +196,7 @@ describe('folha de revisão', () => {
         title: 'Visitar Museu do Louvre',
         completed: false,
         sortOrder: 0,
+        visibility: 'shared',
       },
     ];
 

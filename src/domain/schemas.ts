@@ -8,13 +8,13 @@ import { z } from 'zod';
 import { pt } from 'zod/locales';
 
 import { isValidISODate } from '@/lib/date';
+import { RESERVATION_TYPES } from './reservations';
 import {
   CHECKLIST_CATEGORIES,
   CURRENCIES,
   EXPENSE_CATEGORIES,
   GOAL_TYPES,
   ITINERARY_TYPES,
-  TICKET_TYPES,
   TRAVEL_STYLES,
 } from './types';
 
@@ -33,6 +33,20 @@ const optionalTime = z
   .or(z.literal('').transform(() => undefined));
 
 const currency = z.enum(CURRENCIES as [string, ...string[]]);
+
+/** Texto que, quando preenchido, precisa ser um número dentro da faixa. */
+function coordinateText(min: number, max: number, message: string) {
+  return z
+    .string()
+    .trim()
+    .optional()
+    .or(z.literal('').transform(() => undefined))
+    .refine((value) => {
+      if (!value) return true;
+      const parsed = Number(value.replace(',', '.'));
+      return Number.isFinite(parsed) && parsed >= min && parsed <= max;
+    }, message);
+}
 
 /* --------------------------------- auth ---------------------------------- */
 
@@ -130,11 +144,31 @@ export const itineraryItemSchema = z
     title: z.string().trim().min(2, 'Informe um título'),
     description: z.string().trim().max(1000).optional(),
     placeName: z.string().trim().max(200).optional(),
+    address: z.string().trim().max(240).optional(),
+    /**
+     * Coordenadas como texto, porque é isso que o campo devolve.
+     *
+     * A conversão para número acontece na tela, e o vazio precisa continuar
+     * vazio: um `z.coerce.number()` transformaria "" em 0 e colocaria a
+     * atividade no Golfo da Guiné — latitude 0, longitude 0 — com um marcador
+     * numerado por cima.
+     */
+    latitude: coordinateText(-90, 90, 'Latitude entre -90 e 90'),
+    longitude: coordinateText(-180, 180, 'Longitude entre -180 e 180'),
     reservationReference: z.string().trim().max(120).optional(),
   })
   .refine((data) => !data.startTime || !data.endTime || data.endTime >= data.startTime, {
     message: 'O horário final deve ser depois do inicial',
     path: ['endTime'],
+  })
+  /**
+   * Coordenada é par ou não é nada — a mesma regra do CHECK
+   * `itinerary_coords_pair` (0011). Meia coordenada entraria no cálculo de
+   * rota como se fosse completa.
+   */
+  .refine((data) => Boolean(data.latitude) === Boolean(data.longitude), {
+    message: 'Informe latitude e longitude, ou deixe as duas em branco',
+    path: ['longitude'],
   });
 export type ItineraryItemInput = z.infer<typeof itineraryItemSchema>;
 
@@ -159,18 +193,33 @@ export const expenseSchema = z.object({
 });
 export type ExpenseInput = z.infer<typeof expenseSchema>;
 
-/* --------------------------------- ticket --------------------------------- */
+/* -------------------------------- reserva --------------------------------- */
 
-export const ticketSchema = z.object({
-  type: z.enum(TICKET_TYPES as [string, ...string[]]),
+/**
+ * O formulário de reserva — a parte comum a todas as modalidades.
+ *
+ * Os campos específicos (número do voo, quarto, quantidade de ingressos) são
+ * validados por `RESERVATION_DETAILS_SCHEMA`, em `src/domain/reservations.ts`,
+ * e chegam aqui já como objeto. A divisão segue a do banco: o que é comum é
+ * coluna e mora neste schema; o que é específico é `details` e mora lá.
+ *
+ * Quase tudo é opcional de propósito. Uma reserva anotada às pressas no
+ * aeroporto — título e localizador, nada mais — é um registro legítimo e útil;
+ * exigir dez campos faria a pessoa desistir e guardar o print na galeria.
+ */
+export const reservationSchema = z.object({
+  type: z.enum(RESERVATION_TYPES),
   title: z.string().trim().min(2, 'Informe um título'),
   provider: z.string().trim().max(120).optional(),
-  reference: z.string().trim().max(120).optional(),
+  confirmationCode: z.string().trim().max(120).optional(),
   origin: z.string().trim().max(120).optional(),
   destination: z.string().trim().max(120).optional(),
+  address: z.string().trim().max(240).optional(),
+  startAt: z.string().optional(),
+  endAt: z.string().optional(),
   notes: z.string().trim().max(1000).optional(),
 });
-export type TicketInput = z.infer<typeof ticketSchema>;
+export type ReservationInput = z.infer<typeof reservationSchema>;
 
 /* -------------------------------- journal --------------------------------- */
 

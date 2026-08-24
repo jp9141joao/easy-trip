@@ -470,3 +470,62 @@ export function describeExpenseDescription(item: AIExpenseProposalItem): string 
   }
   return `${ESTIMATE_PREFIX}${item.description}`;
 }
+
+/* --------------------------- confirmação em texto -------------------------- */
+
+/**
+ * A frase é uma confirmação da proposta que já está na tela?
+ *
+ * O caso que motivou isto: a proposta aparece, a pessoa escreve "pode aplicar",
+ * e a frase vira mais uma pergunta ao Gemini — que responde "revise e confirme
+ * no aplicativo" sobre uma proposta que ele não tem como reabrir. Duas
+ * chamadas pagas, nenhuma gravação, e uma conversa em círculos. Quem sabe qual
+ * é a proposta é o cliente, que a tem na mão.
+ *
+ * A lista é curta e **fechada** de propósito. Ela não interpreta intenção: ela
+ * reconhece um punhado de frases inequívocas e curtas. Qualquer coisa mais
+ * longa ou ambígua — "pode aplicar, mas troca o horário do Louvre" — não casa,
+ * e segue para o modelo, que é quem sabe lidar com um pedido de ajuste.
+ *
+ * E reconhecer não é aplicar: a tela abre a **revisão**, com os itens à vista.
+ * Uma frase de três palavras não é consentimento para gravar às cegas.
+ */
+const CONFIRMATION_PHRASES = [
+  'aprovar',
+  'aprovado',
+  'aprova',
+  'pode aplicar',
+  'pode adicionar',
+  'pode implementar',
+  'pode incluir',
+  'aplicar',
+  'aplique',
+  'implementar',
+  'implemente',
+  'adicionar',
+  'adicione',
+  'confirmar',
+  'confirma',
+  'confirmo',
+  'confirmado',
+  'sim pode aplicar',
+  'sim implemente',
+  'sim pode adicionar',
+  'sim aplique',
+  'sim confirmo',
+  'ok pode aplicar',
+  'ok aplicar',
+  'isso pode aplicar',
+  'pode salvar',
+  'salvar',
+];
+
+/** Teto de tamanho: acima disso a frase carrega pedido, não só confirmação. */
+const MAX_CONFIRMATION_WORDS = 4;
+
+export function isApplyConfirmation(text: string): boolean {
+  const normalized = normalizeForCompare(text);
+  if (!normalized) return false;
+  if (normalized.split(' ').length > MAX_CONFIRMATION_WORDS) return false;
+  return CONFIRMATION_PHRASES.some((phrase) => normalized === normalizeForCompare(phrase));
+}

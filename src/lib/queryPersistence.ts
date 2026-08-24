@@ -7,7 +7,7 @@ import { cacheStorage } from './storage';
  *
  * ## Por que isto é parte da D-04, e não escopo extra
  *
- * A decisão pede que "tickets, passagens, reservas e documentos abram sem
+ * A decisão pede que "reservas, passagens e documentos abram sem
  * internet", e o plano define o teste de aceitação: *"modo avião: abrir um
  * ticket já baixado — tem de funcionar"*. A cópia local do arquivo (ver
  * `fileMirror.ts`) resolve metade. A outra metade é chegar até ele: sem os
@@ -64,7 +64,7 @@ const PERSISTED_PREFIXES = new Set([
   'itinerary',
   'checklist',
   'expenses',
-  'tickets',
+  'tripReservations',
   'journal',
   'journalMedia',
   'goals',

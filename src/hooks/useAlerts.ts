@@ -19,7 +19,8 @@ import {
 } from '@/domain/selectors';
 import { formatWeekdayDate, todayISO } from '@/lib/date';
 import { useCurrentTrip } from './useTrips';
-import { useChecklist, useExpenses, useItinerary, useTickets } from './useTripData';
+import { useChecklist, useExpenses, useItinerary } from './useTripData';
+import { useReservations } from './useReservations';
 
 export type AlertTone = 'brand' | 'warning' | 'error' | 'success' | 'neutral';
 
@@ -45,7 +46,7 @@ export function useAlerts(): DerivedAlert[] {
   const { data: expenses = [] } = useExpenses(trip?.id);
   const { data: itinerary = [] } = useItinerary(trip?.id);
   const { data: checklist = [] } = useChecklist(trip?.id);
-  const { data: tickets = [] } = useTickets(trip?.id);
+  const { data: reservations = [] } = useReservations(trip?.id);
 
   return useMemo(() => {
     if (!trip) return [];
@@ -128,17 +129,17 @@ export function useAlerts(): DerivedAlert[] {
     }
 
     /* Documents */
-    if (tickets.length === 0 && status !== 'completed' && daysUntil <= 14) {
+    if (reservations.length === 0 && status !== 'completed' && daysUntil <= 14) {
       alerts.push({
-        id: 'tickets-missing',
-        title: 'Nenhum documento salvo',
-        message: 'Guarde passagens e reservas para acessá-las mesmo sem internet.',
+        id: 'reservations-missing',
+        title: 'Nenhuma reserva salva',
+        message: 'Guarde voos, hospedagens e ingressos para acessá-los mesmo sem internet.',
         tone: 'warning',
         icon: TicketX,
-        href: `/trip/${trip.id}/tickets`,
+        href: `/trip/${trip.id}/reservations`,
       });
     }
 
     return alerts;
-  }, [trip, expenses, itinerary, checklist, tickets]);
+  }, [trip, expenses, itinerary, checklist, reservations]);
 }

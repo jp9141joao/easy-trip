@@ -38,6 +38,7 @@ export function AIComposer({
 
   return (
     <View
+      testID="ai-composer"
       style={{
         flexDirection: 'row',
         alignItems: 'flex-end',
@@ -52,6 +53,9 @@ export function AIComposer({
           // Campo é superfície recuada, não o mesmo branco do card (§4).
           backgroundColor: disabled ? theme.colors.surfaceMuted : theme.colors.input,
           borderRadius: theme.radius.input,
+          // O mesmo recorte do `FieldShell`: o realce que o Android pinta sobre
+          // um `TextInput` é retangular e, sem isto, vaza pelos cantos.
+          overflow: 'hidden',
           borderWidth: 1,
           borderColor: theme.colors.inputBorder,
           paddingHorizontal: theme.spacing.lg,

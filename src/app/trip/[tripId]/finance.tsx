@@ -48,6 +48,11 @@ import {
 import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useExpenseMutations, useExpenses } from '@/hooks/useTripData';
+import { VisibilityField } from '@/components/collaboration';
+import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
+import { useMemberNames, useTripPermissions } from '@/hooks/useCollaboration';
+import { useTripRealtime } from '@/hooks/useTripRealtime';
+import { useAuth } from '@/providers/AuthProvider';
 import { formatMoney } from '@/lib/currency';
 import { todayISO } from '@/lib/date';
 import { EXPENSE_CATEGORY_LABEL } from '@/lib/labels';
@@ -56,16 +61,44 @@ import { useTheme } from '@/theme';
 
 type Filter = 'all' | ExpenseCategory;
 
+/**
+ * O recorte de quem vê / quem pagou (§14).
+ *
+ * `all`     tudo o que esta pessoa consegue ver: o compartilhado do grupo mais
+ *           o próprio privado. É a visão que soma o orçamento da viagem.
+ * `shared`  só `visibility = 'shared'` — o que o grupo inteiro enxerga.
+ * `mine`    o que esta pessoa lançou ou pagou, compartilhado ou não.
+ *
+ * "Compartilhada" NÃO significa "dividida". Não há rateio, dívida, acerto nem
+ * Pix nesta fase (§14) — compartilhar uma despesa é deixá-la visível, e o
+ * filtro não pode sugerir outra coisa. O que fica gravado desde já é
+ * `paidBy`/`createdBy`, para que uma divisão futura encontre o dado em vez de
+ * ter de adivinhá-lo retroativamente.
+ */
+type ScopeFilter = 'all' | 'shared' | 'mine';
+
+const SCOPE_LABEL: Record<ScopeFilter, string> = {
+  all: 'Todas visíveis',
+  shared: 'Compartilhadas',
+  mine: 'Minhas',
+};
+
 export default function FinanceScreen() {
   const theme = useTheme();
   const router = useRouter();
   const toast = useToast();
   const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
 
+  const { user } = useAuth();
+  useTripRealtime(tripId);
+
   const { data: expenses = [], isLoading: loadingExpenses } = useExpenses(tripId);
+  const permissions = useTripPermissions(tripId);
+  const memberNames = useMemberNames(tripId);
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [scope, setScope] = useState<ScopeFilter>('all');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<Expense | null>(null);
   const [deleting, setDeleting] = useState<Expense | null>(null);
@@ -74,10 +107,18 @@ export default function FinanceScreen() {
     const term = search.trim().toLowerCase();
     return expenses.filter((expense) => {
       if (filter !== 'all' && expense.category !== filter) return false;
+      if (scope === 'shared' && expense.visibility !== 'shared') return false;
+      if (scope === 'mine') {
+        // "Minhas" é quem lançou OU quem pagou — os dois, porque uma despesa
+        // lançada por Maria e paga por João pertence à conta dos dois de
+        // maneiras diferentes, e sumir para um deles seria errado.
+        const mine = expense.paidBy === user?.id || expense.createdBy === user?.id;
+        if (!mine) return false;
+      }
       if (!term) return true;
       return expense.description.toLowerCase().includes(term);
     });
-  }, [expenses, filter, search]);
+  }, [expenses, filter, scope, search, user?.id]);
 
   if (isLoading || isError || notFound || !trip) {
     return (
@@ -214,6 +255,32 @@ export default function FinanceScreen() {
                 placeholder="Buscar despesa"
                 accessibilityLabel="Buscar despesa"
               />
+              {/*
+                O recorte de visibilidade fica ACIMA do de categoria, e numa
+                fileira própria: são perguntas diferentes ("de quem?" e "de
+                quê?"), e misturá-las numa fileira só faria parecer que
+                "Compartilhadas" é uma categoria de gasto.
+
+                Some em viagem individual — lá as três opções devolvem a mesma
+                lista.
+              */}
+              {permissions.isShared ? (
+                <View
+                  style={{ marginHorizontal: -theme.spacing.screen, paddingLeft: theme.spacing.screen }}
+                >
+                  <ChipRow>
+                    {(['all', 'shared', 'mine'] as ScopeFilter[]).map((option) => (
+                      <Chip
+                        key={option}
+                        label={SCOPE_LABEL[option]}
+                        selected={scope === option}
+                        onPress={() => setScope(option)}
+                      />
+                    ))}
+                  </ChipRow>
+                </View>
+              ) : null}
+
               <View
                 style={{ marginHorizontal: -theme.spacing.screen, paddingLeft: theme.spacing.screen }}
               >
@@ -240,8 +307,8 @@ export default function FinanceScreen() {
                 icon={Receipt}
                 title="Nenhuma despesa registrada"
                 message="Registre os gastos assim que acontecerem — é o que mantém o orçamento real."
-                actionLabel="Adicionar gasto"
-                onAction={() => setEditorOpen(true)}
+                actionLabel={permissions.canEdit ? 'Adicionar gasto' : undefined}
+                onAction={permissions.canEdit ? () => setEditorOpen(true) : undefined}
               />
             </GlassCard>
           ) : visible.length === 0 ? (
@@ -259,17 +326,31 @@ export default function FinanceScreen() {
                 key={expense.id}
                 expense={expense}
                 budgetCurrency={trip.budgetCurrency}
-                onPress={() => {
-                  setEditing(expense);
-                  setEditorOpen(true);
-                }}
+                showVisibility={permissions.isShared}
+                payerLabel={
+                  permissions.isShared && expense.paidBy && expense.paidBy !== user?.id
+                    ? `Pago por ${memberNames[expense.paidBy] ?? 'outro viajante'}`
+                    : undefined
+                }
+                onPress={
+                  // Uma despesa privada de outra pessoa nunca chega aqui (a RLS
+                  // não a devolve). O que este teste evita é um `viewer` abrir
+                  // o editor de uma despesa compartilhada que ele não pode
+                  // salvar.
+                  permissions.canEdit
+                    ? () => {
+                        setEditing(expense);
+                        setEditorOpen(true);
+                      }
+                    : undefined
+                }
               />
             ))
           )}
         </FadeIn>
       </ScrollView>
 
-      {emptyCtaVisible ? null : (
+      {emptyCtaVisible || !permissions.canEdit ? null : (
         <FloatingActionButton
           icon={Plus}
           label="Gasto"
@@ -284,6 +365,7 @@ export default function FinanceScreen() {
         visible={editorOpen}
         expense={editing}
         trip={trip}
+        isShared={permissions.isShared}
         onClose={() => {
           setEditorOpen(false);
           setEditing(null);
@@ -371,6 +453,7 @@ function ExpenseEditorSheet({
   visible,
   expense,
   trip,
+  isShared,
   onClose,
   onSaved,
   onDelete,
@@ -378,6 +461,7 @@ function ExpenseEditorSheet({
   visible: boolean;
   expense: Expense | null;
   trip: Parameters<typeof useExpenseMutations>[0];
+  isShared: boolean;
   onClose: () => void;
   onSaved: () => void;
   onDelete: (expense: Expense) => void;
@@ -385,6 +469,17 @@ function ExpenseEditorSheet({
   const theme = useTheme();
   const toast = useToast();
   const mutations = useExpenseMutations(trip);
+  /**
+   * Despesa nasce PRIVADA (§11).
+   *
+   * É o default conservador: custa um toque a mais para quem quer dividir a
+   * conta do jantar, e evita expor o extrato inteiro de alguém para quem for
+   * convidado meses depois. Compartilhar é reversível; ter compartilhado sem
+   * querer, não.
+   */
+  const [visibility, setVisibility] = useState<Visibility>(
+    expense?.visibility ?? DEFAULT_VISIBILITY.expense,
+  );
 
   const { control, handleSubmit, reset, formState } = useForm<ExpenseInput>({
     resolver: zodResolver(expenseSchema),
@@ -413,6 +508,7 @@ function ExpenseEditorSheet({
             amount: values.amount,
             currency: values.currency as CurrencyCode,
             transactionDate: values.transactionDate,
+            visibility,
           },
         });
       } else {
@@ -422,6 +518,7 @@ function ExpenseEditorSheet({
           amount: values.amount,
           currency: values.currency as CurrencyCode,
           transactionDate: values.transactionDate,
+          visibility,
         });
       }
       reset();
@@ -528,6 +625,13 @@ function ExpenseEditorSheet({
               required
             />
           )}
+        />
+
+        <VisibilityField
+          value={visibility}
+          onChange={setVisibility}
+          visible={isShared}
+          scope="Compartilhar torna a despesa visível para o grupo. Não há divisão automática da conta."
         />
 
         <Button

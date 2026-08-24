@@ -24,6 +24,10 @@ import {
   useToast,
 } from '@/components/ui';
 import { journalEntrySchema, type JournalEntryInput } from '@/domain/schemas';
+import { VisibilityBadge, VisibilityField } from '@/components/collaboration';
+import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
+import { useTripPermissions } from '@/hooks/useCollaboration';
+import { useTripRealtime } from '@/hooks/useTripRealtime';
 import type { JournalEntry } from '@/domain/types';
 import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
 import { RoteiroModules } from '@/features/trip/RoteiroModules';
@@ -41,10 +45,13 @@ export default function JournalScreen() {
   const toast = useToast();
   const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
 
+  useTripRealtime(tripId);
+
   const { data: entries = [], isLoading: loadingEntries } = useJournal(tripId);
   const entryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
   const { data: media = [] } = useJournalMedia(tripId, entryIds);
   const mutations = useJournalMutations(tripId);
+  const permissions = useTripPermissions(tripId);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<JournalEntry | null>(null);
@@ -146,6 +153,15 @@ export default function JournalScreen() {
                         ) : null}
                       </View>
 
+                      {/*
+                        A etiqueta de visibilidade só aparece em viagem
+                        compartilhada — e é a informação mais importante do
+                        card quando aparece: ela responde "quem mais lê isto".
+                      */}
+                      {permissions.isShared ? (
+                        <VisibilityBadge visibility={entry.visibility} />
+                      ) : null}
+
                       <IconButton
                         icon={Trash2}
                         accessibilityLabel={`Excluir registro de ${formatWeekdayDate(entry.entryDate)}`}
@@ -214,6 +230,7 @@ export default function JournalScreen() {
         visible={editorOpen}
         entry={editing}
         tripStart={trip.startDate}
+        isShared={permissions.isShared}
         mutations={mutations}
         onClose={() => {
           setEditorOpen(false);
@@ -257,6 +274,7 @@ function JournalEditorSheet({
   visible,
   entry,
   tripStart,
+  isShared,
   mutations,
   onClose,
   onSaved,
@@ -264,6 +282,7 @@ function JournalEditorSheet({
   visible: boolean;
   entry: JournalEntry | null;
   tripStart: string;
+  isShared: boolean;
   mutations: ReturnType<typeof useJournalMutations>;
   onClose: () => void;
   onSaved: () => void;
@@ -271,6 +290,17 @@ function JournalEditorSheet({
   const theme = useTheme();
   const toast = useToast();
   const [files, setFiles] = useState<UploadableFile[]>([]);
+  /**
+   * O diário nasce PRIVADO, sempre (§11, §63).
+   *
+   * É o dado mais sensível do produto e o único em que o erro de default não
+   * tem volta: uma entrada escrita como compartilhada já foi lida pelo grupo
+   * antes de alguém perceber. A policy da 0009 não abre exceção nem para o
+   * proprietário da viagem.
+   */
+  const [visibility, setVisibility] = useState<Visibility>(
+    entry?.visibility ?? DEFAULT_VISIBILITY.journal,
+  );
 
   const { control, handleSubmit, reset, formState } = useForm<JournalEntryInput>({
     resolver: zodResolver(journalEntrySchema),
@@ -334,6 +364,7 @@ function JournalEditorSheet({
             entryDate: values.entryDate,
             content: values.content,
             placeName: values.placeName,
+            visibility,
           },
           files,
         });
@@ -343,6 +374,7 @@ function JournalEditorSheet({
             entryDate: values.entryDate,
             content: values.content,
             placeName: values.placeName,
+            visibility,
           },
           files,
         });
@@ -434,6 +466,13 @@ function JournalEditorSheet({
             ))}
           </ScrollView>
         ) : null}
+
+        <VisibilityField
+          value={visibility}
+          onChange={setVisibility}
+          visible={isShared}
+          scope="Registros privados não são vistos por ninguém — nem pelo proprietário da viagem."
+        />
 
         <Button
           label="Adicionar fotos"

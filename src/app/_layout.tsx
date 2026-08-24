@@ -16,6 +16,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
+import { useReminderDelivery, useRevokedTripCleanup } from '@/hooks/useNotifications';
 import { AppProviders } from '@/providers/AppProviders';
 import { useAuth } from '@/providers/AuthProvider';
 import { useTheme, useThemePreference } from '@/theme';
@@ -113,6 +114,23 @@ function RootNavigator() {
   const theme = useTheme();
   const { initializing, isAuthenticated } = useAuth();
   const { hydrated } = useThemePreference();
+
+  /**
+   * Os lembretes vencidos viram notificação quando o aplicativo abre.
+   *
+   * Mora na raiz porque é a única posição que garante que a entrega aconteça
+   * independentemente de por qual tela a pessoa entrou — e porque a Central
+   * precisa já estar preenchida quando ela tocar no sino. O hook roda uma vez
+   * por sessão, não a cada render.
+   *
+   * Isto NÃO é push do sistema (§33). Ver `useReminderDelivery`.
+   */
+  useReminderDelivery();
+
+  /**
+   * Quem perdeu acesso a uma viagem não continua com ela em disco (§59).
+   */
+  useRevokedTripCleanup();
 
   // A preferência de aparência entra na mesma barreira da sessão: enquanto o
   // tema salvo não foi lido do disco, o splash continua cobrindo a tela. É isso

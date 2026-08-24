@@ -65,6 +65,22 @@ function FieldShell({
           borderWidth: focused || error ? 1.5 : 1,
           borderColor,
           borderRadius: theme.radius.input,
+          /*
+           * `overflow: 'hidden'` é o que corrige o autofill quadrado no Android.
+           *
+           * O gerenciador de senhas pinta o `TextInput` de amarelo desenhando
+           * **o retângulo inteiro** do campo nativo. O arredondamento vive
+           * aqui, na borda desta `View`, e sem recorte o retângulo amarelo do
+           * filho simplesmente ultrapassava os cantos — o campo ficava
+           * arredondado por fora e quadrado por dentro.
+           *
+           * Recortar resolve sem desligar nada: o autofill continua ligado, o
+           * gerenciador de senhas continua preenchendo, e a mancha amarela
+           * passa a respeitar o raio. Desabilitar o autofill "resolveria" o
+           * sintoma tirando um recurso de acessibilidade e de segurança de
+           * quem usa senha gerenciada — não é conserto, é remoção.
+           */
+          overflow: 'hidden',
           // Campo é uma superfície recuada, não o mesmo branco do card (§4).
           backgroundColor: disabled ? theme.colors.surfaceMuted : theme.colors.input,
           opacity: disabled ? 0.6 : 1,
@@ -225,6 +241,9 @@ export function SearchInput({
         alignItems: 'center',
         backgroundColor: theme.colors.input,
         borderRadius: theme.radius.pill,
+        // Mesmo motivo do `FieldShell`: o realce do teclado/autofill do Android
+        // é um retângulo, e sem recorte ele escapa do raio.
+        overflow: 'hidden',
         borderWidth: 1,
         borderColor: theme.colors.inputBorder,
         paddingHorizontal: theme.spacing.lg,

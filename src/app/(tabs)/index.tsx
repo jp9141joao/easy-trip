@@ -45,6 +45,7 @@ import {
 } from '@/domain/selectors';
 import type { Trip } from '@/domain/types';
 import { useAlerts } from '@/hooks/useAlerts';
+import { useUnreadNotificationCount } from '@/hooks/useNotifications';
 import { useArticles, useOffers, usePlaces } from '@/hooks/useContent';
 import { useCurrentTrip } from '@/hooks/useTrips';
 import { useChecklist, useExpenses, useItinerary } from '@/hooks/useTripData';
@@ -71,6 +72,23 @@ export default function DashboardScreen() {
   const { data: articles = [] } = useArticles();
   const { data: places = [] } = usePlaces();
   const alerts = useAlerts();
+  // O badge conta só as notificações persistidas — evento com estado de lido.
+  // Somar os alertas derivados faria o número nunca chegar a zero: um orçamento
+  // em 85% ficaria marcado como "não lido" para sempre (§7).
+  const badgeCount = useUnreadNotificationCount();
+  /**
+   * Duas marcações diferentes, porque são duas coisas diferentes.
+   *
+   * O NÚMERO conta notificações não lidas: eventos endereçados a esta pessoa,
+   * que ela pode ler e zerar — um convite, um lembrete vencido.
+   *
+   * O PONTO, sem número, aparece quando não há nada não lido mas existe algo
+   * na viagem que vale olhar: orçamento no limite, checklist pendente. Esses
+   * são derivados do estado atual e não têm como ser "lidos" — contá-los no
+   * número faria o badge nunca chegar a zero enquanto o orçamento estivesse em
+   * 85%, e um badge que não zera deixa de ser lido em uma semana.
+   */
+  const showDot = badgeCount === 0 && alerts.length > 0;
 
   const cardWidth = Math.min(width * 0.72, 300);
   const nextActivities = useMemo(() => getNextActivities(itinerary, 3), [itinerary]);
@@ -104,31 +122,33 @@ export default function DashboardScreen() {
               <IconButton
                 icon={Bell}
                 accessibilityLabel={
-                  alerts.length > 0
-                    ? `Central de alertas, ${alerts.length} alertas`
-                    : 'Central de alertas'
+                  badgeCount > 0
+                    ? `Central de notificações, ${badgeCount} não ${badgeCount === 1 ? 'lida' : 'lidas'}`
+                    : showDot
+                      ? `Central de notificações, ${alerts.length} ${alerts.length === 1 ? 'aviso' : 'avisos'} da viagem`
+                      : 'Central de notificações'
                 }
                 onPress={() => router.push('/alerts')}
                 background="surface"
                 style={theme.shadows.sm}
               />
-              {alerts.length > 0 ? (
+              {badgeCount > 0 || showDot ? (
                 <View
                   style={{
                     position: 'absolute',
                     top: 4,
                     right: 4,
-                    minWidth: 18,
-                    height: 18,
-                    paddingHorizontal: 4,
-                    borderRadius: 9,
+                    minWidth: showDot ? 10 : 18,
+                    height: showDot ? 10 : 18,
+                    paddingHorizontal: showDot ? 0 : 4,
+                    borderRadius: showDot ? 5 : 9,
                     backgroundColor: theme.colors.accent,
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
                   <AppText variant="label" style={{ color: theme.colors.textOnPrimary, fontSize: 10 }}>
-                    {alerts.length}
+                    {showDot ? '' : badgeCount}
                   </AppText>
                 </View>
               ) : null}
@@ -213,8 +233,8 @@ export default function DashboardScreen() {
                 />
                 <QuickAction
                   icon={TicketIcon}
-                  label="Tickets"
-                  onPress={() => router.push(`/trip/${trip.id}/tickets`)}
+                  label="Reservas"
+                  onPress={() => router.push(`/trip/${trip.id}/reservations`)}
                 />
                 <QuickAction
                   icon={CloudSun}

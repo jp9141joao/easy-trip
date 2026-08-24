@@ -11,7 +11,11 @@ import {
   MoreVertical,
   Plane,
   Star,
+  Bell,
+  Car,
+  FileText,
   Ticket as TicketIcon,
+  TrainFront,
   Utensils,
   type LucideIcon,
 } from 'lucide-react-native';
@@ -29,7 +33,7 @@ import type {
   ItineraryType,
   Offer,
   Place,
-  Ticket,
+  Reservation,
   Trip,
 } from '@/domain/types';
 import { formatMoney } from '@/lib/currency';
@@ -41,8 +45,12 @@ import {
   GOAL_TYPE_LABEL,
   ITINERARY_TYPE_LABEL,
   PLACE_TYPE_LABEL,
-  TICKET_TYPE_LABEL,
+  RESERVATION_TYPE_LABEL,
 } from '@/lib/labels';
+import type { ReactNode } from 'react';
+import { VisibilityBadge } from '@/components/collaboration/VisibilityField';
+import type { ReservationType } from '@/domain/reservations';
+import { visibilityAccessibilityLabel } from '@/domain/visibility';
 import { useTheme } from '@/theme';
 
 export { TripCard } from './TripCard';
@@ -64,11 +72,20 @@ export function ActivityCard({
   onPress,
   onToggle,
   onMenu,
+  showVisibility = false,
+  authorLabel,
+  weather,
 }: {
   item: ItineraryItem;
   onPress?: () => void;
   onToggle?: () => void;
   onMenu?: () => void;
+  /** Etiqueta de compartilhado/privado — só em viagem com mais de um viajante. */
+  showVisibility?: boolean;
+  /** "Adicionado por Maria". Vazio quando o autor é quem está lendo (§9). */
+  authorLabel?: string;
+  /** Previsão do horário desta atividade. Injetada para o card não ir à rede. */
+  weather?: ReactNode;
 }) {
   const theme = useTheme();
   const Icon = ITINERARY_ICON[item.type];
@@ -99,7 +116,16 @@ export function ActivityCard({
       <GlassCard
         style={{ flex: 1, marginBottom: theme.spacing.lg, opacity: item.completed ? 0.7 : 1 }}
         onPress={onPress}
-        accessibilityLabel={`${item.title}. ${ITINERARY_TYPE_LABEL[item.type]}${item.startTime ? ` às ${item.startTime}` : ''}${item.completed ? '. Concluída' : ''}`}
+        accessibilityLabel={[
+          item.title,
+          ITINERARY_TYPE_LABEL[item.type],
+          item.startTime ? `às ${item.startTime}` : null,
+          item.completed ? 'Concluída' : null,
+          showVisibility ? visibilityAccessibilityLabel(item.visibility) : null,
+          authorLabel,
+        ]
+          .filter(Boolean)
+          .join('. ')}
         accessibilityHint={onPress ? 'Abre a atividade para edição' : undefined}
       >
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm }}>
@@ -133,7 +159,21 @@ export function ActivityCard({
               {item.endTime ? (
                 <Badge label={`até ${item.endTime}`} tone="neutral" icon={Clock} />
               ) : null}
+              {showVisibility ? <VisibilityBadge visibility={item.visibility} /> : null}
             </View>
+
+            {weather}
+
+            {/*
+              A autoria é discreta de propósito (§9): quem adicionou importa
+              quando duas pessoas montam o dia juntas, e não importa o
+              suficiente para competir com o título da atividade.
+            */}
+            {authorLabel ? (
+              <AppText variant="caption" color="tertiary" numberOfLines={1}>
+                {authorLabel}
+              </AppText>
+            ) : null}
           </View>
 
           <View style={{ gap: theme.spacing.xs }}>
@@ -184,10 +224,14 @@ export function ChecklistRow({
   item,
   onToggle,
   onMenu,
+  showVisibility = false,
+  authorLabel,
 }: {
   item: ChecklistItem;
   onToggle: () => void;
   onMenu?: () => void;
+  showVisibility?: boolean;
+  authorLabel?: string;
 }) {
   const theme = useTheme();
 
@@ -199,7 +243,13 @@ export function ChecklistRow({
       }}
       accessibilityRole="checkbox"
       accessibilityState={{ checked: item.completed }}
-      accessibilityLabel={item.label}
+      accessibilityLabel={[
+        item.label,
+        showVisibility ? visibilityAccessibilityLabel(item.visibility) : null,
+        authorLabel,
+      ]
+        .filter(Boolean)
+        .join('. ')}
       accessibilityHint="Toque para alternar a conclusão"
       style={({ pressed }) => ({
         flexDirection: 'row',
@@ -244,7 +294,14 @@ export function ChecklistRow({
             até {formatShortDate(item.dueDate)}
           </AppText>
         ) : null}
+        {authorLabel ? (
+          <AppText variant="caption" color="tertiary" numberOfLines={1}>
+            {authorLabel}
+          </AppText>
+        ) : null}
       </View>
+
+      {showVisibility ? <VisibilityBadge visibility={item.visibility} showShared={false} /> : null}
 
       {item.priority === 'high' && !item.completed ? (
         <Badge label="Alta" tone="error" />
@@ -269,10 +326,15 @@ export function ExpenseCard({
   expense,
   budgetCurrency,
   onPress,
+  showVisibility = false,
+  payerLabel,
 }: {
   expense: Expense;
   budgetCurrency: Expense['currency'];
   onPress?: () => void;
+  showVisibility?: boolean;
+  /** "Pago por Maria". Vazio quando quem pagou é quem está lendo (§13). */
+  payerLabel?: string;
 }) {
   const theme = useTheme();
   const converted = expense.currency !== budgetCurrency;
@@ -281,7 +343,14 @@ export function ExpenseCard({
   return (
     <GlassCard
       onPress={onPress}
-      accessibilityLabel={`${expense.description}. ${formatMoney(expense.amount, expense.currency)}`}
+      accessibilityLabel={[
+        expense.description,
+        formatMoney(expense.amount, expense.currency),
+        payerLabel,
+        showVisibility ? visibilityAccessibilityLabel(expense.visibility) : null,
+      ]
+        .filter(Boolean)
+        .join('. ')}
       accessibilityHint={onPress ? 'Abre a despesa para edição' : undefined}
       style={{ marginBottom: theme.spacing.md }}
     >
@@ -296,6 +365,12 @@ export function ExpenseCard({
               {formatShortDate(expense.transactionDate)}
             </AppText>
           </View>
+          {payerLabel ? (
+            <AppText variant="caption" color="tertiary" numberOfLines={1}>
+              {payerLabel}
+            </AppText>
+          ) : null}
+          {showVisibility ? <VisibilityBadge visibility={expense.visibility} /> : null}
         </View>
 
         <View style={{ alignItems: 'flex-end' }}>
@@ -321,25 +396,56 @@ export function ExpenseCard({
   );
 }
 
-/* ------------------------------- TicketCard ------------------------------- */
+/* ---------------------------- ReservationCard ----------------------------- */
 
-const TICKET_ICON: Record<Ticket['type'], LucideIcon> = {
-  voo: Plane,
-  hospedagem: Bed,
-  atracao: Camera,
-  transporte: Bus,
-  outro: TicketIcon,
+const RESERVATION_ICON: Record<ReservationType, LucideIcon> = {
+  flight: Plane,
+  hotel: Bed,
+  car: Car,
+  park_ticket: TicketIcon,
+  train: TrainFront,
+  bus: Bus,
+  other: FileText,
 };
 
-export function TicketCard({ ticket, onPress }: { ticket: Ticket; onPress: () => void }) {
+/**
+ * Uma reserva na lista (§23, §24).
+ *
+ * O que aparece no card é o que identifica a reserva de relance no aeroporto:
+ * título, fornecedor, localizador em monoespaçada — porque é um código que se
+ * digita — e as etiquetas de anexo e visibilidade.
+ *
+ * A visibilidade só aparece em viagem compartilhada (`showVisibility`). Numa
+ * viagem individual toda linha seria "Compartilhado", e uma etiqueta presente
+ * em 100% dos itens não informa nada: só ocupa a largura de que o título
+ * precisa.
+ */
+export function ReservationCard({
+  reservation,
+  onPress,
+  showVisibility = false,
+  hasReminder = false,
+}: {
+  reservation: Reservation;
+  onPress: () => void;
+  showVisibility?: boolean;
+  hasReminder?: boolean;
+}) {
   const theme = useTheme();
-  const Icon = TICKET_ICON[ticket.type];
+  const Icon = RESERVATION_ICON[reservation.type] ?? FileText;
 
   return (
     <GlassCard
       onPress={onPress}
-      accessibilityLabel={`${ticket.title}. ${TICKET_TYPE_LABEL[ticket.type]}`}
-      accessibilityHint="Abre o documento"
+      accessibilityLabel={[
+        reservation.title,
+        RESERVATION_TYPE_LABEL[reservation.type],
+        showVisibility ? visibilityAccessibilityLabel(reservation.visibility) : null,
+        hasReminder ? 'Lembrete ativo' : null,
+      ]
+        .filter(Boolean)
+        .join('. ')}
+      accessibilityHint="Abre a reserva"
       style={{ marginBottom: theme.spacing.md }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.lg }}>
@@ -358,23 +464,25 @@ export function TicketCard({ ticket, onPress }: { ticket: Ticket; onPress: () =>
 
         <View style={{ flex: 1, gap: 2 }}>
           <AppText variant="body" weight="semibold" numberOfLines={1}>
-            {ticket.title}
+            {reservation.title}
           </AppText>
-          {ticket.provider ? (
+          {reservation.provider ? (
             <AppText variant="caption" color="secondary" numberOfLines={1}>
-              {ticket.provider}
+              {reservation.provider}
             </AppText>
           ) : null}
-          {ticket.reference ? (
+          {reservation.confirmationCode ? (
             <AppText variant="caption" color="tertiary" mono numberOfLines={1}>
-              {ticket.reference}
+              {reservation.confirmationCode}
             </AppText>
           ) : null}
         </View>
 
         <View style={{ alignItems: 'flex-end', gap: 4 }}>
-          <Badge label={TICKET_TYPE_LABEL[ticket.type]} tone="brand" />
-          {ticket.fileUrl ? <Badge label="Anexo" tone="success" /> : null}
+          <Badge label={RESERVATION_TYPE_LABEL[reservation.type]} tone="brand" />
+          {reservation.fileUrl ? <Badge label="Anexo" tone="success" /> : null}
+          {hasReminder ? <Badge label="Lembrete" tone="accent" icon={Bell} /> : null}
+          {showVisibility ? <VisibilityBadge visibility={reservation.visibility} /> : null}
         </View>
       </View>
     </GlassCard>
