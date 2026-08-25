@@ -4,6 +4,7 @@ import { SafeAreaProvider, type Metrics } from 'react-native-safe-area-context';
 import AdvisorScreen from '@/app/(tabs)/advisor';
 import { ToastProvider } from '@/components/ui';
 import { isApplyConfirmation, type AITripAction } from '@/domain/aiActions';
+import { AIRateLimitError } from '@/domain/aiRateLimit';
 import type { AIMessage, Trip } from '@/domain/types';
 import { ThemeProvider } from '@/theme';
 
@@ -268,6 +269,7 @@ describe('D. o reconhecedor de confirmação', () => {
       'aprovado',
       'Pode aplicar',
       'pode adicionar',
+      'Sim',
       'Sim, implemente',
       'Confirmo',
       'ok, pode aplicar',
@@ -287,5 +289,19 @@ describe('D. o reconhecedor de confirmação', () => {
       '',
     ];
     for (const frase of frases) expect(isApplyConfirmation(frase)).toBe(false);
+  });
+});
+
+describe('E. mensagem bloqueada pelo limite', () => {
+  it('devolve o texto ao composer', async () => {
+    state.messages = [resposta];
+    mockSend.mockRejectedValueOnce(new AIRateLimitError(30));
+    const view = await abrirAbaIA();
+
+    await escrever(view, 'Meu texto não pode sumir');
+
+    expect(view.getByLabelText('Mensagem para a Easy Trip IA').props.value).toBe(
+      'Meu texto não pode sumir',
+    );
   });
 });

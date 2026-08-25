@@ -14,7 +14,12 @@
  *     '0 * * * *',
  *     $$select net.http_post(
  *        url := '<PROJECT_URL>/functions/v1/trip-daily-briefing',
- *        headers := jsonb_build_object('Authorization', 'Bearer <SERVICE_ROLE_KEY>')
+ *        headers := jsonb_build_object(
+ *          'Authorization', 'Bearer <SERVICE_ROLE_KEY>',
+ *          'x-easy-trip-cron-secret', '<TRIP_DAILY_BRIEFING_CRON_SECRET>',
+ *          'Content-Type', 'application/json'
+ *        ),
+ *        body := '{}'::jsonb
  *      )$$
  *   );
  *
@@ -45,20 +50,30 @@
  * escrita pela IA, porque não foi. Se o clima falhar, o briefing sai sem clima:
  * não se inventa temperatura.
  *
- * Deploy (NÃO executado nesta entrega):
- *   supabase functions deploy trip-daily-briefing --no-verify-jwt
+ * Antes do deploy, configure um segredo aleatório exclusivo do cron:
+ *   supabase secrets set TRIP_DAILY_BRIEFING_CRON_SECRET=...
+ *
+ * Deploy (NÃO executado nesta entrega; `verify_jwt = true` em config.toml):
+ *   supabase functions deploy trip-daily-briefing
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import {
+  DAILY_BRIEFING_CRON_HEADER,
+  authorizeDailyBriefing,
+  isDailyBriefingMethodAllowed,
+  runClaimedBatch,
+} from './protocol.ts';
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
+const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+const CRON_SECRET = Deno.env.get('TRIP_DAILY_BRIEFING_CRON_SECRET');
 const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
 const MODEL = 'gemini-3.6-flash';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, content-type',
+  'Access-Control-Allow-Headers': `authorization, content-type, ${DAILY_BRIEFING_CRON_HEADER}`,
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -83,6 +98,15 @@ interface TripRow {
   longitude: number | null;
   start_date: string;
   end_date: string;
+}
+
+interface BriefingCandidate {
+  memberId: string;
+  visibleItems: ItineraryRow[];
+}
+
+interface BriefingClaim extends BriefingCandidate {
+  notificationId: string;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -302,6 +326,29 @@ async function writeBriefing(
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
 
+  if (!isDailyBriefingMethodAllowed(req.method)) {
+    return json({ error: 'Método não permitido.' }, 405);
+  }
+
+  const authorization = authorizeDailyBriefing(req.headers, SERVICE_ROLE_KEY, CRON_SECRET);
+  if (!authorization.ok) {
+    return json(
+      {
+        error:
+          authorization.reason === 'misconfigured'
+            ? 'Serviço temporariamente indisponível.'
+            : 'Acesso negado.',
+      },
+      authorization.status,
+    );
+  }
+
+  // A autorização acima já exige a service role. Esta verificação separada
+  // mantém o client privilegiado inalcançável também se a URL não foi injetada.
+  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
+    return json({ error: 'Serviço temporariamente indisponível.' }, 503);
+  }
+
   const db = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
   });
@@ -362,47 +409,96 @@ Deno.serve(async (req) => {
       continue;
     }
 
-    // Uma consulta de clima por viagem, e não uma por membro: o destino é o
-    // mesmo para todo mundo.
-    const point = firstPoint(items) ?? pointOf(trip);
-    const weather = point ? await fetchWeather(point.latitude, point.longitude, localToday) : null;
-
     const { data: members } = await db
       .from('trip_members')
       .select('user_id')
       .eq('trip_id', trip.id);
 
-    for (const member of (members ?? []) as { user_id: string }[]) {
-      // A LINHA QUE PROTEGE A PRIVACIDADE: cada membro recebe o dia que ELE vê.
-      const visible = items.filter((item) => visibleTo(item, member.user_id));
-      if (visible.length === 0) continue;
+    const candidates = ((members ?? []) as { user_id: string }[])
+      .map<BriefingCandidate>((member) => ({
+        memberId: member.user_id,
+        // A LINHA QUE PROTEGE A PRIVACIDADE: cada membro recebe o dia que ELE vê.
+        visibleItems: items.filter((item) => visibleTo(item, member.user_id)),
+      }))
+      .filter((candidate) => candidate.visibleItems.length > 0);
 
-      const { body, byAI } = await writeBriefing(trip, visible, weather);
+    const batch = await runClaimedBatch<BriefingCandidate, BriefingClaim, void>(
+      candidates,
+      async (candidate) => {
+        /*
+         * CLAIM ANTES DE QUALQUER PROVIDER.
+         *
+         * A notificação determinística já é uma entrega válida. O índice único
+         * decide atomicamente qual execução ganhou; a perdedora recebe 23505 e
+         * nunca alcança clima ou Gemini para aquele usuário/dia.
+         */
+        const { data: claimed, error: claimError } = await db
+          .from('notifications')
+          .insert({
+            user_id: candidate.memberId,
+            type: 'trip_daily_briefing',
+            title: `Bom dia! Hoje ${trip.destination_city} te espera.`,
+            body: deterministicBriefing(trip, candidate.visibleItems, null),
+            data: {
+              tripId: trip.id,
+              date: localToday,
+              generatedBy: 'rules',
+              hasWeather: false,
+            },
+          })
+          .select('id')
+          .single();
 
-      const { error: insertError } = await db.from('notifications').insert({
-        user_id: member.user_id,
-        type: 'trip_daily_briefing',
-        title: `Bom dia! Hoje ${trip.destination_city} te espera.`,
-        body,
-        data: {
-          tripId: trip.id,
-          date: localToday,
-          // Honestidade sobre a autoria do texto (§37): quando o Gemini falha,
-          // o resumo é montado por regra, e a interface não pode chamá-lo de
-          // mensagem gerada pela IA.
-          generatedBy: byAI ? 'ai' : 'rules',
-          hasWeather: Boolean(weather),
-        },
-      });
+        // 23505 é o índice único de um briefing por usuário/viagem/dia: outra
+        // execução já fez o claim. Não é erro, é a garantia funcionando.
+        if (claimError?.code === '23505') return null;
+        if (claimError || !claimed?.id) {
+          skipped += 1;
+          return null;
+        }
 
-      // 23505 é o índice único de um briefing por usuário/viagem/dia: outra
-      // execução já entregou. Não é erro, é a garantia funcionando.
-      if (insertError && insertError.code !== '23505') {
-        skipped += 1;
-        continue;
-      }
-      if (!insertError) delivered += 1;
-    }
+        return {
+          ...candidate,
+          notificationId: claimed.id as string,
+        };
+      },
+      async (claims) => {
+        // Uma consulta de clima por viagem, e não uma por membro. Esta linha só
+        // é alcançada quando ao menos um claim novo foi persistido.
+        const point = firstPoint(items) ?? pointOf(trip);
+        const weather = point
+          ? await fetchWeather(point.latitude, point.longitude, localToday)
+          : null;
+
+        for (const claim of claims) {
+          const { body, byAI } = await writeBriefing(trip, claim.visibleItems, weather);
+          const { error: updateError } = await db
+            .from('notifications')
+            .update({
+              body,
+              data: {
+                tripId: trip.id,
+                date: localToday,
+                // Honestidade sobre a autoria do texto (§37): quando o Gemini
+                // falha, a interface não pode apresentar o resumo como IA.
+                generatedBy: byAI ? 'ai' : 'rules',
+                hasWeather: Boolean(weather),
+              },
+            })
+            .eq('id', claim.notificationId);
+
+          // O claim já contém um briefing determinístico válido; falhar ao
+          // enriquecê-lo não desfaz a entrega nem libera uma segunda geração.
+          if (updateError) {
+            console.error('Falha ao enriquecer briefing diário.', {
+              code: updateError.code,
+            });
+          }
+        }
+      },
+    );
+
+    delivered += batch.claims.length;
   }
 
   return json({ delivered, skipped });

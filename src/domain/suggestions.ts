@@ -72,6 +72,49 @@ export interface TripSuggestion {
   updatedAt: ISODateTime;
 }
 
+export const SUGGESTION_FAILURE_CODES = [
+  'CATALOG_UNAVAILABLE',
+  'EDGE_FUNCTION_UNAVAILABLE',
+  'PERMISSION_DENIED',
+  'REFRESH_LIMITED',
+  'AI_UNAVAILABLE',
+  'AI_PROVIDER_FAILED',
+  'INVALID_AI_RESPONSE',
+  /**
+   * A geração rodou, o que veio é válido, e ainda assim não deu três.
+   *
+   * Diferente de `INVALID_AI_RESPONSE`: ali o serviço respondeu qualquer coisa;
+   * aqui ele respondeu sugestões legítimas, em número insuficiente. A distinção
+   * importa porque o que veio É aproveitado — fica gravado e visível — e o que
+   * a tela precisa dizer é "ainda faltam", não "deu erro".
+   */
+  'INCOMPLETE_GENERATION',
+  'PERSISTENCE_FAILED',
+] as const;
+
+export type SuggestionFailureCode = (typeof SUGGESTION_FAILURE_CODES)[number];
+
+/**
+ * A failed source is not the same thing as an empty destination catalog.
+ *
+ * `partialSuggestions` lets the UI keep showing valid catalog rows when only
+ * the AI complement failed, while still explaining the failure instead of
+ * silently pretending that generation merely found nothing.
+ */
+export class SuggestionGenerationError extends Error {
+  readonly name = 'SuggestionGenerationError';
+
+  constructor(
+    readonly code: SuggestionFailureCode,
+    message: string,
+    readonly partialSuggestions: TripSuggestion[] = [],
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /** Quantas sugestões uma viagem precisa ter para a tela não abrir vazia (§41). */
 export const MINIMUM_SUGGESTIONS = 3;
 
@@ -100,8 +143,21 @@ export const generatedSuggestionSchema = z.object({
 });
 export type GeneratedSuggestion = z.infer<typeof generatedSuggestionSchema>;
 
+/**
+ * O que a Function devolve quando conseguiu gerar.
+ *
+ * `.min(1)` e não `.min(3)`: o mínimo de três é do TOTAL da viagem, catálogo
+ * incluído (§22 do handoff). Um catálogo com duas entradas precisa de uma
+ * sugestão da IA, e reprovar essa resposta por ter só uma jogaria fora
+ * exatamente o que completava a lista. Quem confere o total é `ensure`.
+ */
 export const generatedSuggestionListSchema = z.object({
   suggestions: z.array(generatedSuggestionSchema).min(1).max(12),
+});
+
+/** O mesmo formato, aceitando a lista vazia que acompanha uma recusa parcial. */
+export const partialSuggestionListSchema = z.object({
+  suggestions: z.array(generatedSuggestionSchema).max(12),
 });
 
 /**

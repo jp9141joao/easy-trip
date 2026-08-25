@@ -24,6 +24,32 @@ export default function ResetPasswordScreen() {
   const insets = useSafeAreaInsets();
   const { completePasswordReset, cancelPasswordReset, recoveryError } = useAuth();
   const [formError, setFormError] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+
+  /**
+   * Cancelar precisa comprovar a saída.
+   *
+   * `cancelPasswordReset` só resolve quando a sessão de recuperação saiu do
+   * disco. Se ela lançar, o token continua no aparelho — e apagar o formulário
+   * como se tivesse saído seria mentir sobre o estado. A tela permanece onde
+   * está e diz o que houve.
+   */
+  const onCancel = async () => {
+    setCancelError(null);
+    setCancelling(true);
+    try {
+      await cancelPasswordReset();
+    } catch (error) {
+      setCancelError(
+        error instanceof AuthError
+          ? error.message
+          : 'Não foi possível encerrar esta sessão de recuperação. Tente novamente.',
+      );
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   const { control, handleSubmit, formState } = useForm<ResetPasswordInput>({
     resolver: zodResolver(resetPasswordSchema),
@@ -72,6 +98,12 @@ export default function ResetPasswordScreen() {
             </AppText>
           </View>
 
+          {cancelError ? (
+            <InlineNotice icon={TriangleAlert} tone="error">
+              {cancelError}
+            </InlineNotice>
+          ) : null}
+
           {recoveryError ? (
             // Link vencido ou já usado. Sem campo de senha: não há sessão para
             // gravar nada, e oferecer o formulário só levaria a um erro depois.
@@ -83,7 +115,8 @@ export default function ResetPasswordScreen() {
                 label="Voltar para o início"
                 size="lg"
                 fullWidth
-                onPress={() => void cancelPasswordReset()}
+                loading={cancelling}
+                onPress={() => void onCancel()}
               />
             </>
           ) : (
@@ -149,7 +182,8 @@ export default function ResetPasswordScreen() {
                 label="Cancelar"
                 variant="ghost"
                 fullWidth
-                onPress={() => void cancelPasswordReset()}
+                loading={cancelling}
+                onPress={() => void onCancel()}
               />
             </>
           )}

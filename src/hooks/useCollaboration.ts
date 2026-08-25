@@ -9,7 +9,9 @@ import {
   type TripRole,
 } from '@/domain/collaboration';
 import { useAuth } from '@/providers/AuthProvider';
+import { useTripSelection } from '@/providers/TripSelectionProvider';
 import { dataSource } from '@/repositories';
+import { purgeRevokedTripState } from './useNotifications';
 import { queryKeys } from './queryKeys';
 
 /**
@@ -54,6 +56,20 @@ export function useTripPermissions(tripId?: string) {
     const members = membersQuery.data ?? [];
     const mine = members.find((member) => member.userId === user?.id);
     const role: TripRole | undefined = mine?.role;
+    // A refetch can fail while previously confirmed membership remains in the
+    // cache. Keep that known permission; only an initial failure blocks the
+    // role. Most importantly, an error is never converted to an empty member
+    // list and then described as `viewer`.
+    const blockingError = membersQuery.data === undefined ? membersQuery.error : null;
+    const status = !tripId || !user?.id
+      ? 'idle'
+      : membersQuery.isLoading
+        ? 'loading'
+        : blockingError
+          ? 'error'
+          : role
+            ? 'ready'
+            : 'unavailable';
 
     return {
       role,
@@ -63,9 +79,14 @@ export function useTripPermissions(tripId?: string) {
       canEdit: canEditTrip(role),
       canManageMembers: canManageMembers(role),
       canLeave: canLeaveTrip(role, members.length),
-      isLoading: membersQuery.isLoading,
+      status,
+      isResolved: status === 'ready',
+      isLoading: status === 'loading',
+      isError: status === 'error',
+      error: blockingError,
+      refetch: membersQuery.refetch,
     };
-  }, [membersQuery.data, membersQuery.isLoading, user?.id]);
+  }, [membersQuery.data, membersQuery.error, membersQuery.isLoading, membersQuery.refetch, tripId, user?.id]);
 }
 
 /** Convites que a pessoa recebeu — alimenta o sino e a Central. */
@@ -81,6 +102,7 @@ export function useMyInvites() {
 export function useMembershipMutations(tripId: string) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const { currentTripId, setCurrentTripId } = useTripSelection();
 
   /**
    * Toda mutação de membro invalida três coisas: a lista de membros, os
@@ -94,6 +116,7 @@ export function useMembershipMutations(tripId: string) {
   const invalidate = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.tripMembers(tripId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.tripMemberNames(tripId) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.tripInvites(tripId) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.trips(user?.id ?? 'anonymous') }),
     ]);
@@ -121,9 +144,29 @@ export function useMembershipMutations(tripId: string) {
     onSuccess: invalidate,
   });
 
+  /**
+   * Sair da viagem.
+   *
+   * A limpeza NÃO depende da notificação. `leave_trip` remove a própria linha
+   * de `trip_members`, e a notificação `trip_member_removed` é escrita para
+   * quem REMOVE alguém — sair por conta própria não produz necessariamente um
+   * evento para quem saiu. Esperar por ele deixaria o roteiro, as reservas e as
+   * cópias locais de arquivo no aparelho de quem já não é membro (§15).
+   *
+   * O expurgo é o mesmo da revogação confirmada, e roda apenas em `onSuccess`:
+   * se a saída falhar, a pessoa continua membro e nada é apagado (§16).
+   */
   const leave = useMutation({
     mutationFn: () => dataSource.members.leave(tripId),
-    onSuccess: invalidate,
+    onSuccess: async () => {
+      if (user?.id) {
+        purgeRevokedTripState(queryClient, user.id, [tripId], {
+          currentTripId,
+          clear: () => setCurrentTripId(null),
+        });
+      }
+      await invalidate();
+    },
   });
 
   return { invite, setRole, removeMember, cancelInvite, leave };
@@ -159,14 +202,18 @@ export function useInviteResponse() {
   return { accept, decline };
 }
 
-/** Nome de cada membro por id — para "Adicionado por Maria" (§9, §52). */
+/**
+ * Nome de autores/pagadores por id — para "Adicionado/Pago por Maria".
+ *
+ * É uma consulta separada da lista ativa: o mapa pode conter uma pessoa que
+ * saiu mas deixou conteúdo compartilhado, sem fazê-la reaparecer em
+ * "Viajantes". O RPC devolve apenas id e nome (§9, §52).
+ */
 export function useMemberNames(tripId?: string): Record<string, string> {
-  const { data: members = [] } = useTripMembers(tripId);
-  return useMemo(
-    () =>
-      Object.fromEntries(
-        members.filter((member) => member.name).map((member) => [member.userId, member.name!]),
-      ),
-    [members],
-  );
+  const { data } = useQuery({
+    queryKey: queryKeys.tripMemberNames(tripId ?? 'none'),
+    queryFn: () => dataSource.members.memberNames(tripId!),
+    enabled: Boolean(tripId),
+  });
+  return data ?? {};
 }

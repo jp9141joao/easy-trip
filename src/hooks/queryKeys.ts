@@ -58,6 +58,7 @@ export const queryKeys = {
    * lembretes de quem saiu.
    */
   tripMembers: (tripId: string) => ['tripMembers', tripId] as const,
+  tripMemberNames: (tripId: string) => ['tripMemberNames', tripId] as const,
   tripInvites: (tripId: string) => ['tripInvites', tripId] as const,
   myInvites: (userId: string) => ['myInvites', userId] as const,
   myRole: (tripId: string, userId: string) => ['myRole', tripId, userId] as const,

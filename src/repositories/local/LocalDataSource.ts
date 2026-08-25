@@ -33,7 +33,7 @@ import { DEFAULT_VISIBILITY } from '@/domain/visibility';
 import { byEditorialOrder, isOfferLive } from '@/domain/offerWindow';
 import { parseUserRole } from '@/domain/roles';
 import { nowISO, todayISO } from '@/lib/date';
-import { deleteStoredFile, persistFile, purgeAllFiles, storedFileExists } from '@/lib/files';
+import { deleteStoredFile, deleteStoredFolder, persistFile, storedFileExists } from '@/lib/files';
 import {
   CONTENT_IMAGE_POLICY,
   JOURNAL_POLICY,
@@ -612,7 +612,17 @@ export const localDataSource: DataSource = {
     isAvailableOffline: (_kind, filePath) => storedFileExists(filePath),
     ensureOfflineCopy: async (_kind, filePath) =>
       storedFileExists(filePath) ? filePath : undefined,
-    purgeLocalCopies: () => purgeAllFiles(),
+    /**
+     * Sair da conta no modo local NÃO apaga arquivo de conteúdo.
+     *
+     * Aqui não existe cópia remota: o arquivo é o dado. E a saída também não
+     * apaga os REGISTROS locais — eles continuam pertencendo às suas contas.
+     * Apagar os arquivos deixaria cada registro sobrevivente apontando para o
+     * vazio, e alcançaria as outras contas do aparelho, que compartilham a
+     * mesma raiz de documentos. O avatar sai porque é derivado do perfil e é
+     * reconstruído na próxima entrada.
+     */
+    purgeLocalCopies: (userId) => deleteStoredFolder(['avatars', userId]),
   },
 
   async purgeUserData(userId) {
@@ -631,7 +641,10 @@ export const localDataSource: DataSource = {
     const ids = new Set(userConversations.map((c) => c.id));
     await messages.removeWhere((m) => ids.has(m.conversationId));
     await conversations.removeWhere((c) => c.userId === userId);
-    purgeAllFiles();
+    // As viagens acima já levaram consigo mídia de diário e documentos de
+    // reserva (`tripRepository.remove`). Sobra o avatar, que é do perfil e não
+    // de nenhuma viagem. A raiz inteira nunca sai: ela contém as outras contas.
+    deleteStoredFolder(['avatars', userId]);
   },
 };
 

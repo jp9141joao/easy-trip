@@ -132,7 +132,7 @@ const filhos = [
   ['itinerary_items', { trip_id: viagem.id, date: '2026-10-06', type: 'atracao', title: 'Jerónimos' }],
   ['checklist_items', { trip_id: viagem.id, label: 'Passaporte', category: 'documentos', completed: false }],
   ['expenses', { trip_id: viagem.id, user_id: A.id, description: 'Jantar', amount: 320, currency: 'BRL', category: 'alimentacao', transaction_date: '2026-10-06' }],
-  ['tickets', { trip_id: viagem.id, user_id: A.id, type: 'voo', title: 'GRU → LIS' }],
+  ['tickets', { trip_id: viagem.id, user_id: A.id, type: 'flight', title: 'GRU → LIS' }],
   ['journal_entries', { trip_id: viagem.id, user_id: A.id, entry_date: '2026-10-06', content: 'Pastel de nata.' }],
   ['goals', { user_id: A.id, type: 'economia', title: 'Guardar', target_value: 5000, current_value: 0, unit: 'R$', status: 'active' }],
   ['insurance_policies', { user_id: A.id, trip_id: viagem.id, provider: 'Seguradora X', policy_number: 'AP-1' }],

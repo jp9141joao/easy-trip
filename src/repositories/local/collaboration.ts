@@ -78,6 +78,12 @@ export function createLocalMembership(
   const unavailable = (feature: string) => () => Promise.reject(new DemoUnavailableError(feature));
 
   return {
+    // O modo local não possui colaboração histórica nem diretório de perfis.
+    // A lista ativa abaixo continua resolvendo o proprietário e a UI omite o
+    // rótulo de autoria quando não há um nome confirmado.
+    async memberNames() {
+      return {};
+    },
     async listMembers(tripId) {
       const ownerId = await tripOwner(tripId);
       if (!ownerId) return [];

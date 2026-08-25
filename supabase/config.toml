@@ -419,10 +419,11 @@ enabled = true
 # Declaradas explicitamente para que o deploy seja reproduzível e para que
 # `verify_jwt` seja uma decisão registrada, e não um default herdado.
 #
-# As três exigem usuário autenticado e já chamam `auth.getUser()` no próprio
-# código. Manter `verify_jwt = true` faz o gateway recusar requisição sem JWT
-# válido antes de a função rodar — a checagem interna continua sendo a que
-# vale, esta apenas evita gastar execução com chamada anônima.
+# As funções chamadas pelo app exigem usuário autenticado e conferem a sessão
+# e/ou o papel no próprio código. O briefing é diferente: aceita somente o cron
+# com service role + segredo dedicado. Em todos os casos, `verify_jwt = true`
+# faz o gateway recusar JWT inválido antes de gastar uma execução; a checagem
+# interna continua sendo a autorização decisiva.
 #
 # `admin-generate-content` acrescenta a verificação de `profiles.role = 'admin'`
 # dentro da função; isso não é expressável aqui e é intencional: papel é dado do
@@ -438,5 +439,13 @@ enabled = true
 verify_jwt = true
 
 [functions.delete-account]
+enabled = true
+verify_jwt = true
+
+[functions.trip-suggestions]
+enabled = true
+verify_jwt = true
+
+[functions.trip-daily-briefing]
 enabled = true
 verify_jwt = true

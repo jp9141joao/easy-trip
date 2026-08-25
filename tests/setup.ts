@@ -104,6 +104,26 @@ jest.mock('expo-file-system', () => {
       for (const chave of [...pastas]) if (chave.startsWith(this.uri)) pastas.delete(chave);
       for (const chave of [...arquivos.keys()]) if (chave.startsWith(this.uri + '/')) arquivos.delete(chave);
     }
+    /**
+     * Filhos diretos, como o `Directory.list()` da API nova. O expurgo por
+     * viagem varre a árvore do espelho, e sem listagem o dublê responderia
+     * "pasta vazia" para tudo — o teste passaria sem medir nada.
+     */
+    list(): (FakeDirectory | FakeFile)[] {
+      const prefixo = this.uri + '/';
+      const filhos: (FakeDirectory | FakeFile)[] = [];
+      for (const chave of pastas) {
+        if (chave.startsWith(prefixo) && !chave.slice(prefixo.length).includes('/')) {
+          filhos.push(new FakeDirectory(chave));
+        }
+      }
+      for (const chave of arquivos.keys()) {
+        if (chave.startsWith(prefixo) && !chave.slice(prefixo.length).includes('/')) {
+          filhos.push(new FakeFile(chave));
+        }
+      }
+      return filhos;
+    }
   }
 
   class FakeFile {

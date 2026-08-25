@@ -58,6 +58,10 @@ beforeEach(async () => {
   await prefsStorage.remove('currentTripId');
 });
 
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
 describe('A. armazenamento separado', () => {
   it('a chave da IA é por conta, e não é a da Home', async () => {
     await writeAITripContext('user-a', 'trip-toquio');
@@ -73,6 +77,25 @@ describe('A. armazenamento separado', () => {
     await writeAITripContext('user-a', 'trip-paris');
     await clearAITripContext('user-a');
     expect(await readAITripContext('user-a')).toBeNull();
+  });
+
+  it('cleanup tardio não apaga a nova escolha após relogin na mesma conta', async () => {
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const originalRemove = prefsStorage.remove.bind(prefsStorage);
+    jest.spyOn(prefsStorage, 'remove').mockImplementation(async (key) => {
+      if (key === 'aiTripContextId:user-a') await cleanupGate;
+      await originalRemove(key);
+    });
+
+    const oldCleanup = clearAITripContext('user-a');
+    const newLoginWrite = writeAITripContext('user-a', 'trip-after-relogin');
+
+    releaseCleanup();
+    await Promise.all([oldCleanup, newLoginWrite]);
+    expect(await readAITripContext('user-a')).toBe('trip-after-relogin');
   });
 });
 

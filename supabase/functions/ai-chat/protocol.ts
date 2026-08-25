@@ -527,13 +527,17 @@ function extractJson(rawText: string): unknown {
  * foi gravado.
  */
 const PROMISE_PATTERNS = [
-  /\b(revise|revisar)\b[^.!?\n]{0,60}\b(confirm|aplic|implement)/i,
-  /\bconfirm\w*\b[^.!?\n]{0,60}\b(no aplicativo|na tela|abaixo)/i,
+  // Sem action validada, até um "revise" ou "confirme" isolado aponta para
+  // um controle inexistente. A regra é deliberadamente estrita: o restante da
+  // frase é preservado apenas quando não promete uma etapa de aplicação.
+  /\b(revise|revisar)\b/i,
+  /\b(confirme|confirmar|confirma)\b/i,
   /\b(toque|clique)\b[^.!?\n]{0,60}\b(implementar|aplicar|adicionar)/i,
   /\bbot(ão|ao)\b[^.!?\n]{0,40}\b(implementar|aplicar|revisar)/i,
-  /\bpreparei\b[^.!?\n]{0,40}\b(a )?(proposta|sugest)/i,
-  /\b(proposta|sugest\w+)\b[^.!?\n]{0,40}\babaixo\b/i,
-  /\bse quiser\b[^.!?\n]{0,30}\b(aplico|adiciono|implemento)/i,
+  /\bpreparei\b[^.!?\n]{0,40}\b(a )?(proposta|sugest(?:ão|ao|ões|oes|\w*))\b/i,
+  /\b(proposta|sugest(?:ão|ao|ões|oes|\w*))\b[^.!?\n]{0,40}\babaixo\b/i,
+  /\b(adicione|adicionar|aplique|aplicar|implemente|implementar)\b[^.!?\n]{0,40}\babaixo\b/i,
+  /\bse quiser\b[^.!?\n]{0,30}\b(aplico|adiciono|implemento|incluo)\b/i,
   /\bposso (adicionar|aplicar|implementar|registrar|incluir)\b/i,
 ];
 

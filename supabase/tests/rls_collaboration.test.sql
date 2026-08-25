@@ -84,7 +84,7 @@ insert into public.profiles (user_id, name) values
   ('0b000000-0000-4000-8000-00000000000b', 'Bruno'),
   ('0c000000-0000-4000-8000-00000000000c', 'Carla'),
   ('0d000000-0000-4000-8000-00000000000d', 'Davi')
-on conflict (user_id) do nothing;
+on conflict (user_id) do update set name = excluded.name;
 
 insert into public.trips
   (id, user_id, destination_city, destination_country, country_code, timezone,
@@ -129,6 +129,18 @@ values
    '0b000000-0000-4000-8000-00000000000b', 'outros', 75, 'EUR', '2026-08-24',
    'Farmácia privada de Bruno', 'private', '0b000000-0000-4000-8000-00000000000b',
    '0b000000-0000-4000-8000-00000000000b')
+on conflict (id) do nothing;
+
+-- Evento persistido pelo servidor para testar a única mutação permitida ao
+-- cliente: `read_at`. Os demais campos precisam continuar imutáveis mesmo
+-- para a pessoa dona da notificação.
+insert into public.notifications
+  (id, user_id, type, title, body, data, created_at)
+values
+  ('d1000000-0000-4000-8000-000000000001', '0b000000-0000-4000-8000-00000000000b',
+   'trip_role_changed', 'Permissão alterada', 'Agora você pode editar.',
+   '{"tripId":"a1000000-0000-4000-8000-000000000001"}'::jsonb,
+   '2026-08-24T12:00:00Z')
 on conflict (id) do nothing;
 
 -- ============================================================ §60 — leitura
@@ -182,6 +194,105 @@ begin
   insert into public.itinerary_items (trip_id, date, type, title, visibility)
   values ('a1000000-0000-4000-8000-000000000001', '2026-08-26', 'atracao', 'Editor criou', 'shared');
   perform pg_temp.check(true, 'EDITOR_B cria conteúdo compartilhado');
+
+  -- O cliente tenta atribuir a criação a A. O trigger precisa sobrescrever o
+  -- payload em TODAS as cinco tabelas, inclusive quando o valor não é nulo.
+  insert into public.itinerary_items
+    (id, trip_id, date, type, title, visibility, created_by)
+  values
+    ('c1100000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000001',
+     '2026-08-26', 'atracao', 'Roteiro com autor forjado', 'shared',
+     '0a000000-0000-4000-8000-00000000000a')
+  on conflict (id) do nothing;
+  perform pg_temp.check(
+    (select created_by from public.itinerary_items
+      where id = 'c1100000-0000-4000-8000-000000000001')
+      = '0b000000-0000-4000-8000-00000000000b',
+    'INSERT de roteiro força autoria da sessão');
+
+  insert into public.checklist_items
+    (id, trip_id, label, category, visibility, created_by)
+  values
+    ('c4100000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000001',
+     'Checklist com autor forjado', 'mala', 'shared',
+     '0a000000-0000-4000-8000-00000000000a')
+  on conflict (id) do nothing;
+  perform pg_temp.check(
+    (select created_by from public.checklist_items
+      where id = 'c4100000-0000-4000-8000-000000000001')
+      = '0b000000-0000-4000-8000-00000000000b',
+    'INSERT de checklist força autoria da sessão');
+
+  insert into public.expenses
+    (id, trip_id, user_id, category, amount, currency, transaction_date, description,
+     visibility, created_by, paid_by)
+  values
+    ('c3100000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000001',
+     '0b000000-0000-4000-8000-00000000000b', 'outros', 10, 'EUR', '2026-08-26',
+     'Despesa com autor forjado', 'shared', '0a000000-0000-4000-8000-00000000000a',
+     '0b000000-0000-4000-8000-00000000000b')
+  on conflict (id) do nothing;
+  perform pg_temp.check(
+    (select created_by from public.expenses
+      where id = 'c3100000-0000-4000-8000-000000000001')
+      = '0b000000-0000-4000-8000-00000000000b',
+    'INSERT de despesa força autoria da sessão');
+
+  insert into public.journal_entries
+    (id, trip_id, user_id, entry_date, content, visibility, created_by)
+  values
+    ('c2100000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000001',
+     '0b000000-0000-4000-8000-00000000000b', '2026-08-26',
+     'Diário compartilhado com autor forjado', 'shared',
+     '0a000000-0000-4000-8000-00000000000a')
+  on conflict (id) do nothing;
+  perform pg_temp.check(
+    (select created_by from public.journal_entries
+      where id = 'c2100000-0000-4000-8000-000000000001')
+      = '0b000000-0000-4000-8000-00000000000b',
+    'INSERT de diário força autoria da sessão');
+
+  insert into public.tickets
+    (id, trip_id, user_id, type, title, visibility, created_by)
+  values
+    ('c5100000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000001',
+     '0b000000-0000-4000-8000-00000000000b', 'other', 'Reserva com autor forjado',
+     'shared', '0a000000-0000-4000-8000-00000000000a')
+  on conflict (id) do nothing;
+  perform pg_temp.check(
+    (select created_by from public.tickets
+      where id = 'c5100000-0000-4000-8000-000000000001')
+      = '0b000000-0000-4000-8000-00000000000b',
+    'INSERT de reserva força autoria da sessão');
+
+  -- Editar conteúdo compartilhado de A continua válido, mas `created_by` é
+  -- imutável. Tentar combinar troca de autor + private é recusado pelo WITH
+  -- CHECK depois que o trigger restaura A como autor real.
+  update public.itinerary_items
+     set title = 'Louvre editado legitimamente por B'
+   where id = 'c1000000-0000-4000-8000-000000000001';
+  perform pg_temp.check(
+    (select title = 'Louvre editado legitimamente por B'
+            and created_by = '0a000000-0000-4000-8000-00000000000a'
+       from public.itinerary_items
+      where id = 'c1000000-0000-4000-8000-000000000001'),
+    'EDITOR_B edita shared de A sem alterar autoria');
+
+  update public.itinerary_items
+     set created_by = '0b000000-0000-4000-8000-00000000000b'
+   where id = 'c1000000-0000-4000-8000-000000000001';
+  perform pg_temp.check(
+    (select created_by from public.itinerary_items
+      where id = 'c1000000-0000-4000-8000-000000000001')
+      = '0a000000-0000-4000-8000-00000000000a',
+    'EDITOR_B não rouba autoria de shared de A');
+
+  perform pg_temp.deny(
+    $q$update public.itinerary_items
+          set visibility = 'private',
+              created_by = '0b000000-0000-4000-8000-00000000000b'
+        where id = 'c1000000-0000-4000-8000-000000000001'$q$,
+    'EDITOR_B não privatiza shared de A forjando autoria');
 
   perform pg_temp.as_user('0c000000-0000-4000-8000-00000000000c');
   perform pg_temp.deny(
@@ -241,7 +352,8 @@ begin
   perform pg_temp.as_user('0c000000-0000-4000-8000-00000000000c');
   perform pg_temp.check(
     (select count(*) from public.journal_entries
-      where trip_id = 'a1000000-0000-4000-8000-000000000001') = 0,
+      where trip_id = 'a1000000-0000-4000-8000-000000000001'
+        and visibility = 'private') = 0,
     'VIEWER_C não lê diário privado de ninguém');
 
   perform pg_temp.as_postgres();
@@ -266,7 +378,12 @@ begin
   perform pg_temp.as_user('0c000000-0000-4000-8000-00000000000c');
   perform pg_temp.check(
     (select count(*) from public.expenses
-      where trip_id = 'a1000000-0000-4000-8000-000000000001') = 1,
+      where trip_id = 'a1000000-0000-4000-8000-000000000001'
+        and visibility = 'shared') >= 1
+    and
+    (select count(*) from public.expenses
+      where trip_id = 'a1000000-0000-4000-8000-000000000001'
+        and visibility = 'private') = 0,
     'VIEWER_C vê só a despesa compartilhada');
   perform pg_temp.deny(
     $q$update public.expenses set amount = 1 where id = 'c3000000-0000-4000-8000-000000000001'$q$,
@@ -433,7 +550,39 @@ begin
     when insufficient_privilege then raise notice '  OK   notify() não é chamável pelo cliente';
   end;
 
+  update public.notifications
+     set read_at = coalesce(read_at, now())
+   where id = 'd1000000-0000-4000-8000-000000000001';
+  perform pg_temp.check(
+    (select read_at is not null from public.notifications
+      where id = 'd1000000-0000-4000-8000-000000000001'),
+    'dono marca read_at da própria notificação');
+
+  perform pg_temp.deny(
+    $q$update public.notifications set title = 'Título forjado'
+        where id = 'd1000000-0000-4000-8000-000000000001'$q$,
+    'dono não reescreve title da própria notificação');
+  perform pg_temp.deny(
+    $q$update public.notifications set data = '{"forged":true}'::jsonb
+        where id = 'd1000000-0000-4000-8000-000000000001'$q$,
+    'dono não reescreve data da própria notificação');
+  perform pg_temp.deny(
+    $q$update public.notifications set type = 'trip_member_removed'
+        where id = 'd1000000-0000-4000-8000-000000000001'$q$,
+    'dono não reescreve type da própria notificação');
+  perform pg_temp.deny(
+    $q$update public.notifications set created_at = now()
+        where id = 'd1000000-0000-4000-8000-000000000001'$q$,
+    'dono não reescreve created_at da própria notificação');
+
   perform pg_temp.as_postgres();
+  perform pg_temp.check(
+    not has_table_privilege('authenticated', 'public.notifications', 'update')
+      and has_column_privilege('authenticated', 'public.notifications', 'read_at', 'update'),
+    'authenticated tem UPDATE somente em notifications.read_at');
+  perform pg_temp.check(
+    has_table_privilege('service_role', 'public.notifications', 'update'),
+    'service_role conserva UPDATE completo em notifications');
 end;
 $$;
 
@@ -480,6 +629,12 @@ $$;
 
 -- ============================================= §48 — sugestões
 do $$
+declare
+  primeira record;
+  segunda record;
+  do_owner record;
+  conteudo_antes jsonb;
+  conteudo_depois jsonb;
 begin
   raise notice '§48 sugestões';
 
@@ -488,6 +643,23 @@ begin
   values ('a1000000-0000-4000-8000-000000000001', 'Museu do Louvre', 'atracoes',
           'Um dos principais museus de Paris.', 'ai');
   perform pg_temp.check(true, 'EDITOR_B cria sugestão');
+
+  -- É o alvo enviado pelo PostgREST no upsert. Um índice direto em
+  -- lower(title) não pode ser nomeado por `on_conflict` e devolvia 23505.
+  insert into public.trip_suggestions (trip_id, title, category, description, source)
+  values ('a1000000-0000-4000-8000-000000000001', 'museu do louvre', 'atracoes',
+          'Duplicata apenas para validar o conflito.', 'ai')
+  on conflict (trip_id, title_key) do nothing;
+  perform pg_temp.check(
+    (select count(*) from public.trip_suggestions
+      where trip_id = 'a1000000-0000-4000-8000-000000000001'
+        and title_key = 'museu do louvre') = 1,
+    'upsert ignora título duplicado sem diferenciar maiúsculas');
+
+  select coalesce(jsonb_agg(to_jsonb(s) order by s.id), '[]'::jsonb)
+    into conteudo_antes
+    from public.trip_suggestions s
+   where s.trip_id = 'a1000000-0000-4000-8000-000000000001';
 
   perform pg_temp.as_user('0c000000-0000-4000-8000-00000000000c');
   perform pg_temp.check(
@@ -498,14 +670,89 @@ begin
     $q$delete from public.trip_suggestions
         where trip_id = 'a1000000-0000-4000-8000-000000000001'$q$,
     'VIEWER_C não apaga sugestão');
+  begin
+    perform public.claim_trip_suggestion_refresh(
+      'a1000000-0000-4000-8000-000000000001');
+    raise exception 'FALHOU: VIEWER_C reivindicou refresh';
+  exception
+    when insufficient_privilege then
+      raise notice '  OK   VIEWER_C não reivindica refresh';
+  end;
+
+  perform pg_temp.as_user('0b000000-0000-4000-8000-00000000000b');
+  select * into primeira from public.claim_trip_suggestion_refresh(
+    'a1000000-0000-4000-8000-000000000001');
+  perform pg_temp.check(
+    primeira.claimed and primeira.refreshed_at is not null,
+    'EDITOR_B reivindica a janela de refresh');
+
+  select * into segunda from public.claim_trip_suggestion_refresh(
+    'a1000000-0000-4000-8000-000000000001');
+  perform pg_temp.check(
+    not segunda.claimed and segunda.refreshed_at = primeira.refreshed_at,
+    'segunda claim imediata é recusada sem mover timestamp');
 
   perform pg_temp.as_user('0d000000-0000-4000-8000-00000000000d');
   perform pg_temp.check(
     (select count(*) from public.trip_suggestions
       where trip_id = 'a1000000-0000-4000-8000-000000000001') = 0,
     'ex-membro D não vê mais as sugestões');
+  begin
+    perform public.claim_trip_suggestion_refresh(
+      'a1000000-0000-4000-8000-000000000001');
+    raise exception 'FALHOU: ex-membro D reivindicou refresh';
+  exception
+    when insufficient_privilege then
+      raise notice '  OK   ex-membro D não reivindica refresh';
+  end;
+
+  -- Reabre a janela como operação de teste server-side, para provar que owner
+  -- e editor são ambos autorizados sem esperar seis horas reais.
+  perform pg_temp.as_postgres();
+  update public.trips
+     set suggestions_refreshed_at = now() - interval '7 hours'
+   where id = 'a1000000-0000-4000-8000-000000000001';
+
+  perform pg_temp.as_user('0a000000-0000-4000-8000-00000000000a');
+  select * into do_owner from public.claim_trip_suggestion_refresh(
+    'a1000000-0000-4000-8000-000000000001');
+  perform pg_temp.check(
+    do_owner.claimed and do_owner.refreshed_at > now() - interval '1 minute',
+    'OWNER_A reivindica a janela quando ela reabre');
+
+  -- Nem owner pode adulterar/backdatear a marca d'água pelo REST; a única
+  -- porta autenticada é o CAS acima. Os demais campos editáveis da viagem
+  -- continuam funcionando com o grant por coluna.
+  perform pg_temp.deny(
+    $q$update public.trips
+          set suggestions_refreshed_at = now() - interval '7 hours'
+        where id = 'a1000000-0000-4000-8000-000000000001'$q$,
+    'OWNER_A não adultera a marca d''água diretamente');
+  update public.trips
+     set budget_total = 12001,
+         updated_at = now()
+   where id = 'a1000000-0000-4000-8000-000000000001';
+  perform pg_temp.check(
+    (select budget_total from public.trips
+      where id = 'a1000000-0000-4000-8000-000000000001') = 12001,
+    'grant por coluna preserva edição legítima da viagem');
+
+  select coalesce(jsonb_agg(to_jsonb(s) order by s.id), '[]'::jsonb)
+    into conteudo_depois
+    from public.trip_suggestions s
+   where s.trip_id = 'a1000000-0000-4000-8000-000000000001';
+  perform pg_temp.check(
+    conteudo_depois = conteudo_antes,
+    'claims alteram somente a marca d''água, nunca o conteúdo das sugestões');
 
   perform pg_temp.as_postgres();
+  perform pg_temp.check(
+    not has_column_privilege(
+      'authenticated', 'public.trips', 'suggestions_refreshed_at', 'update'),
+    'authenticated não atualiza suggestions_refreshed_at diretamente');
+  perform pg_temp.check(
+    has_table_privilege('service_role', 'public.trips', 'update'),
+    'service_role conserva UPDATE completo em trips');
 end;
 $$;
 
@@ -526,6 +773,18 @@ begin
           'Adaptador de tomada', 'mala', 'shared', '0b000000-0000-4000-8000-00000000000b'),
          ('c4000000-0000-4000-8000-000000000002', 'a1000000-0000-4000-8000-000000000001',
           'Remédio do Bruno', 'saude', 'private', '0b000000-0000-4000-8000-00000000000b')
+  on conflict (id) do nothing;
+
+  -- D já saiu e nunca criou esta linha. Seu nome só deve entrar no mapa por
+  -- ser `paid_by` de uma despesa compartilhada; a autoria continua sendo A.
+  insert into public.expenses
+    (id, trip_id, user_id, category, amount, currency, transaction_date, description,
+     visibility, created_by, paid_by)
+  values
+    ('c3000000-0000-4000-8000-000000000003', 'a1000000-0000-4000-8000-000000000001',
+     '0a000000-0000-4000-8000-00000000000a', 'outros', 12, 'EUR', '2026-08-26',
+     'Despesa paga por ex-membro', 'shared', '0a000000-0000-4000-8000-00000000000a',
+     '0d000000-0000-4000-8000-00000000000d')
   on conflict (id) do nothing;
 
   perform pg_temp.as_user('0a000000-0000-4000-8000-00000000000a');
@@ -562,11 +821,36 @@ begin
       = '0b000000-0000-4000-8000-00000000000b',
     'autoria histórica preservada depois da saída');
 
+  perform pg_temp.as_user('0a000000-0000-4000-8000-00000000000a');
+  perform pg_temp.check(
+    (select count(*) from public.trip_member_profiles(
+       'a1000000-0000-4000-8000-000000000001')
+      where user_id = '0b000000-0000-4000-8000-00000000000b' and name = 'Bruno') = 1,
+    'mapa de nomes mantém autor de shared após remoção');
+  perform pg_temp.check(
+    (select count(*) from public.trip_member_profiles(
+       'a1000000-0000-4000-8000-000000000001')
+      where user_id = '0d000000-0000-4000-8000-00000000000d' and name = 'Davi') = 1,
+    'mapa de nomes inclui paid_by histórico de shared');
+  perform pg_temp.check(
+    (select count(*) from public.trip_members
+      where trip_id = 'a1000000-0000-4000-8000-000000000001'
+        and user_id in ('0b000000-0000-4000-8000-00000000000b',
+                        '0d000000-0000-4000-8000-00000000000d')) = 0,
+    'ex-autores no mapa não reaparecem na lista ativa');
+
+  perform pg_temp.as_user('0b000000-0000-4000-8000-00000000000b');
+  perform pg_temp.check(
+    (select count(*) from public.trip_member_profiles(
+       'a1000000-0000-4000-8000-000000000001')) = 0,
+    'ex-membro não recebe o mapa de nomes da viagem');
+
   -- A limpeza deliberada remove o que ficou inalcançável — e só isso.
   --
   -- B deixou para trás três registros privados nesta viagem: o diário, a
   -- despesa da farmácia e o item de checklist criado acima. Os três são
   -- inalcançáveis desde a remoção; a limpeza os apaga de uma vez.
+  perform pg_temp.as_postgres();
   select sum(t.removidos) into removidos
     from public.purge_unreachable_private_content('a1000000-0000-4000-8000-000000000001') t;
   perform pg_temp.check(removidos = 3, 'limpeza remove os três privados órfãos de B');

@@ -14,10 +14,15 @@
 import * as Crypto from 'expo-crypto';
 
 import type { User } from '@/domain/types';
+import { traceAuth } from '@/lib/authTrace';
 import { nowISO } from '@/lib/date';
 import { createId } from '@/lib/id';
 import { jsonStorage, secureStorage } from '@/lib/storage';
-import { forgetLocalSession, getSupabaseClient } from './supabase/client';
+import {
+  beginSupabaseLocalSignOutSession,
+  getSupabaseClient,
+  isSupabaseLocalSessionRemoved,
+} from './supabase/client';
 import { config } from '@/lib/config';
 
 export interface AuthSession {
@@ -162,7 +167,8 @@ class LocalAuthAdapter implements AuthAdapter {
     };
   }
 
-  private emit(session: AuthSession | null): void {
+  private emit(session: AuthSession | null, event: 'SIGNED_IN' | 'SIGNED_OUT'): void {
+    traceAuth(`AUTH_STATE_CHANGE:${event}`);
     for (const listener of this.listeners) listener(session);
   }
 
@@ -212,7 +218,7 @@ class LocalAuthAdapter implements AuthAdapter {
         updatedAt: account.createdAt,
       },
     };
-    this.emit(session);
+    this.emit(session, 'SIGNED_IN');
     return session;
   }
 
@@ -243,14 +249,15 @@ class LocalAuthAdapter implements AuthAdapter {
         updatedAt: account.createdAt,
       },
     };
-    this.emit(session);
+    this.emit(session, 'SIGNED_IN');
     // Sem servidor de e-mail não há o que confirmar: a conta local já entra.
     return { status: 'signed-in', session };
   }
 
   async signOut(): Promise<void> {
     await secureStorage.remove(SESSION_KEY);
-    this.emit(null);
+    traceAuth('LOCAL_SESSION_REMOVE');
+    this.emit(null, 'SIGNED_OUT');
   }
 
   async requestPasswordReset(email: string): Promise<void> {
@@ -273,7 +280,8 @@ class LocalAuthAdapter implements AuthAdapter {
       credentials.filter((c) => c.id !== session.user.id),
     );
     await secureStorage.remove(SESSION_KEY);
-    this.emit(null);
+    traceAuth('LOCAL_SESSION_REMOVE');
+    this.emit(null, 'SIGNED_OUT');
   }
 
   async redeemRecovery(): Promise<AuthSession> {
@@ -295,18 +303,11 @@ class LocalAuthAdapter implements AuthAdapter {
 
 /* ---------------------------- supabase adapter ---------------------------- */
 
-/**
- * Teto para cada ida ao servidor durante a saída.
- *
- * Curto de propósito. Nada abaixo depende do resultado da rede: se a revogação
- * não voltar a tempo, a sessão é apagada aqui mesmo. O prazo existe só para
- * dar ao caminho normal — servidor respondendo — a chance de encerrar do jeito
- * limpo, emitindo `SIGNED_OUT` pela própria biblioteca.
- */
-const SIGN_OUT_NETWORK_BUDGET_MS = 2_500;
+/** Safety net above the transport deadline configured in `supabase/client`. */
+const SIGN_OUT_OPERATION_BUDGET_MS = 2_000;
 
-/** Teto para conferir o armazenamento local. Não é rede; é leitura de disco. */
-const SIGN_OUT_CHECK_MS = 2_000;
+/** A disk read should be quick, but it must not hold the UI forever either. */
+const SIGN_OUT_CHECK_MS = 1_000;
 
 /** Marca de "o prazo estourou", distinguível de um `null` legítimo. */
 const TIMED_OUT: unique symbol = Symbol('timed-out');
@@ -315,18 +316,16 @@ type TimedOut = typeof TIMED_OUT;
 /**
  * Espera `promise` por no máximo `ms`, devolvendo `TIMED_OUT` quando estoura.
  *
- * Não cancela nada — não há como cancelar um `fetch` já em voo aqui, e nem
- * seria desejável: se a revogação terminar depois, ela termina. O que este teto
- * faz é impedir que a interface fique refém dela.
+ * This is a final safety net for initialization/storage/subscriber failures.
+ * The `/logout` fetch itself is actively aborted by the client transport.
  */
 async function withDeadline<T>(promise: PromiseLike<T>, ms: number): Promise<T | TimedOut> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const raced: Promise<T | TimedOut> = Promise.resolve(promise).catch(() => TIMED_OUT);
     const deadline = new Promise<TimedOut>((resolve) => {
       timer = setTimeout(() => resolve(TIMED_OUT), ms);
     });
-    return await Promise.race([raced, deadline]);
+    return await Promise.race([Promise.resolve(promise), deadline]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -338,7 +337,8 @@ class SupabaseAuthAdapter implements AuthAdapter {
   readonly ownsDataDeletion = true;
 
   onAuthStateChange(listener: (session: AuthSession | null) => void): () => void {
-    const { data } = getSupabaseClient().auth.onAuthStateChange((_event, session) => {
+    const { data } = getSupabaseClient().auth.onAuthStateChange((event, session) => {
+      traceAuth(`AUTH_STATE_CHANGE:${event}`);
       listener(session ? toSession(session) : null);
     });
     return () => data.subscription.unsubscribe();
@@ -380,60 +380,62 @@ class SupabaseAuthAdapter implements AuthAdapter {
   }
 
   /**
-   * A sessão local ainda existe?
-   *
-   * Quem responde é o armazenamento, não o retorno de `signOut()`. O retorno
-   * produz os dois erros: um `error` acompanhado de sessão já apagada (a
-   * revogação recusada que ainda desconecta este aparelho) e um `error: null`
-   * com sessão de pé (a saída que voltou cedo). Perguntar direto não produz
-   * nenhum dos dois. Prazo estourado conta como "ainda existe": não se afirma
-   * uma saída que não foi possível conferir.
-   */
-  private async localSessionGone(client: ReturnType<typeof getSupabaseClient>): Promise<boolean> {
-    const checked = await withDeadline(client.auth.getSession(), SIGN_OUT_CHECK_MS);
-    return checked !== TIMED_OUT && !checked?.data?.session;
-  }
-
-  /**
    * Encerrar **esta** sessão, neste aparelho, agora.
    *
-   * Três passos, e o segundo é o que faltava:
+   * auth-js 2.112.3 owns the removal. Even when `/logout` is aborted or returns
+   * a retryable error it calls its private `_removeSession()`, which both
+   * clears AsyncStorage and advances the SDK's refresh-race epoch. Removing the
+   * key behind its back and launching a second `signOut()` (the previous
+   * hotfix) skipped that invariant and left an uncancelled request behind.
    *
-   * 1. `signOut({ scope: 'local' })` com prazo. `local` porque o pedido do
-   *    botão é sair daqui — revogar as sessões dos outros aparelhos da pessoa
-   *    não foi pedido, e é justamente o `scope: 'global'` (o padrão) que
-   *    transforma a saída numa operação mais cara e mais fácil de pendurar.
-   *
-   * 2. Se a sessão sobreviveu — rede pendurada, token vencido cuja renovação
-   *    interna falhou, servidor fora do ar —, ela é apagada **aqui**, sem rede
-   *    (`forgetLocalSession`). Sem este passo, uma rede ruim mantinha o
-   *    aplicativo autenticado: era essa a causa-raiz do defeito relatado.
-   *
-   * 3. Um segundo `signOut({ scope: 'local' })`, agora sem token no disco para
-   *    revogar, entra no ramo puramente local da biblioteca: ele reconcilia o
-   *    estado interno, invalida uma renovação em voo e emite `SIGNED_OUT`.
-   *
-   * Só há exceção se, depois de tudo isso, a sessão **ainda** estiver de pé —
-   * o que significa que o armazenamento do aparelho recusou a escrita. Aí a
-   * saída realmente não aconteceu, e dizer o contrário seria mentir.
+   * The result object is not proof of logout: a remote error can accompany a
+   * successful local removal. Conversely, `{ error: null }` is not accepted if
+   * storage still contains the session. The direct storage read is the commit
+   * point, and a read/removal failure never becomes fake success.
    */
   async signOut(): Promise<void> {
     const client = getSupabaseClient();
+    traceAuth('SUPABASE_SIGNOUT_BEGIN');
 
-    const outcome = await withDeadline(
-      client.auth.signOut({ scope: 'local' }),
-      SIGN_OUT_NETWORK_BUDGET_MS,
-    );
+    let outcome: Awaited<ReturnType<typeof client.auth.signOut>> | TimedOut = TIMED_OUT;
+    let failure: unknown;
+    const releaseLogoutSessionRead = beginSupabaseLocalSignOutSession();
+    try {
+      outcome = await withDeadline(
+        client.auth.signOut({ scope: 'local' }),
+        SIGN_OUT_OPERATION_BUDGET_MS,
+      );
+    } catch (error) {
+      failure = error;
+    } finally {
+      // A deadline não cancela uma promessa arbitrária da SDK. Libere a
+      // projeção mesmo se um subscriber/initialize defeituoso ficar pendurado
+      // para sempre; futuras leituras não pertencem à operação antiga.
+      releaseLogoutSessionRead();
+    }
 
-    if (await this.localSessionGone(client)) return;
+    let removed: boolean | TimedOut = TIMED_OUT;
+    try {
+      removed = await withDeadline(isSupabaseLocalSessionRemoved(), SIGN_OUT_CHECK_MS);
+    } catch (error) {
+      failure ??= error;
+    }
 
-    await forgetLocalSession();
-    await withDeadline(client.auth.signOut({ scope: 'local' }), SIGN_OUT_CHECK_MS);
+    if (removed === true) {
+      traceAuth('LOCAL_SESSION_REMOVE');
+      traceAuth('SUPABASE_SIGNOUT_END');
+      return;
+    }
 
-    if (await this.localSessionGone(client)) return;
-
+    traceAuth('SUPABASE_SIGNOUT_ERROR');
+    const raw =
+      outcome !== TIMED_OUT
+        ? (outcome.error?.message ?? '')
+        : failure instanceof Error
+          ? failure.message
+          : '';
     throw describeAuthFailure(
-      outcome !== TIMED_OUT ? (outcome?.error?.message ?? '') : '',
+      raw,
       'Não foi possível sair da conta. Tente novamente.',
     );
   }

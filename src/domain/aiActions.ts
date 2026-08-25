@@ -366,6 +366,69 @@ export function parseAIActions(raw: unknown, trip: Trip): AITripAction[] {
   return actions;
 }
 
+/* ------------------------ coerência texto×proposta ------------------------ */
+
+/**
+ * Frases que prometem uma proposta ou um controle de aplicação na tela.
+ *
+ * A Edge Function aplica a mesma regra antes de responder, mas o cliente
+ * precisa repeti-la depois de `parseAIActions`: a Function publicada pode estar
+ * atrasada em relação ao aplicativo e, mesmo numa resposta nova, uma action
+ * pode passar pela validação do servidor e ser recusada pela validação local.
+ * Em ambos os casos, contar o array cru deixaria o texto prometer um card que
+ * este cliente não tem como renderizar.
+ */
+const ACTION_PROMISE_PATTERNS = [
+  /\b(revise|revisar)\b/i,
+  /\b(confirme|confirmar|confirma)\b/i,
+  /\b(toque|clique)\b[^.!?\n]{0,60}\b(implementar|aplicar|adicionar)\b/i,
+  /\bbot(ão|ao)\b[^.!?\n]{0,40}\b(implementar|aplicar|revisar)\b/i,
+  /\bpreparei\b[^.!?\n]{0,40}\b(a )?(proposta|sugest(?:ão|ao|ões|oes|\w*))\b/i,
+  /\b(proposta|sugest(?:ão|ao|ões|oes|\w*))\b[^.!?\n]{0,40}\babaixo\b/i,
+  /\b(adicione|adicionar|aplique|aplicar|implemente|implementar)\b[^.!?\n]{0,40}\babaixo\b/i,
+  /\bse quiser\b[^.!?\n]{0,30}\b(aplico|adiciono|implemento|incluo)\b/i,
+  /\bposso (adicionar|aplicar|implementar|registrar|incluir)\b/i,
+];
+
+function splitActionPromiseSentences(content: string): string[] {
+  return content
+    .split(/\n+/)
+    .flatMap((line) => line.match(/[^.!?]+[.!?]?/g) ?? [])
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Garante que o texto persistido só prometa revisão/aplicação quando uma
+ * action **validada pelo cliente** existe na mesma resposta.
+ *
+ * Não tenta fabricar uma action a partir do texto. Remove apenas as frases que
+ * fariam referência a um card inexistente e preserva o restante da resposta.
+ */
+export function enforceAIActionPromiseCoherence(
+  content: string,
+  validActionCount: number,
+): { content: string; stripped: number } {
+  if (validActionCount > 0) return { content, stripped: 0 };
+
+  const sentences = splitActionPromiseSentences(content);
+  const kept = sentences.filter(
+    (sentence) => !ACTION_PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
+  );
+  const stripped = sentences.length - kept.length;
+  if (stripped === 0) return { content, stripped: 0 };
+
+  const rebuilt = kept.join(' ').replace(/[ \t]+/g, ' ').trim();
+  if (rebuilt) return { content: rebuilt, stripped };
+
+  return {
+    content:
+      'Não consegui montar uma proposta aplicável com o que tenho aqui. ' +
+      'Me diga a data e os lugares (ou o valor, no caso de um gasto) e eu preparo.',
+    stripped,
+  };
+}
+
 /* ------------------------------- inspeção --------------------------------- */
 
 export function countActionItems(action: AITripAction): number {
@@ -508,6 +571,7 @@ const CONFIRMATION_PHRASES = [
   'confirma',
   'confirmo',
   'confirmado',
+  'sim',
   'sim pode aplicar',
   'sim implemente',
   'sim pode adicionar',

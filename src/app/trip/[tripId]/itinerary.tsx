@@ -39,6 +39,7 @@ import { useTripRealtime } from '@/hooks/useTripRealtime';
 import { authorshipLabel } from '@/domain/collaboration';
 import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
 import { useAuth } from '@/providers/AuthProvider';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { formatWeekdayDate, isWithin } from '@/lib/date';
 import { ITINERARY_TYPE_LABEL } from '@/lib/labels';
 import { useTheme } from '@/theme';
@@ -47,7 +48,7 @@ export default function ItineraryScreen() {
   const theme = useTheme();
   const router = useRouter();
   const toast = useToast();
-  const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
+  const { tripId, trip, isLoading, isError, notFound, errorMessage, refetch } = useTripRoute();
   const { user } = useAuth();
 
   // A viagem aberta é a única assinada (§8, §58). Sai da tela, sai a assinatura.
@@ -57,7 +58,8 @@ export default function ItineraryScreen() {
   const mutations = useItineraryMutations(tripId);
   const permissions = useTripPermissions(tripId);
   const memberNames = useMemberNames(tripId);
-  const { data: invites = [] } = useTripInvites(tripId, permissions.canManageMembers);
+  const invitesQuery = useTripInvites(tripId, permissions.canManageMembers);
+  const invites = invitesQuery.data ?? [];
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<ItineraryItem | null>(null);
@@ -85,7 +87,7 @@ export default function ItineraryScreen() {
               message={
                 notFound
                   ? 'Esta viagem pode ter sido excluída.'
-                  : 'Verifique sua conexão e tente novamente.'
+                  : errorMessage
               }
               onRetry={notFound ? () => router.replace('/(tabs)/trips') : () => void refetch()}
               retryLabel={notFound ? 'Voltar para viagens' : 'Tentar novamente'}
@@ -148,6 +150,14 @@ export default function ItineraryScreen() {
             pendingInvites={invites.length}
             onPress={() => router.push(`/trip/${tripId}/members`)}
           />
+          {invitesQuery.isError ? (
+            <View style={{ marginTop: theme.spacing.sm }}>
+              <InlineNotice icon={TriangleAlert} tone="error">
+                {describeBackendCapability(invitesQuery.error) ??
+                  'Não foi possível carregar os convites desta viagem.'}
+              </InlineNotice>
+            </View>
+          ) : null}
         </View>
 
         <FadeIn style={{ paddingHorizontal: theme.spacing.screen }}>

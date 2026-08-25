@@ -87,7 +87,7 @@ export default function FinanceScreen() {
   const theme = useTheme();
   const router = useRouter();
   const toast = useToast();
-  const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
+  const { tripId, trip, isLoading, isError, notFound, errorMessage, refetch } = useTripRoute();
 
   const { user } = useAuth();
   useTripRealtime(tripId);
@@ -133,7 +133,7 @@ export default function FinanceScreen() {
                 message={
                   notFound
                     ? 'Esta viagem pode ter sido excluída.'
-                    : 'Verifique sua conexão e tente novamente.'
+                    : errorMessage
                 }
                 onRetry={notFound ? () => router.replace('/(tabs)/trips') : () => void refetch()}
               />

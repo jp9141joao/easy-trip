@@ -299,6 +299,23 @@ describe('D. coerência entre o texto e a proposta', () => {
     expect(content).toContain('R$ 4.200');
     expect(content).not.toMatch(/posso adicionar/i);
   });
+
+  it.each([
+    'Revise.',
+    'Confirme no aplicativo.',
+    'Clique em implementar.',
+    'Adicione abaixo.',
+    'Posso aplicar.',
+    'Preparei a proposta abaixo.',
+  ])('cobre a frase proibida sem action: %s', (promise) => {
+    const { content, stripped } = enforcePromiseCoherence(
+      `Informação preservada. ${promise}`,
+      0,
+    );
+
+    expect(content).toBe('Informação preservada.');
+    expect(stripped).toBe(1);
+  });
 });
 
 describe('E. o que o modelo não consegue propor', () => {

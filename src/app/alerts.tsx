@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { BellOff, Check, ChevronRight, Trash2 } from 'lucide-react-native';
+import { BellOff, Check, ChevronRight, Trash2, TriangleAlert } from 'lucide-react-native';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -11,6 +11,7 @@ import {
   Divider,
   EmptyState,
   GlassCard,
+  InlineNotice,
   useToast,
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
@@ -24,6 +25,7 @@ import { useAlerts, type AlertTone } from '@/hooks/useAlerts';
 import { useInviteResponse } from '@/hooks/useCollaboration';
 import { useNotificationMutations, useNotifications } from '@/hooks/useNotifications';
 import { formatRelativeTime } from '@/lib/date';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { useTheme } from '@/theme';
 
 /**
@@ -51,7 +53,8 @@ export default function AlertsScreen() {
   const insets = useSafeAreaInsets();
 
   const alerts = useAlerts();
-  const { data: notifications = [], isLoading } = useNotifications();
+  const notificationsQuery = useNotifications();
+  const notifications = notificationsQuery.data ?? [];
   const mutations = useNotificationMutations();
   const inviteResponse = useInviteResponse();
 
@@ -131,7 +134,22 @@ export default function AlertsScreen() {
           gap: theme.spacing.md,
         }}
       >
-        {total === 0 && !isLoading ? (
+        {notificationsQuery.isError ? (
+          <View style={{ gap: theme.spacing.sm }}>
+            <InlineNotice icon={TriangleAlert} tone="error">
+              {describeBackendCapability(notificationsQuery.error) ??
+                'Não foi possível carregar as notificações.'}
+            </InlineNotice>
+            <Button
+              label="Tentar novamente"
+              variant="secondary"
+              fullWidth
+              onPress={() => void notificationsQuery.refetch()}
+            />
+          </View>
+        ) : null}
+
+        {total === 0 && !notificationsQuery.isLoading && !notificationsQuery.isError ? (
           <GlassCard>
             <EmptyState
               icon={BellOff}

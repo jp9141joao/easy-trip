@@ -35,11 +35,16 @@ import {
   type AITripAction,
   type AIActionType,
 } from '@/domain/aiActions';
-import type { Trip } from '@/domain/types';
+import type { ItineraryItem, Trip } from '@/domain/types';
 import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
 import { formatMoney } from '@/lib/currency';
 import { isValidISODate } from '@/lib/date';
 import { dataSource as defaultDataSource } from '@/repositories';
+import {
+  describeBackendCapability,
+  isBackendCapabilityError,
+  type BackendCapabilityCode,
+} from '@/repositories/backendCapabilities';
 import type { DataSource } from '@/repositories/types';
 import { buildExpenseRecord } from './expenseWrite';
 
@@ -72,6 +77,8 @@ export interface AICreatedRecord {
 export interface AIActionFailure {
   label: string;
   reason: string;
+  /** Permite que a UI mostre a mensagem amigável, sem inspecionar texto. */
+  backendCapability?: BackendCapabilityCode;
 }
 
 export interface AIActionOutcome {
@@ -142,8 +149,102 @@ function rejectionReason(action: AITripAction, trip: Trip): string | null {
 }
 
 function describeError(error: unknown): string {
+  const capabilityMessage = describeBackendCapability(error);
+  if (capabilityMessage) return capabilityMessage;
   if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message) return message;
+  }
   return 'Não foi possível gravar.';
+}
+
+function actionFailure(label: string, error: unknown): AIActionFailure {
+  return {
+    label,
+    reason: describeError(error),
+    ...(isBackendCapabilityError(error) ? { backendCapability: error.code } : {}),
+  };
+}
+
+type AIActionRepositoryOperation =
+  | 'itinerary.listByTrip'
+  | 'itinerary.create'
+  | 'checklist.create'
+  | 'expenses.create'
+  | 'trips.update'
+  | 'goals.create';
+
+/** Diagnóstico estrutural; nunca inclui label, payload, ids ou contexto. */
+export interface AIActionErrorDiagnostic {
+  type: AIActionType;
+  op: AIActionRepositoryOperation;
+  code: string | null;
+  message: string | null;
+  details: string | null;
+  hint: string | null;
+}
+
+/**
+ * Reduz o texto do PostgREST ao que ajuda a localizar a operação, removendo
+ * formatos comuns de dado pessoal antes de qualquer `console`.
+ *
+ * `details` pode conter a linha inteira que violou uma constraint. Por isso a
+ * tupla de "Failing row" e valores de `Key (...)=(...)` são removidos por
+ * inteiro; e-mail, UUID, telefone, URL e JWT são a segunda barreira. Nomes de
+ * tabela/coluna ficam intactos, que é o que torna PGRST204 diagnosticável.
+ */
+function sanitizeDiagnosticText(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+
+  return value
+    .replace(/(failing row contains)\s*\([^\n]*\)/gi, '$1 ([redacted])')
+    .replace(/(key\s*\([^)]*\)\s*=\s*)\([^)]*\)/gi, '$1([redacted])')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]')
+    .replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, '[redacted-uuid]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted-token]')
+    .replace(/https?:\/\/\S+/gi, '[redacted-url]')
+    .replace(/\+?\d(?:[\s().-]*\d){8,}/g, '[redacted-number]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
+function errorField(
+  error: unknown,
+  field: 'code' | 'message' | 'details' | 'hint' | 'backend',
+): unknown {
+  if (!error || typeof error !== 'object') return undefined;
+  return (error as Record<string, unknown>)[field];
+}
+
+/** Exportada para que o contrato "sem PII" seja testado sem depender de console. */
+export function buildAIActionErrorDiagnostic(
+  type: AIActionType,
+  op: AIActionRepositoryOperation,
+  error: unknown,
+): AIActionErrorDiagnostic {
+  const nestedBackend = errorField(error, 'backend');
+  const source = nestedBackend && typeof nestedBackend === 'object' ? nestedBackend : error;
+  return {
+    type,
+    op,
+    code: sanitizeDiagnosticText(errorField(source, 'code')),
+    message: sanitizeDiagnosticText(
+      errorField(source, 'message') ?? (error instanceof Error ? error.message : undefined),
+    ),
+    details: sanitizeDiagnosticText(errorField(source, 'details')),
+    hint: sanitizeDiagnosticText(errorField(source, 'hint')),
+  };
+}
+
+function logAIActionError(
+  type: AIActionType,
+  op: AIActionRepositoryOperation,
+  error: unknown,
+): void {
+  if (typeof __DEV__ === 'undefined' || !__DEV__) return;
+  console.error('AI_ACTION_REPOSITORY_ERROR', buildAIActionErrorDiagnostic(type, op, error));
 }
 
 function pluralItems(count: number): string {
@@ -157,7 +258,20 @@ async function runItinerary(
   ctx: Required<AIActionContext>,
   created: AICreatedRecord[],
 ): Promise<AIActionOutcome> {
-  const existing = await ctx.source.itinerary.listByTrip(ctx.trip.id);
+  let existing: ItineraryItem[];
+  try {
+    existing = await ctx.source.itinerary.listByTrip(ctx.trip.id);
+  } catch (error) {
+    logAIActionError(action.type, 'itinerary.listByTrip', error);
+    return {
+      actionId: action.id,
+      type: action.type,
+      ok: false,
+      succeeded: 0,
+      failed: [actionFailure(action.label, error)],
+      summary: 'Nenhum item foi adicionado ao roteiro',
+    };
+  }
   // A ordem dentro do dia continua sendo do domínio: cada item novo entra
   // depois do que já estava naquela data.
   const nextOrder = new Map<string, number>();
@@ -168,7 +282,8 @@ async function runItinerary(
   const failed: AIActionFailure[] = [];
   let succeeded = 0;
 
-  for (const item of action.items) {
+  for (let index = 0; index < action.items.length; index += 1) {
+    const item = action.items[index];
     const sortOrder = nextOrder.get(item.date) ?? 0;
     try {
       const record = await ctx.source.itinerary.create({
@@ -188,7 +303,19 @@ async function runItinerary(
       nextOrder.set(item.date, sortOrder + 1);
       succeeded += 1;
     } catch (error) {
-      failed.push({ label: item.title, reason: describeError(error) });
+      logAIActionError(action.type, 'itinerary.create', error);
+      const failure = actionFailure(item.title, error);
+      failed.push(failure);
+      if (isBackendCapabilityError(error)) {
+        // Schema ausente não vai se curar no item seguinte. Marcar o restante
+        // com a mesma causa evita repetir o mesmo INSERT condenado N vezes.
+        action.items
+          .slice(index + 1)
+          .forEach((remaining) =>
+            failed.push({ ...failure, label: remaining.title }),
+          );
+        break;
+      }
     }
   }
 
@@ -210,7 +337,8 @@ async function runChecklist(
   const failed: AIActionFailure[] = [];
   let succeeded = 0;
 
-  for (const item of action.items) {
+  for (let index = 0; index < action.items.length; index += 1) {
+    const item = action.items[index];
     try {
       const record = await ctx.source.checklist.create({
         tripId: ctx.trip.id,
@@ -224,7 +352,15 @@ async function runChecklist(
       created.push({ kind: 'checklist', id: record.id });
       succeeded += 1;
     } catch (error) {
-      failed.push({ label: item.label, reason: describeError(error) });
+      logAIActionError(action.type, 'checklist.create', error);
+      const failure = actionFailure(item.label, error);
+      failed.push(failure);
+      if (isBackendCapabilityError(error)) {
+        action.items
+          .slice(index + 1)
+          .forEach((remaining) => failed.push({ ...failure, label: remaining.label }));
+        break;
+      }
     }
   }
 
@@ -248,7 +384,8 @@ async function runExpenses(
   /** Só soma o que está na moeda do orçamento — o resto não tem soma honesta. */
   let totalInBudgetCurrency = 0;
 
-  for (const item of action.items) {
+  for (let index = 0; index < action.items.length; index += 1) {
+    const item = action.items[index];
     try {
       const record = await ctx.source.expenses.create(
         await buildExpenseRecord(ctx.trip, ctx.userId, {
@@ -266,7 +403,15 @@ async function runExpenses(
       totalInBudgetCurrency += record.amountInBudgetCurrency ?? 0;
       succeeded += 1;
     } catch (error) {
-      failed.push({ label: item.description, reason: describeError(error) });
+      logAIActionError(action.type, 'expenses.create', error);
+      const failure = actionFailure(item.description, error);
+      failed.push(failure);
+      if (isBackendCapabilityError(error)) {
+        action.items
+          .slice(index + 1)
+          .forEach((remaining) => failed.push({ ...failure, label: remaining.description }));
+        break;
+      }
     }
   }
 
@@ -299,12 +444,13 @@ async function runBudget(
       summary: `Orçamento atualizado para ${formatMoney(action.budgetTotal, ctx.trip.budgetCurrency)}`,
     };
   } catch (error) {
+    logAIActionError(action.type, 'trips.update', error);
     return {
       actionId: action.id,
       type: action.type,
       ok: false,
       succeeded: 0,
-      failed: [{ label: 'Orçamento', reason: describeError(error) }],
+      failed: [actionFailure('Orçamento', error)],
       summary: 'Orçamento não foi atualizado',
     };
   }
@@ -339,12 +485,13 @@ async function runGoal(
       summary: `Meta "${action.goal.title}" criada`,
     };
   } catch (error) {
+    logAIActionError(action.type, 'goals.create', error);
     return {
       actionId: action.id,
       type: action.type,
       ok: false,
       succeeded: 0,
-      failed: [{ label: action.goal.title, reason: describeError(error) }],
+      failed: [actionFailure(action.goal.title, error)],
       summary: 'Meta não foi criada',
     };
   }

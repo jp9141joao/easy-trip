@@ -1,5 +1,13 @@
 import { useRouter } from 'expo-router';
-import { ChevronLeft, CloudSun, Clock3, LifeBuoy, Map as MapIcon, Pencil } from 'lucide-react-native';
+import {
+  ChevronLeft,
+  CloudSun,
+  Clock3,
+  LifeBuoy,
+  Map as MapIcon,
+  Pencil,
+  TriangleAlert,
+} from 'lucide-react-native';
 import type { ReactNode } from 'react';
 import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,13 +16,16 @@ import {
   AppImage,
   AppText,
   IconButton,
+  InlineNotice,
   SegmentedTabs,
   type SegmentedTabItem,
 } from '@/components/ui';
 import { TripStatusChip, TripTimingChip } from '@/components/trip';
 import type { Trip } from '@/domain/types';
+import { useTripPermissions } from '@/hooks/useCollaboration';
 import { formatDateRange } from '@/lib/date';
 import { formatMoney } from '@/lib/currency';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { useTheme } from '@/theme';
 
 export type TripSection = 'itinerary' | 'finance' | 'reservations' | 'suggestions';
@@ -177,6 +188,7 @@ export function TripHero({
 export function TripTabs({ tripId, active }: { tripId: string; active: TripSection }) {
   const theme = useTheme();
   const router = useRouter();
+  const permissions = useTripPermissions(tripId);
 
   const items: SegmentedTabItem<TripSection>[] = [
     { value: 'itinerary', label: 'Roteiro' },
@@ -196,6 +208,17 @@ export function TripTabs({ tripId, active }: { tripId: string; active: TripSecti
           router.replace(`/trip/${tripId}/${value}`);
         }}
       />
+
+      {permissions.status === 'error' || permissions.status === 'unavailable' ? (
+        <View style={{ marginTop: theme.spacing.md }}>
+          <InlineNotice icon={TriangleAlert} tone="error">
+            {permissions.status === 'unavailable'
+              ? 'Sua participação nesta viagem não foi encontrada. A edição permanece bloqueada até que o acesso seja corrigido.'
+              : describeBackendCapability(permissions.error) ??
+                'Não foi possível confirmar sua permissão nesta viagem. Verifique a conexão e tente novamente.'}
+          </InlineNotice>
+        </View>
+      ) : null}
     </View>
   );
 }

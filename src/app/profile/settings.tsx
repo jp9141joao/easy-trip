@@ -34,6 +34,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
+import { traceAuth } from '@/lib/authTrace';
 import { config, configIssues } from '@/lib/config';
 import { useAuth } from '@/providers/AuthProvider';
 import { useConnectivity } from '@/providers/ConnectivityProvider';
@@ -60,18 +61,29 @@ export default function SettingsScreen() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  // Nenhum dos dois navega à mão. Ao cair a sessão, as rotas privadas saem do
-  // navegador (`app/_layout.tsx`) e a volta ao login é consequência disso —
-  // inclusive quando a sessão cai sozinha, por token revogado, caso em que não
-  // existiria nenhum `handle*` para chamar `replace`.
+  // A proteção de rotas continua sendo a autoridade. O logout explícito usa
+  // também um `replace` depois da invalidação comprovada, apenas como rede de
+  // segurança para a reconciliação do Expo Router no Android. Uma sessão que
+  // cai sozinha continua saindo exclusivamente pelo guarda da raiz.
   const handleSignOut = async () => {
     // Sair encosta na rede. Sem estado de espera, o toque parecia não ter feito
     // nada — e um segundo toque disparava uma segunda saída por cima da
     // primeira. O `disabled` do botão vem do `loading` do próprio diálogo.
     if (signingOut) return;
+    traceAuth('SIGNOUT_CLICK');
     setSigningOut(true);
     try {
       await signOut();
+      // A sessão já foi comprovadamente removida e o provider já publicou
+      // `session=null`. O replace é uma rede de segurança para a reconciliação
+      // do Expo Router em Android; ele nunca é usado para fingir um logout.
+      try {
+        router.replace('/(auth)/login');
+      } catch {
+        // O guarda do stack continua sendo a autoridade. Se a rota ainda
+        // estiver reconciliando, uma falha do fallback não transforma um
+        // logout já concluído em falso erro.
+      }
       // Só fecha o diálogo depois do sucesso: fechá-lo antes anunciaria uma
       // saída que ainda podia falhar.
       setConfirmSignOut(false);

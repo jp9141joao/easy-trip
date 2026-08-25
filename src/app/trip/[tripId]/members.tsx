@@ -34,6 +34,7 @@ import {
 } from '@/hooks/useCollaboration';
 import { useAuth } from '@/providers/AuthProvider';
 import { dataSource } from '@/repositories';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { DemoUnavailableError } from '@/repositories/local/collaboration';
 import { useTheme } from '@/theme';
 
@@ -52,9 +53,10 @@ export default function MembersScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
 
-  const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
+  const { tripId, trip, isLoading, isError, notFound, errorMessage, refetch } = useTripRoute();
   const permissions = useTripPermissions(tripId);
-  const { data: invites = [] } = useTripInvites(tripId, permissions.canManageMembers);
+  const invitesQuery = useTripInvites(tripId, permissions.canManageMembers);
+  const invites = invitesQuery.data ?? [];
   const mutations = useMembershipMutations(tripId);
 
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -64,7 +66,11 @@ export default function MembersScreen() {
 
   const demoMode = dataSource.kind === 'local';
 
-  if (isLoading || isError || notFound || !trip) {
+  const permissionsUnavailable =
+    permissions.status === 'error' || permissions.status === 'unavailable';
+  const invitesUnavailable = permissions.canManageMembers && invitesQuery.isError;
+
+  if (isLoading || isError || notFound || !trip || permissionsUnavailable || invitesUnavailable) {
     return (
       <View style={{ flex: 1, backgroundColor: theme.colors.background, padding: theme.spacing.screen, paddingTop: 100 }}>
         {isLoading ? (
@@ -72,13 +78,33 @@ export default function MembersScreen() {
         ) : (
           <GlassCard>
             <ErrorState
-              title={notFound ? 'Viagem não encontrada' : 'Não foi possível carregar'}
+              title={
+                notFound
+                  ? 'Viagem não encontrada'
+                  : permissionsUnavailable || invitesUnavailable
+                    ? 'Colaboração indisponível'
+                    : 'Não foi possível carregar'
+              }
               message={
                 notFound
                   ? 'Esta viagem pode ter sido excluída.'
-                  : 'Verifique sua conexão e tente novamente.'
+                  : permissionsUnavailable
+                    ? describeBackendCapability(permissions.error) ??
+                      'Não foi possível confirmar sua participação nesta viagem.'
+                    : invitesUnavailable
+                      ? describeBackendCapability(invitesQuery.error) ??
+                        'Não foi possível carregar os convites desta viagem.'
+                    : errorMessage
               }
-              onRetry={notFound ? () => router.replace('/(tabs)/trips') : () => void refetch()}
+              onRetry={
+                notFound
+                  ? () => router.replace('/(tabs)/trips')
+                  : () => {
+                      void refetch();
+                      void permissions.refetch();
+                      void invitesQuery.refetch();
+                    }
+              }
             />
           </GlassCard>
         )}
@@ -96,7 +122,7 @@ export default function MembersScreen() {
       if (error instanceof DemoUnavailableError) {
         throw new Error('Convidar viajantes exige conexão com o Easy Trip.');
       }
-      throw error;
+      throw new Error(memberActionError(error, 'Não foi possível convidar.'));
     }
   };
 
@@ -106,7 +132,7 @@ export default function MembersScreen() {
       toast.success(`Permissão alterada para "${ROLE_LABEL[role]}"`);
       setManaging(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Não foi possível alterar a permissão.');
+      toast.error(memberActionError(error, 'Não foi possível alterar a permissão.'));
     }
   };
 
@@ -117,7 +143,7 @@ export default function MembersScreen() {
       toast.success(`${memberDisplayName(removing, user?.id)} saiu da viagem`);
       setRemoving(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Não foi possível remover.');
+      toast.error(memberActionError(error, 'Não foi possível remover.'));
     }
   };
 
@@ -129,7 +155,16 @@ export default function MembersScreen() {
       router.replace('/(tabs)/trips');
     } catch (error) {
       setLeaving(false);
-      toast.error(error instanceof Error ? error.message : 'Não foi possível sair da viagem.');
+      toast.error(memberActionError(error, 'Não foi possível sair da viagem.'));
+    }
+  };
+
+  const handleCancelInvite = async (inviteId: string) => {
+    try {
+      await mutations.cancelInvite.mutateAsync(inviteId);
+      toast.success('Convite cancelado');
+    } catch (error) {
+      toast.error(memberActionError(error, 'Não foi possível cancelar o convite.'));
     }
   };
 
@@ -142,7 +177,9 @@ export default function MembersScreen() {
           label={trip.destinationCity}
           title="Viajantes"
           subtitle={
-            permissions.memberCount === 1
+            permissions.isLoading
+              ? 'Carregando viajantes…'
+              : permissions.memberCount === 1
               ? 'Só você nesta viagem'
               : `${permissions.memberCount} pessoas nesta viagem`
           }
@@ -212,7 +249,7 @@ export default function MembersScreen() {
                       variant="ghost"
                       size="sm"
                       icon={X}
-                      onPress={() => void mutations.cancelInvite.mutateAsync(invite.id)}
+                      onPress={() => void handleCancelInvite(invite.id)}
                     />
                   </View>
                 </View>
@@ -328,4 +365,8 @@ export default function MembersScreen() {
       />
     </View>
   );
+}
+
+function memberActionError(error: unknown, fallback: string): string {
+  return describeBackendCapability(error) ?? (error instanceof Error ? error.message : fallback);
 }

@@ -67,6 +67,16 @@ import {
 } from './collaboration';
 import { getSupabaseClient } from './client';
 import type { DataSource, StoredFile, UploadableFile } from '../types';
+import {
+  throwBackendError,
+  toBackendCapabilityError,
+  type BackendCapabilityCode,
+} from '../backendCapabilities';
+import {
+  throwSupabaseRepositoryError,
+  type RepositoryOperation,
+  type SupabaseErrorLike,
+} from './errors';
 
 const SIGNED_URL_TTL = 60 * 60; // 1 hour
 
@@ -86,15 +96,41 @@ function bucketFor(kind: 'attachment' | 'journal'): string {
   return kind === 'attachment' ? BUCKET.attachments : BUCKET.journal;
 }
 
-function unwrap<T>(result: { data: T | null; error: { message: string } | null }): T {
-  if (result.error) throw new Error(result.error.message);
+function unwrap<T>(
+  result: { data: T | null; error: SupabaseErrorLike | null },
+  context?: RepositoryOperation,
+): T {
+  if (result.error) throwSupabaseRepositoryError(result.error, context);
   if (result.data === null) throw new Error('Registro não encontrado.');
   return result.data;
 }
 
-function unwrapList<T>(result: { data: T[] | null; error: { message: string } | null }): T[] {
-  if (result.error) throw new Error(result.error.message);
+function unwrapList<T>(
+  result: { data: T[] | null; error: SupabaseErrorLike | null },
+  context?: RepositoryOperation,
+): T[] {
+  if (result.error) throwSupabaseRepositoryError(result.error, context);
   return result.data ?? [];
+}
+
+/**
+ * Promove apenas uma ausência de schema comprovada e preserva qualquer outro
+ * erro PostgREST com seus quatro campos originais.
+ *
+ * Chamar `throwBackendError` indiscriminadamente aqui transformaria um erro
+ * comum em `Error(message)` e perderia code/details/hint. A sondagem anterior
+ * garante que esse helper só entra no caminho especial quando o código **e** o
+ * identificador esperado provam que o backend está atrasado.
+ */
+function unwrapWithCapability<T>(
+  result: { data: T | null; error: SupabaseErrorLike | null },
+  capability: BackendCapabilityCode,
+  context: RepositoryOperation,
+): T {
+  if (result.error && toBackendCapabilityError(result.error, capability)) {
+    throwBackendError(result.error, capability);
+  }
+  return unwrap(result, context);
 }
 
 /** Turns a private storage path into a temporary, openable URL. */
@@ -343,6 +379,11 @@ const fromExpense = (expense: Partial<Expense>): Row => prune({
   exchange_rate_timestamp: expense.exchangeRateTimestamp,
   transaction_date: expense.transactionDate,
   description: expense.description,
+  visibility: expense.visibility,
+  paid_by: expense.paidBy,
+  // `created_by` não vem do cliente. O trigger `set_created_by` (0009)
+  // deriva a autoria de `auth.uid()`; `paid_by`, ao contrário, é atribuição
+  // funcional e precisa sobreviver ao mapper.
 });
 
 const toGoal = (row: Row): Goal => ({
@@ -506,7 +547,7 @@ async function decorateWithMembership(trips: Trip[], userId: string | null): Pro
     .select('trip_id, user_id, role')
     .in('trip_id', trips.map((trip) => trip.id));
 
-  if (result.error) return trips;
+  if (result.error) throwBackendError(result.error, 'MISSING_TRIP_MEMBERS');
 
   const counts = new Map<string, number>();
   const roles = new Map<string, TripRole>();
@@ -624,7 +665,12 @@ export const supabaseDataSource: DataSource = {
         .insert(fromItinerary(input))
         .select()
         .single();
-      return toItinerary(unwrap<Row>(result));
+      return toItinerary(
+        unwrapWithCapability<Row>(result, 'MISSING_VISIBILITY', {
+          operation: 'insert',
+          relation: 'itinerary_items',
+        }),
+      );
     },
     async update(id, patch) {
       const result = await db()
@@ -656,7 +702,12 @@ export const supabaseDataSource: DataSource = {
         .insert(fromChecklist(input))
         .select()
         .single();
-      return toChecklist(unwrap<Row>(result));
+      return toChecklist(
+        unwrapWithCapability<Row>(result, 'MISSING_VISIBILITY', {
+          operation: 'insert',
+          relation: 'checklist_items',
+        }),
+      );
     },
     async update(id, patch) {
       const result = await db()
@@ -684,7 +735,12 @@ export const supabaseDataSource: DataSource = {
     },
     async create(input) {
       const result = await db().from('expenses').insert(fromExpense(input)).select().single();
-      return toExpense(unwrap<Row>(result));
+      return toExpense(
+        unwrapWithCapability<Row>(result, 'MISSING_VISIBILITY', {
+          operation: 'insert',
+          relation: 'expenses',
+        }),
+      );
     },
     async update(id, patch) {
       const result = await db()

@@ -31,3 +31,17 @@ export class AIRateLimitError extends Error {
     this.name = 'AIRateLimitError';
   }
 }
+
+/**
+ * Um segundo envio chegou enquanto o primeiro ainda estava em voo.
+ *
+ * Não é quota: é a metade duplicada de um toque duplo. Separar os dois
+ * casos impede a tela de devolver ao composer o texto que a primeira chamada
+ * já enviou com sucesso.
+ */
+export class AIRequestInFlightError extends Error {
+  constructor() {
+    super('Uma mensagem já está sendo enviada.');
+    this.name = 'AIRequestInFlightError';
+  }
+}

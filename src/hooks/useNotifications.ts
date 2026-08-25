@@ -1,9 +1,14 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef } from 'react';
 
 import { unreadCount } from '@/domain/notifications';
+import type { AIConversation, JournalMedia, Reservation, Trip } from '@/domain/types';
+import { clearAITripContextForTrip } from '@/lib/aiTripContext';
+import { purgeTripMirrors } from '@/lib/fileMirror';
 import { useAuth } from '@/providers/AuthProvider';
+import { useTripSelection } from '@/providers/TripSelectionProvider';
 import { dataSource } from '@/repositories';
+import { isBackendCapabilityError } from '@/repositories/backendCapabilities';
 import { queryKeys } from './queryKeys';
 
 /**
@@ -85,12 +90,14 @@ export function useNotificationMutations() {
 export function useReminderDelivery() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const delivered = useRef<string | null>(null);
+  // Isto registra uma tentativa, não uma entrega. A entrega só é confirmada
+  // pelo número devolvido pela RPC; uma rejeição nunca vira `0` nem sucesso.
+  const attemptedFor = useRef<string | null>(null);
 
   useEffect(() => {
     const userId = user?.id;
-    if (!userId || delivered.current === userId) return;
-    delivered.current = userId;
+    if (!userId || attemptedFor.current === userId) return;
+    attemptedFor.current = userId;
 
     let cancelled = false;
     void dataSource.notifications
@@ -99,9 +106,21 @@ export function useReminderDelivery() {
         if (cancelled || count === 0) return;
         return queryClient.invalidateQueries({ queryKey: queryKeys.notifications(userId) });
       })
-      // Falhar aqui não pode impedir o aplicativo de abrir: a entrega tenta de
-      // novo na próxima sessão, e o `sent_at` garante que nada se perca.
-      .catch(() => undefined);
+      // Falhar aqui não pode impedir o aplicativo de abrir. Também não pode
+      // fingir `0` entregas: a rejeição continua rejeição e fica observável em
+      // DEV com somente categoria/capability — nunca payload, usuário ou JWT.
+      // A Central também consulta `notifications` e mostra o capability error
+      // quando a própria 0010 está ausente.
+      .catch((error: unknown) => {
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn(
+            'REMINDER_DELIVERY_FAILED',
+            isBackendCapabilityError(error)
+              ? { capability: error.code }
+              : { kind: error instanceof Error ? error.name : 'unknown' },
+          );
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -126,9 +145,76 @@ export function useReminderDelivery() {
  * Não apaga a notificação: ela é o registro de que o acesso acabou, e a pessoa
  * tem o direito de lê-la.
  */
+/**
+ * Quanto tempo a auditoria de acesso pode demorar antes de ser considerada
+ * inconclusiva (§17 do handoff).
+ *
+ * `trips.list()` é uma chamada de rede, e uma rede ruim pode deixá-la pendurada
+ * indefinidamente. Enquanto ela não volta, o roteiro e as reservas de uma
+ * viagem possivelmente revogada continuam em disco. Oito segundos é mais do que
+ * uma listagem precisa em qualquer conexão utilizável, e é curto o bastante
+ * para "não consegui provar acesso" virar decisão em vez de espera eterna.
+ */
+export const REVOKED_TRIP_AUDIT_TIMEOUT_MS = 8_000;
+
+/** Marca de prazo estourado, distinguível de uma lista legitimamente vazia. */
+const AUDIT_TIMED_OUT = Symbol('audit-timed-out');
+
+async function auditWithDeadline(
+  audit: Promise<Trip[]>,
+  ms: number,
+): Promise<Trip[] | typeof AUDIT_TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      audit,
+      new Promise<typeof AUDIT_TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(AUDIT_TIMED_OUT), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function useRevokedTripCleanup() {
   const { data: notifications = [] } = useNotifications();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const { currentTripId, setCurrentTripId } = useTripSelection();
+
+  /**
+   * A seleção atual, lida no momento em que a auditoria termina.
+   *
+   * Não entra nas dependências do efeito: se entrasse, trocar de viagem no meio
+   * de uma verificação reiniciaria a verificação. E a decisão de limpar a
+   * seleção precisa olhar o valor de AGORA, não o de quando o efeito montou.
+   */
+  const selection = useRef({ currentTripId, setCurrentTripId });
+  selection.current = { currentTripId, setCurrentTripId };
+
+  /**
+   * Viagens cuja verificação já foi disparada nesta sessão.
+   *
+   * Vive fora do efeito porque a limpeza NÃO pode ser cancelada pelo que a
+   * disparou. Apagar (ou marcar como lida) a notificação `trip_member_removed`
+   * enquanto a verificação corre muda `revokedTripIds`, o efeito reexecuta e o
+   * `cleanup` do anterior rodaria — abortando a limpeza de segurança no meio.
+   * Registrando aqui, cada candidato é verificado uma vez até o fim,
+   * independentemente do que aconteça com a notificação (§18 do handoff).
+   */
+  const audited = useRef(new Set<string>());
+
+  /**
+   * O registro é por conta. A raiz do aplicativo não desmonta na troca de
+   * usuário, e sem isto uma viagem já auditada para A seria pulada para B — que
+   * pode ter sido removido da mesma viagem, por outro motivo, depois.
+   */
+  const auditedFor = useRef<string | null>(null);
+  if (auditedFor.current !== (user?.id ?? null)) {
+    auditedFor.current = user?.id ?? null;
+    audited.current = new Set<string>();
+  }
 
   const revokedTripIds = useMemo(
     () =>
@@ -141,26 +227,166 @@ export function useRevokedTripCleanup() {
   );
 
   useEffect(() => {
-    if (!revokedTripIds) return;
+    const userId = user?.id;
+    if (!userId || !revokedTripIds) return;
 
-    for (const tripId of revokedTripIds.split(',')) {
-      // `removeQueries` e não `invalidateQueries`: invalidar pediria os dados
-      // de novo, e o servidor recusaria — deixando a tela com o cache antigo e
-      // um erro. Remover apaga.
-      for (const key of [
-        queryKeys.trip(tripId),
-        queryKeys.itinerary(tripId),
-        queryKeys.checklist(tripId),
-        queryKeys.expenses(tripId),
-        queryKeys.journal(tripId),
-        queryKeys.journalMedia(tripId),
-        queryKeys.tripReservations(tripId),
-        queryKeys.suggestions(tripId),
-        queryKeys.tripMembers(tripId),
-        queryKeys.tripInvites(tripId),
-      ]) {
-        queryClient.removeQueries({ queryKey: key });
+    const candidates = [...new Set(revokedTripIds.split(','))].filter(
+      (tripId) => !audited.current.has(tripId),
+    );
+    if (candidates.length === 0) return;
+    for (const tripId of candidates) audited.current.add(tripId);
+
+    const purge = (tripIds: readonly string[]) =>
+      purgeRevokedTripState(queryClient, userId, tripIds, {
+        currentTripId: selection.current.currentTripId,
+        clear: () => selection.current.setCurrentTripId(null),
+      });
+
+    void (async () => {
+      let accessibleTrips: Trip[] | typeof AUDIT_TIMED_OUT;
+      try {
+        /*
+         * Uma notificação é histórica; acesso não é. Consultar o backend aqui
+         * impede que uma remoção antiga apague novamente Paris depois de a
+         * mesma pessoa ter sido convidada de volta. A chamada é direta ao
+         * repositório, portanto não pode devolver a lista reidratada do cache.
+         */
+        accessibleTrips = await auditWithDeadline(
+          dataSource.trips.list(userId),
+          REVOKED_TRIP_AUDIT_TIMEOUT_MS,
+        );
+      } catch (error: unknown) {
+        // Sem conseguir provar acesso atual, privacidade vence disponibilidade:
+        // removemos os candidatos em vez de conservar dados possivelmente
+        // revogados. O próximo refetch bem-sucedido da Home repõe uma eventual
+        // reconvocação; nenhum erro bruto ou identificador vai para o log.
+        purge(candidates);
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('REVOKED_TRIP_ACCESS_AUDIT_FAILED', {
+            kind: error instanceof Error ? error.name : 'unknown',
+          });
+        }
+        return;
       }
+
+      if (accessibleTrips === AUDIT_TIMED_OUT) {
+        // Mesma regra da falha: uma auditoria que não volta não é prova de
+        // acesso, e dado privado não fica pendurado esperando por ela.
+        purge(candidates);
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('REVOKED_TRIP_ACCESS_AUDIT_FAILED', { kind: 'timeout' });
+        }
+        return;
+      }
+
+      /*
+       * A leitura acabada de fazer é também a fonte canônica da Home. Assim a
+       * viagem realmente revogada some do agregado; a reconvidada continua —
+       * acesso atual tem precedência sobre o evento histórico (§19 do handoff).
+       */
+      queryClient.setQueryData(queryKeys.trips(userId), accessibleTrips);
+      purge(revokedTripsWithoutCurrentAccess(candidates, accessibleTrips));
+    })();
+  }, [queryClient, revokedTripIds, user?.id]);
+}
+
+/**
+ * Uma remoção antiga deixa de ser revogação assim que o backend volta a listar
+ * a viagem. Exportada para que a reconvocação tenha uma regressão unitária sem
+ * montar a árvore inteira de providers.
+ */
+export function revokedTripsWithoutCurrentAccess(
+  candidates: readonly string[],
+  accessibleTrips: readonly Pick<Trip, 'id'>[],
+): string[] {
+  const accessibleIds = new Set(accessibleTrips.map((trip) => trip.id));
+  return [...new Set(candidates)].filter((tripId) => !accessibleIds.has(tripId));
+}
+
+/**
+ * Os caminhos de Storage que esta viagem tem espelhados no aparelho.
+ *
+ * A varredura por pasta em `purgeTripMirrors` cobre anexo e documento de
+ * reserva, cuja chave é `{uid}/{tripId}/{arquivo}`. A mídia do diário usa
+ * `{uid}/{entryId}/{arquivo}` — a viagem não aparece no caminho — então os
+ * caminhos dela saem do cache, que é lido ANTES de as chaves serem removidas.
+ */
+function mirrorPathsForTrip(
+  queryClient: QueryClient,
+  tripId: string,
+): { bucket: string; storagePath: string }[] {
+  const paths: { bucket: string; storagePath: string }[] = [];
+
+  const media = queryClient.getQueryData<JournalMedia[]>(queryKeys.journalMedia(tripId)) ?? [];
+  for (const item of media) {
+    if (item.filePath) paths.push({ bucket: 'journal', storagePath: item.filePath });
+  }
+
+  const reservations =
+    queryClient.getQueryData<Reservation[]>(queryKeys.tripReservations(tripId)) ?? [];
+  for (const item of reservations) {
+    if (item.filePath) paths.push({ bucket: 'attachments', storagePath: item.filePath });
+  }
+
+  return paths;
+}
+
+/**
+ * Remove todo estado conhecido de viagens cuja revogação foi confirmada.
+ *
+ * Inclui as cópias LOCAIS de arquivo daquela viagem (§14 do handoff). O
+ * conteúdo remoto continua com o grupo: quem perdeu acesso perde a cópia dele,
+ * e só a dele — o espelho é namespaced pela conta que baixou.
+ */
+export function purgeRevokedTripState(
+  queryClient: QueryClient,
+  userId: string,
+  tripIds: readonly string[],
+  selection?: { currentTripId: string | null; clear: () => void },
+): void {
+  const revoked = new Set(tripIds);
+  if (revoked.size === 0) return;
+
+  // A Home usa a coleção agregada, não `queryKeys.trip(id)`. Sem filtrá-la, o
+  // card revogado continuaria visível mesmo após todos os detalhes sumirem.
+  queryClient.setQueryData<Trip[] | undefined>(queryKeys.trips(userId), (trips) =>
+    trips?.filter((trip) => !revoked.has(trip.id)),
+  );
+  if (selection?.currentTripId && revoked.has(selection.currentTripId)) selection.clear();
+
+  for (const tripId of revoked) {
+    const conversationKey = queryKeys.aiConversation(userId, tripId);
+    const conversation = queryClient.getQueryData<AIConversation>(conversationKey);
+    // Antes de `removeQueries`: depois dele o cache já não sabe quais arquivos
+    // esta viagem tinha, e o espelho ficaria no disco sem nada que o cite.
+    const mirrors = mirrorPathsForTrip(queryClient, tripId);
+    purgeTripMirrors(userId, tripId, mirrors);
+    // A seleção da IA é persistida à parte da seleção da Home e sobreviveria à
+    // remoção das chaves de cache, reabrindo a conversa numa viagem recusada.
+    void clearAITripContextForTrip(userId, tripId);
+
+    // `removeQueries` e não `invalidateQueries`: invalidar pediria os dados de
+    // novo, o servidor recusaria, e a tela poderia conservar o cache antigo.
+    for (const key of [
+      queryKeys.trip(tripId),
+      queryKeys.itinerary(tripId),
+      queryKeys.checklist(tripId),
+      queryKeys.expenses(tripId),
+      queryKeys.journal(tripId),
+      queryKeys.journalMedia(tripId),
+      queryKeys.tripReservations(tripId),
+      queryKeys.suggestions(tripId),
+      queryKeys.tripMembers(tripId),
+      queryKeys.tripMemberNames(tripId),
+      queryKeys.tripInvites(tripId),
+      queryKeys.myRole(tripId, userId),
+      queryKeys.reminders(tripId, userId),
+      conversationKey,
+    ]) {
+      queryClient.removeQueries({ queryKey: key });
     }
-  }, [revokedTripIds, queryClient]);
+    if (conversation?.id) {
+      queryClient.removeQueries({ queryKey: queryKeys.aiMessages(conversation.id) });
+    }
+  }
 }

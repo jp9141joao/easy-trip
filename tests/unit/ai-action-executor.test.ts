@@ -1,8 +1,13 @@
 import { parseAIActions, type AITripAction } from '@/domain/aiActions';
 import type { Trip } from '@/domain/types';
 import { localDataSource } from '@/repositories/local/LocalDataSource';
+import { BackendCapabilityError } from '@/repositories/backendCapabilities';
 import type { DataSource } from '@/repositories/types';
-import { executeAIActions, undoAIActions } from '@/services/aiActionExecutor';
+import {
+  buildAIActionErrorDiagnostic,
+  executeAIActions,
+  undoAIActions,
+} from '@/services/aiActionExecutor';
 
 /**
  * A gravação propriamente dita.
@@ -51,6 +56,10 @@ beforeEach(async () => {
     budgetTotal: 45000,
     budgetCurrency: 'BRL',
   });
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 const ctx = (trip: Trip, userId: string) => ({ trip, userId, source: db });
@@ -112,6 +121,42 @@ describe('roteiro', () => {
     await executeAIActions(actions, ctx(paris, USER_A));
     const items = await db.itinerary.listByTrip(paris.id);
     expect(items.find((item) => item.title === 'Museu do Louvre')?.sortOrder).toBe(1);
+  });
+
+  it('mantém `visibility` no payload preparado para o schema migrado', async () => {
+    const create = jest.fn(db.itinerary.create);
+    const source: DataSource = { ...db, itinerary: { ...db.itinerary, create } };
+    const actions = parseAIActions(
+      [
+        {
+          type: 'itinerary.add',
+          label: 'Adicionar ao roteiro',
+          items: [
+            {
+              title: 'Museu do Louvre',
+              date: '2026-08-23',
+              type: 'atracao',
+              placeName: 'Rue de Rivoli',
+            },
+          ],
+        },
+      ],
+      paris,
+    );
+
+    await executeAIActions(actions, { trip: paris, userId: USER_A, source });
+
+    // `visibility` é da 0009. Retirá-la para acomodar produção ainda em
+    // 0007 esconderia a incompatibilidade e quebraria privacidade depois do
+    // go-live correto. O payload novo é o contrato que deve permanecer.
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tripId: paris.id,
+        title: 'Museu do Louvre',
+        placeName: 'Rue de Rivoli',
+        visibility: 'shared',
+      }),
+    );
   });
 });
 
@@ -347,6 +392,7 @@ describe('recusas', () => {
 
 describe('falha parcial', () => {
   it('relata o que entrou e o que não entrou, sem anunciar sucesso', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
     // O adaptador falha no segundo item do checklist — o primeiro já gravou.
     let calls = 0;
     const flaky: DataSource = {
@@ -388,6 +434,182 @@ describe('falha parcial', () => {
       { label: 'Garrafa de água', reason: 'Falha de rede ao gravar.' },
     ]);
     expect(await db.checklist.listByTrip(paris.id)).toHaveLength(1);
+  });
+
+  it('transforma falha na leitura inicial em relatório e guarda a causa em DEV', async () => {
+    const failure = Object.assign(new Error("Could not find the 'visibility' column"), {
+      code: 'PGRST204',
+      details: null,
+      hint: null,
+    });
+    const source: DataSource = {
+      ...db,
+      itinerary: {
+        ...db.itinerary,
+        listByTrip: async () => {
+          throw failure;
+        },
+      },
+    };
+    const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const actions = parseAIActions(
+      [
+        {
+          type: 'itinerary.add',
+          label: 'Roteiro',
+          items: [{ title: 'Louvre', date: '2026-08-23', type: 'atracao' }],
+        },
+      ],
+      paris,
+    );
+
+    const report = await executeAIActions(actions, { trip: paris, userId: USER_A, source });
+
+    expect(report).toMatchObject({ ok: false, partial: false });
+    expect(report.outcomes[0].summary).toBe('Nenhum item foi adicionado ao roteiro');
+    expect(log).toHaveBeenCalledWith(
+      'AI_ACTION_REPOSITORY_ERROR',
+      expect.objectContaining({
+        type: 'itinerary.add',
+        op: 'itinerary.listByTrip',
+        code: 'PGRST204',
+      }),
+    );
+  });
+
+  it('identifica PGRST204 no INSERT de itinerary_items como `itinerary.create`', async () => {
+    const failure = Object.assign(
+      new Error(
+        "Could not find the 'visibility' column of 'itinerary_items' in the schema cache",
+      ),
+      { code: 'PGRST204', details: null, hint: null },
+    );
+    const source: DataSource = {
+      ...db,
+      itinerary: {
+        ...db.itinerary,
+        create: async () => {
+          throw failure;
+        },
+      },
+    };
+    const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const actions = parseAIActions(
+      [
+        {
+          type: 'itinerary.add',
+          label: 'Roteiro',
+          items: [{ title: 'Louvre', date: '2026-08-23', type: 'atracao' }],
+        },
+      ],
+      paris,
+    );
+
+    const report = await executeAIActions(actions, { trip: paris, userId: USER_A, source });
+
+    expect(report).toMatchObject({ ok: false, partial: false });
+    expect(log).toHaveBeenCalledWith('AI_ACTION_REPOSITORY_ERROR', {
+      type: 'itinerary.add',
+      op: 'itinerary.create',
+      code: 'PGRST204',
+      message: "Could not find the 'visibility' column of 'itinerary_items' in the schema cache",
+      details: null,
+      hint: null,
+    });
+  });
+
+  it('não repete cada INSERT quando a primeira falha prova schema incompatível', async () => {
+    const failure = new BackendCapabilityError('MISSING_VISIBILITY', {
+      code: 'PGRST204',
+      message: "Could not find the 'visibility' column of 'itinerary_items' in the schema cache",
+      details: null,
+      hint: null,
+    });
+    const create = jest.fn(async () => {
+      throw failure;
+    });
+    const source: DataSource = { ...db, itinerary: { ...db.itinerary, create } };
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const actions = parseAIActions(
+      [
+        {
+          type: 'itinerary.add',
+          label: 'Roteiro',
+          items: [
+            { title: 'Louvre', date: '2026-08-23', type: 'atracao' },
+            { title: 'Tuileries', date: '2026-08-23', type: 'atividade' },
+            { title: 'Torre Eiffel', date: '2026-08-23', type: 'atracao' },
+          ],
+        },
+      ],
+      paris,
+    );
+
+    const report = await executeAIActions(actions, { trip: paris, userId: USER_A, source });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(report.outcomes[0].failed).toHaveLength(3);
+    expect(report.outcomes[0].failed[0].backendCapability).toBe('MISSING_VISIBILITY');
+    expect(report.outcomes[0].failed.every((item) => item.reason.includes('privacidade'))).toBe(
+      true,
+    );
+  });
+});
+
+describe('diagnóstico seguro', () => {
+  it('preserva tipo/operação e os quatro campos PostgREST', () => {
+    expect(
+      buildAIActionErrorDiagnostic('itinerary.add', 'itinerary.create', {
+        code: 'PGRST204',
+        message: "Could not find the 'visibility' column of 'itinerary_items' in the schema cache",
+        details: null,
+        hint: null,
+      }),
+    ).toEqual({
+      type: 'itinerary.add',
+      op: 'itinerary.create',
+      code: 'PGRST204',
+      message: "Could not find the 'visibility' column of 'itinerary_items' in the schema cache",
+      details: null,
+      hint: null,
+    });
+  });
+
+  it('lê os campos PostgREST preservados dentro de BackendCapabilityError', () => {
+    expect(
+      buildAIActionErrorDiagnostic('itinerary.add', 'itinerary.create', {
+        code: 'MISSING_VISIBILITY',
+        backend: {
+          code: 'PGRST204',
+          message: "Could not find the 'visibility' column",
+          details: null,
+          hint: null,
+        },
+      }),
+    ).toMatchObject({
+      type: 'itinerary.add',
+      op: 'itinerary.create',
+      code: 'PGRST204',
+      message: "Could not find the 'visibility' column",
+    });
+  });
+
+  it('remove dados pessoais de message/details/hint', () => {
+    const diagnostic = buildAIActionErrorDiagnostic('checklist.add', 'checklist.create', {
+      code: '23505',
+      message: 'Falha para maria@example.com e 550e8400-e29b-41d4-a716-446655440000',
+      details: 'Key (email)=(maria@example.com) already exists. Failing row contains (segredo)',
+      hint: 'Veja https://example.com/reset?token=abc e +55 (11) 99999-9999',
+    });
+
+    expect(JSON.stringify(diagnostic)).not.toMatch(
+      /maria@example|550e8400|segredo|example\.com|99999-9999/,
+    );
+    expect(diagnostic).toMatchObject({
+      type: 'checklist.add',
+      op: 'checklist.create',
+      code: '23505',
+    });
   });
 });
 

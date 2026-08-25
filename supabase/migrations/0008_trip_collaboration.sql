@@ -589,10 +589,10 @@ $$;
 -- de que quem chama participa. É a minimização de PII do §52: o mínimo que faz
 -- a interface funcionar, e nada além.
 --
--- Vale também para ex-membro cujo conteúdo compartilhado ficou na viagem: o
--- `left join` com `trip_members` inclui quem aparece em `created_by` mesmo sem
--- estar mais na lista, para "Adicionado por Maria" não virar "Adicionado por
--- Viajante" no dia em que Maria sai.
+-- Neste ponto da sequência só existem membros, convites e o proprietário. A
+-- 0009 redefine a função depois de criar `created_by`/`paid_by` e acrescenta
+-- os autores históricos de conteúdo compartilhado. A lista ativa continua
+-- vindo de `trip_members`; este RPC é apenas um mapa id → nome.
 -- ----------------------------------------------------------------------------
 create or replace function public.trip_member_profiles(target_trip uuid)
 returns table (user_id uuid, name text)
@@ -613,7 +613,7 @@ as $$
 $$;
 
 comment on function public.trip_member_profiles(uuid) is
-  'Id e nome dos viajantes de uma viagem. Nenhum outro campo de perfil sai daqui.';
+  'Mapa mínimo id → nome para membros e convites. A 0009 acrescenta autores históricos compartilhados.';
 
 -- ----------------------------------------------------------------------------
 -- 9. Quem pode chamar

@@ -2,9 +2,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
-import { AIRateLimitError } from '@/domain/aiRateLimit';
+import { AIRateLimitError, AIRequestInFlightError } from '@/domain/aiRateLimit';
 import type { AIMessage, Trip } from '@/domain/types';
-import { useAIConversation } from '@/hooks/useAI';
+import { resetAIClientRateLimitForTests, useAIConversation } from '@/hooks/useAI';
 
 /**
  * A conversa da IA vista pelo hook: limite de mensagens, "Novo chat"
@@ -128,6 +128,7 @@ const montar = async () => {
 };
 
 beforeEach(() => {
+  resetAIClientRateLimitForTests();
   db.conversations = [];
   db.messages = [];
   db.nextId = 0;
@@ -248,7 +249,29 @@ describe('A. limite de mensagens', () => {
     );
 
     expect(mockAiSend).toHaveBeenCalledTimes(1);
-    expect(resultados.some((r) => r instanceof AIRateLimitError)).toBe(true);
+    expect(resultados.some((r) => r instanceof AIRequestInFlightError)).toBe(true);
+  });
+
+  it('trocar de aba e remontar o hook não zera a janela', async () => {
+    const first = await montar();
+    for (let i = 1; i <= 5; i += 1) {
+      await act(async () => {
+        await first.result.current.send.mutateAsync(`pergunta ${i}`);
+      });
+    }
+    first.unmount();
+    montados.splice(montados.indexOf(first), 1);
+
+    const mountedAgain = await montar();
+    let blocked: unknown;
+    await act(async () => {
+      blocked = await mountedAgain.result.current.send
+        .mutateAsync('sexta depois de remontar')
+        .catch((error: unknown) => error);
+    });
+
+    expect(blocked).toBeInstanceOf(AIRateLimitError);
+    expect(mockAiSend).toHaveBeenCalledTimes(5);
   });
 });
 
@@ -371,6 +394,35 @@ describe('C. a proposta que fica pendente', () => {
     expect(view.result.current.pendingProposal).toBeNull();
   });
 
+  it('remove promessa depois que a validação local descarta a action', async () => {
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    reply.content =
+      'Encontrei algumas opções para amanhã. Preparei a proposta abaixo. ' +
+      'Revise e confirme no aplicativo.';
+    // A Function remota antiga pode entregar isto; sem data, o cliente recusa
+    // o item e portanto não consegue renderizar um card.
+    reply.actions = [
+      {
+        type: 'itinerary.add',
+        label: 'Adicionar ao roteiro',
+        items: [{ title: 'Louvre sem data' }],
+      },
+    ];
+    const view = await montar();
+
+    await act(async () => {
+      await view.result.current.send.mutateAsync('monte um roteiro');
+    });
+
+    const assistant = db.messages.find((message) => message.role === 'assistant');
+    expect(assistant?.content).toBe('Encontrei algumas opções para amanhã.');
+    expect(view.result.current.pendingProposal).toBeNull();
+    expect(warning).toHaveBeenCalledWith('AI_REPLY_PROMISE_STRIPPED', {
+      validActions: 0,
+      strippedPromises: 2,
+    });
+  });
+
   it('aplicada, deixa de estar aberta — e não pode reaplicar', async () => {
     reply.actions = checklistAction;
     const view = await montar();
@@ -420,5 +472,33 @@ describe('C. a proposta que fica pendente', () => {
     await waitFor(() =>
       expect(view.result.current.pendingProposal!.messageId).not.toBe(primeira),
     );
+  });
+
+  it('a segunda resposta também registra actions e pode produzir outro card', async () => {
+    reply.actions = checklistAction;
+    const view = await montar();
+
+    await act(async () => {
+      await view.result.current.send.mutateAsync('primeira proposta');
+    });
+    await waitFor(() => expect(view.result.current.pendingProposal).not.toBeNull());
+    const first = view.result.current.pendingProposal!;
+
+    reply.actions = [
+      {
+        type: 'itinerary.add',
+        label: 'Adicionar roteiro',
+        items: [{ title: 'Louvre', date: '2026-08-23', type: 'atracao' }],
+      },
+    ];
+    await act(async () => {
+      await view.result.current.send.mutateAsync('segunda proposta');
+    });
+
+    await waitFor(() => expect(view.result.current.pendingProposal?.messageId).not.toBe(first.messageId));
+    const second = view.result.current.pendingProposal!;
+    expect(second.actions[0].type).toBe('itinerary.add');
+    expect(view.result.current.actionsFor(first.messageId)).toHaveLength(1);
+    expect(view.result.current.actionsFor(second.messageId)).toHaveLength(1);
   });
 });

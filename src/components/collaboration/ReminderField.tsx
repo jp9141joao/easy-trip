@@ -2,7 +2,7 @@ import { Bell, BellOff } from 'lucide-react-native';
 import { useState } from 'react';
 import { Pressable, View } from 'react-native';
 
-import { AppText, Button, InlineNotice } from '@/components/ui';
+import { AppText, Button, InlineNotice, TextField } from '@/components/ui';
 import {
   MAX_REMINDER_MINUTES,
   REMINDER_OFFSETS,
@@ -45,6 +45,9 @@ export function ReminderField({
 }) {
   const theme = useTheme();
   const [expanded, setExpanded] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customMinutes, setCustomMinutes] = useState('');
+  const [customError, setCustomError] = useState<string>();
 
   // Sem data não há âncora, e um seletor de "quanto tempo antes" sem "antes de
   // quê" é um controle que não pode funcionar. Ele some em vez de dar erro.
@@ -53,6 +56,38 @@ export function ReminderField({
   const isPast = new Date(anchorAt).getTime() <= Date.now();
   const active = Boolean(reminder);
   const currentOffset = reminder ? offsetMinutesBetween(reminder.remindAt, anchorAt) : undefined;
+  const currentIsCustom =
+    currentOffset !== undefined &&
+    !REMINDER_OFFSETS.some((option) => option.minutes === currentOffset);
+
+  const setPreset = (minutes: number) => {
+    setCustomOpen(false);
+    setCustomError(undefined);
+    onSet(minutes);
+  };
+
+  const openCustom = () => {
+    setCustomMinutes(currentIsCustom && currentOffset !== undefined ? String(currentOffset) : '');
+    setCustomError(undefined);
+    setCustomOpen(true);
+  };
+
+  const saveCustom = () => {
+    const minutes = Number(customMinutes.trim());
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_REMINDER_MINUTES) {
+      setCustomError(`Informe de 1 a ${MAX_REMINDER_MINUTES} minutos.`);
+      return;
+    }
+
+    const availableMinutes = Math.floor((new Date(anchorAt).getTime() - Date.now() - 1) / 60_000);
+    if (minutes > availableMinutes) {
+      setCustomError('Esse intervalo colocaria o lembrete no passado.');
+      return;
+    }
+
+    setCustomError(undefined);
+    onSet(minutes);
+  };
 
   return (
     <View style={{ gap: theme.spacing.sm }}>
@@ -99,7 +134,7 @@ export function ReminderField({
               return (
                 <Pressable
                   key={option.minutes}
-                  onPress={() => onSet(option.minutes)}
+                  onPress={() => setPreset(option.minutes)}
                   disabled={pending}
                   accessibilityRole="radio"
                   accessibilityState={{ selected }}
@@ -120,7 +155,55 @@ export function ReminderField({
                 </Pressable>
               );
             })}
+
+            <Pressable
+              onPress={openCustom}
+              disabled={pending}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: currentIsCustom }}
+              accessibilityLabel="Personalizado"
+              style={({ pressed }) => ({
+                paddingHorizontal: theme.spacing.md,
+                paddingVertical: theme.spacing.sm,
+                borderRadius: theme.radius.pill,
+                borderWidth: 1,
+                borderColor: currentIsCustom ? theme.colors.primary : theme.colors.border,
+                backgroundColor: currentIsCustom ? theme.colors.primarySoft : 'transparent',
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <AppText variant="caption" color={currentIsCustom ? 'brand' : 'secondary'}>
+                Personalizado
+              </AppText>
+            </Pressable>
           </View>
+
+          {customOpen ? (
+            <View style={{ gap: theme.spacing.sm }}>
+              <TextField
+                label="Minutos antes"
+                placeholder="Ex.: 120"
+                value={customMinutes}
+                onChangeText={(value) => {
+                  setCustomMinutes(value);
+                  setCustomError(undefined);
+                }}
+                keyboardType="number-pad"
+                error={customError}
+                accessibilityLabel="Intervalo personalizado em minutos"
+              />
+              <Button
+                label="Salvar personalizado"
+                variant="secondary"
+                size="sm"
+                disabled={pending}
+                onPress={saveCustom}
+              />
+              <AppText variant="caption" color="tertiary">
+                Até 7 dias antes, sem escolher um horário que já passou.
+              </AppText>
+            </View>
+          ) : null}
 
           {active ? (
             <Button

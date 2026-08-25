@@ -291,6 +291,13 @@ export interface InsuranceRepository {
  * a impressão de que o cliente escolhe em nome de quem está falando.
  */
 export interface MembershipRepository {
+  /**
+   * Mapa mínimo id → nome usado em autoria/atribuição.
+   *
+   * Pode incluir ex-membros que deixaram conteúdo compartilhado; isso não é a
+   * lista ativa de viajantes, que continua sendo exclusivamente `listMembers`.
+   */
+  memberNames(tripId: string): Promise<Record<string, string>>;
   listMembers(tripId: string): Promise<TripMember[]>;
   /** Só o proprietário enxerga convites pendentes da viagem. */
   listInvites(tripId: string): Promise<TripInvite[]>;

@@ -42,7 +42,43 @@ import { cacheStorage } from './storage';
  */
 const VERSION = 1;
 
-const CACHE_KEY = 'queries:v1';
+const LEGACY_CACHE_KEY = 'queries:v1';
+const CACHE_KEY_PREFIX = 'queries:v1:';
+const ownerOperations = new Map<string, Promise<void>>();
+
+function enqueueOwnerOperation(userId: string, operation: () => Promise<void>): Promise<void> {
+  const previous = ownerOperations.get(userId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  ownerOperations.set(userId, current);
+  void current.then(
+    () => {
+      if (ownerOperations.get(userId) === current) ownerOperations.delete(userId);
+    },
+    () => {
+      if (ownerOperations.get(userId) === current) ownerOperations.delete(userId);
+    },
+  );
+  return current;
+}
+
+/** One physical key per owner prevents A's delayed cleanup deleting B's write. */
+export function persistedQueryStorageKey(userId: string): string {
+  return `${CACHE_KEY_PREFIX}${userId}`;
+}
+
+/**
+ * Synchronous fence for AsyncStorage reads already in flight.
+ *
+ * React effect cleanup happens after the auth render commits; logout clears
+ * the QueryClient before that. This module-level generation closes the small
+ * window in which an old read could otherwise repopulate the just-cleared
+ * cache between those two moments.
+ */
+let hydrationGeneration = 0;
+
+export function invalidateQueryHydrations(): void {
+  hydrationGeneration += 1;
+}
 
 /**
  * Só dado operacional de viagem, e só o que a pessoa precisa sem rede.
@@ -100,7 +136,9 @@ export async function persistQueries(client: QueryClient, userId: string): Promi
   }
 
   const snapshot: Snapshot = { version: VERSION, userId, queries };
-  await cacheStorage.set(CACHE_KEY, snapshot);
+  await enqueueOwnerOperation(userId, async () => {
+    await cacheStorage.set(persistedQueryStorageKey(userId), snapshot);
+  });
 }
 
 /**
@@ -110,33 +148,54 @@ export async function persistQueries(client: QueryClient, userId: string): Promi
  * o formato mudou, quando o conteúdo estava corrompido, ou quando o cache é de
  * outra conta. Nos quatro casos a resposta certa é a mesma: começar vazio.
  */
-export async function hydrateQueries(client: QueryClient, userId: string): Promise<number> {
+export async function hydrateQueries(
+  client: QueryClient,
+  userId: string,
+  canApply: () => boolean = () => true,
+): Promise<number> {
+  const bornAt = hydrationGeneration;
+  const isCurrent = () => bornAt === hydrationGeneration && canApply();
   let snapshot: Snapshot | null = null;
   try {
-    const envelope = await cacheStorage.get<Snapshot>(CACHE_KEY);
+    await ownerOperations.get(userId)?.catch(() => undefined);
+    const envelope = await cacheStorage.get<Snapshot>(persistedQueryStorageKey(userId));
     snapshot = envelope?.value ?? null;
   } catch {
     snapshot = null;
   }
 
-  if (!snapshot || typeof snapshot !== 'object') return 0;
+  // The account/effect may have changed while AsyncStorage was reading. This
+  // check must happen before both cache writes and destructive cleanup: a stale
+  // hydration from A may neither repopulate memory after logout nor delete a
+  // newer snapshot belonging to B.
+  if (!isCurrent()) return 0;
+  if (!snapshot || typeof snapshot !== 'object') {
+    // Previous releases used one unscoped slot. Even though its payload had a
+    // userId, deleting/rewriting that slot could race another account. New
+    // versions never apply it and remove it best-effort.
+    void cacheStorage.remove(LEGACY_CACHE_KEY).catch(() => undefined);
+    return 0;
+  }
   if (snapshot.version !== VERSION) {
-    await cacheStorage.remove(CACHE_KEY);
+    await cacheStorage.remove(persistedQueryStorageKey(userId));
     return 0;
   }
   // O ponto crítico: cache de A jamais aparece para B. Além de `clearPrivateState()`
   // apagar na saída, a reidratação confere o dono — para o caso de a limpeza
   // não ter acontecido (app encerrado à força no meio da saída, por exemplo).
   if (snapshot.userId !== userId) {
-    await cacheStorage.remove(CACHE_KEY);
+    await cacheStorage.remove(persistedQueryStorageKey(userId));
     return 0;
   }
   if (!Array.isArray(snapshot.queries)) {
-    await cacheStorage.remove(CACHE_KEY);
+    await cacheStorage.remove(persistedQueryStorageKey(userId));
     return 0;
   }
 
   let reidratadas = 0;
+  // `setQueryData` is synchronous, so no lifecycle transition can interleave
+  // with the loop after this final gate.
+  if (!isCurrent()) return 0;
   for (const entry of snapshot.queries) {
     if (!entry || !Array.isArray(entry.key) || entry.data === undefined) continue;
     if (!isPersisted(entry.key)) continue; // a allowlist vale na volta também
@@ -147,6 +206,8 @@ export async function hydrateQueries(client: QueryClient, userId: string): Promi
 }
 
 /** Esquece o que está gravado. Chamado junto do resto do estado privado. */
-export async function clearPersistedQueries(): Promise<void> {
-  await cacheStorage.remove(CACHE_KEY);
+export async function clearPersistedQueries(userId: string): Promise<void> {
+  await enqueueOwnerOperation(userId, () =>
+    cacheStorage.remove(persistedQueryStorageKey(userId)),
+  );
 }

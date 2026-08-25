@@ -17,6 +17,8 @@ import { useCallback, useEffect } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { useReminderDelivery, useRevokedTripCleanup } from '@/hooks/useNotifications';
+import { useNotificationRealtime } from '@/hooks/useTripRealtime';
+import { traceAuth } from '@/lib/authTrace';
 import { AppProviders } from '@/providers/AppProviders';
 import { useAuth } from '@/providers/AuthProvider';
 import { useTheme, useThemePreference } from '@/theme';
@@ -131,6 +133,14 @@ function RootNavigator() {
    * Quem perdeu acesso a uma viagem não continua com ela em disco (§59).
    */
   useRevokedTripCleanup();
+
+  // Convites e outros eventos precisam atualizar o sino mesmo quando nenhuma
+  // viagem está aberta. A assinatura é filtrada pelo UID e desmonta no logout.
+  useNotificationRealtime();
+
+  useEffect(() => {
+    traceAuth(`PRIVATE_TREE_VISIBLE:${isAuthenticated}`);
+  }, [isAuthenticated]);
 
   // A preferência de aparência entra na mesma barreira da sessão: enquanto o
   // tema salvo não foi lido do disco, o splash continua cobrindo a tela. É isso

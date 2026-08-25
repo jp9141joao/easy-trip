@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Link, useRouter } from 'expo-router';
 import { Info } from 'lucide-react-native';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,6 +17,7 @@ import {
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
 import { loginSchema, type LoginInput } from '@/domain/schemas';
+import { traceAuth } from '@/lib/authTrace';
 import { config } from '@/lib/config';
 import { useAuth } from '@/providers/AuthProvider';
 import { useConnectivity } from '@/providers/ConnectivityProvider';
@@ -35,6 +36,10 @@ export default function LoginScreen() {
     resolver: zodResolver(loginSchema),
     defaultValues: { email: '', password: '' },
   });
+
+  useEffect(() => {
+    traceAuth('LOGIN_SCREEN_MOUNT');
+  }, []);
 
   const onSubmit = async (values: LoginInput) => {
     setFormError(null);

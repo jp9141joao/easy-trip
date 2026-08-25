@@ -35,7 +35,7 @@ export function QueryPersistence() {
 
     // Repor primeiro, assinar depois: sem isso a própria reidratação dispararia
     // a gravação, regravando o que acabou de ser lido.
-    void hydrateQueries(queryClient, userId).finally(() => {
+    void hydrateQueries(queryClient, userId, () => ativo).finally(() => {
       if (ativo) hidratado = true;
     });
 

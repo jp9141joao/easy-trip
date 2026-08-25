@@ -41,7 +41,11 @@ import { buildReviewGroups, reviewToActions } from '@/domain/aiActionReview';
 import { isApplyConfirmation, type AITripAction } from '@/domain/aiActions';
 import { consultationSchema, type ConsultationInput } from '@/domain/schemas';
 import type { Advisor } from '@/domain/types';
-import { AIRateLimitError, useAIConversation } from '@/hooks/useAI';
+import {
+  AIRateLimitError,
+  AIRequestInFlightError,
+  useAIConversation,
+} from '@/hooks/useAI';
 import { useAITripContext } from '@/hooks/useAITripContext';
 import { AIActionBlockedError, useAIActionRunner } from '@/hooks/useAIActions';
 import { useAdvisors, useConsultations } from '@/hooks/useContent';
@@ -394,7 +398,12 @@ function AITab() {
       } else if (report.partial) {
         toast.warning('Parte da sugestão não pôde ser adicionada. Veja os detalhes.');
       } else {
-        toast.error('Não foi possível adicionar a sugestão.');
+        const backendFailure = report.outcomes
+          .flatMap((outcome) => outcome.failed)
+          .find((failure) => failure.backendCapability);
+        toast.error(
+          backendFailure?.reason ?? 'Não foi possível adicionar a sugestão.',
+        );
       }
     } catch (error) {
       if (error instanceof AIActionBlockedError) {
@@ -433,13 +442,21 @@ function AITab() {
 
   const undoResult = async () => {
     if (!result) return;
-    const { removed, failed } = await runner.undo(result.report);
-    unmarkApplied(actionsFor(result.messageId).map((action) => action.id));
-    setResult(null);
-    if (failed > 0) {
-      toast.warning(`${removed} ${removed === 1 ? 'registro removido' : 'registros removidos'}, ${failed} não.`);
-    } else {
-      toast.success(`${removed} ${removed === 1 ? 'registro removido' : 'registros removidos'}.`);
+    try {
+      const { removed, failed } = await runner.undo(result.report);
+      unmarkApplied(actionsFor(result.messageId).map((action) => action.id));
+      setResult(null);
+      if (failed > 0) {
+        toast.warning(`${removed} ${removed === 1 ? 'registro removido' : 'registros removidos'}, ${failed} não.`);
+      } else {
+        toast.success(`${removed} ${removed === 1 ? 'registro removido' : 'registros removidos'}.`);
+      }
+    } catch (error) {
+      if (error instanceof AIActionBlockedError) {
+        toast.warning(error.message);
+        return;
+      }
+      toast.error('Não foi possível desfazer a sugestão. Tente novamente.');
     }
   };
 
@@ -476,6 +493,12 @@ function AITab() {
     try {
       await send.mutateAsync(prompt);
     } catch (error) {
+      if (error instanceof AIRequestInFlightError) {
+        // Metade duplicada de um toque duplo: a primeira chamada já levou o
+        // mesmo texto. Restaurá-lo aqui faria parecer que ele não foi enviado
+        // e convidaria a uma terceira tentativa.
+        return;
+      }
       if (error instanceof AIRateLimitError) {
         // O texto volta para o campo: a mensagem não saiu, e quem escreveu não
         // deve ter de digitar de novo por causa de um limite nosso.

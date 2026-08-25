@@ -91,32 +91,36 @@ jest.mock('@/hooks/useContent', () => ({
   useConsultations: () => ({ consultations: [], request: { isPending: false } }),
 }));
 
-jest.mock('@/hooks/useAI', () => ({
-  useAIConversation: (trip: Trip | null) => {
-    contextoRecebido.current = trip;
-    return {
-      conversationId: trip ? `conv-${trip.id}` : undefined,
-      // Cada viagem tem a sua thread: sem viagem, não há mensagem nenhuma.
-      messages: trip ? state.messages : [],
-      isLoading: false,
-      kind: 'gemini' as const,
-      send: {
-        isPending: false,
-        mutateAsync: (prompt: string) => mockSend(prompt),
-        reset: jest.fn(),
-      },
-      newChat: { isPending: false, mutateAsync: () => mockNewChat() },
-      pendingProposal: null,
-      dismissProposal: jest.fn(),
-      // Nenhuma resposta desta suíte traz proposta — o que se mede aqui são os
-      // estados da aba, não o fluxo de ações (que tem suíte própria).
-      actionsFor: () => [],
-      appliedActionIds: [] as string[],
-      markApplied: jest.fn(),
-      unmarkApplied: jest.fn(),
-    };
-  },
-}));
+jest.mock('@/hooks/useAI', () => {
+  const rateLimit = jest.requireActual('@/domain/aiRateLimit');
+  return {
+    ...rateLimit,
+    useAIConversation: (trip: Trip | null) => {
+      contextoRecebido.current = trip;
+      return {
+        conversationId: trip ? `conv-${trip.id}` : undefined,
+        // Cada viagem tem a sua thread: sem viagem, não há mensagem nenhuma.
+        messages: trip ? state.messages : [],
+        isLoading: false,
+        kind: 'gemini' as const,
+        send: {
+          isPending: false,
+          mutateAsync: (prompt: string) => mockSend(prompt),
+          reset: jest.fn(),
+        },
+        newChat: { isPending: false, mutateAsync: () => mockNewChat() },
+        pendingProposal: null,
+        dismissProposal: jest.fn(),
+        // Nenhuma resposta desta suíte traz proposta — o que se mede aqui são os
+        // estados da aba, não o fluxo de ações (que tem suíte própria).
+        actionsFor: () => [],
+        appliedActionIds: [] as string[],
+        markApplied: jest.fn(),
+        unmarkApplied: jest.fn(),
+      };
+    },
+  };
+});
 
 /*
  * A aba lê roteiro e checklist da viagem para detectar duplicata antes de

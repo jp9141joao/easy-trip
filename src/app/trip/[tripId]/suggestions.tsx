@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { Clock3, MapPin, Plus, RefreshCw, Sparkles } from 'lucide-react-native';
+import { Clock3, MapPin, Plus, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react-native';
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 
@@ -25,6 +25,7 @@ import {
   MINIMUM_SUGGESTIONS,
   SUGGESTION_CATEGORY_EMOJI,
   SUGGESTION_CATEGORY_LABEL,
+  SuggestionGenerationError,
   canRefreshSuggestions,
   formatDuration,
   type SuggestionCategory,
@@ -44,6 +45,7 @@ import { useItinerary, useItineraryMutations } from '@/hooks/useTripData';
 import { useTripRealtime } from '@/hooks/useTripRealtime';
 import { todayISO } from '@/lib/date';
 import { dataSource } from '@/repositories';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { useTheme } from '@/theme';
 
 /**
@@ -61,12 +63,15 @@ export default function SuggestionsScreen() {
   const router = useRouter();
   const toast = useToast();
 
-  const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
+  const { tripId, trip, isLoading, isError, notFound, errorMessage, refetch } = useTripRoute();
   useTripRealtime(tripId);
 
-  const suggestionsQuery = useSuggestions(tripId);
-  const refresh = useRefreshSuggestions(tripId);
   const permissions = useTripPermissions(tripId);
+  const suggestionsQuery = useSuggestions(tripId, {
+    resolved: permissions.isResolved,
+    canEdit: permissions.canEdit,
+  });
+  const refresh = useRefreshSuggestions(tripId);
   const findDuplicate = useSuggestionDuplicate(tripId);
 
   const [category, setCategory] = useState<SuggestionCategory | null>(null);
@@ -74,8 +79,16 @@ export default function SuggestionsScreen() {
   const [duplicateWarning, setDuplicateWarning] = useState<TripSuggestion | null>(null);
   const [detail, setDetail] = useState<TripSuggestion | null>(null);
 
-  const suggestions = useMemo(() => suggestionsQuery.data ?? [], [suggestionsQuery.data]);
+  const suggestions = useMemo(
+    () =>
+      suggestionsQuery.data ??
+      (suggestionsQuery.error instanceof SuggestionGenerationError
+        ? suggestionsQuery.error.partialSuggestions
+        : []),
+    [suggestionsQuery.data, suggestionsQuery.error],
+  );
   const grouped = useSuggestionsByCategory(suggestions);
+  const generationError = refresh.error ?? suggestionsQuery.error;
 
   const visible = category ? (grouped.get(category) ?? []) : suggestions;
 
@@ -92,7 +105,7 @@ export default function SuggestionsScreen() {
                 message={
                   notFound
                     ? 'Esta viagem pode ter sido excluída.'
-                    : 'Verifique sua conexão e tente novamente.'
+                    : errorMessage
                 }
                 onRetry={notFound ? () => router.replace('/(tabs)/trips') : () => void refetch()}
               />
@@ -152,8 +165,59 @@ export default function SuggestionsScreen() {
             </View>
           ) : null}
 
-          {suggestionsQuery.isLoading ? (
+          {permissions.isLoading ? (
             <SkeletonList count={3} lines={3} />
+          ) : permissions.isError ? (
+            /*
+             * Não dá para saber o que oferecer sem saber o papel — e "não sei"
+             * não é "somente leitura". Antes esta tela devolvia `null` aqui e
+             * na linha abaixo: a pessoa via o cabeçalho, nada embaixo, e
+             * nenhuma explicação (§25 do handoff).
+             */
+            <GlassCard>
+              <ErrorState
+                title={
+                  describeBackendCapability(permissions.error)
+                    ? 'Recurso indisponível neste servidor'
+                    : 'Não foi possível confirmar seu acesso'
+                }
+                message={
+                  describeBackendCapability(permissions.error) ??
+                  'Não conseguimos verificar o seu papel nesta viagem. Verifique sua conexão e tente novamente.'
+                }
+                onRetry={() => void permissions.refetch()}
+              />
+            </GlassCard>
+          ) : permissions.status === 'unavailable' ? (
+            // A lista de viajantes chegou e a sessão não está nela. Pode ser
+            // remoção, saída, ou um convite ainda não aceito — em nenhum dos
+            // casos há sugestões a mostrar, e insistir com "tentar de novo"
+            // prometeria algo que o servidor vai recusar.
+            <GlassCard>
+              <EmptyState
+                icon={TriangleAlert}
+                title="Você não participa desta viagem"
+                message="Seu acesso a esta viagem não está mais ativo. Peça um novo convite a quem organiza."
+              />
+            </GlassCard>
+          ) : suggestionsQuery.isLoading ? (
+            <SkeletonList count={3} lines={3} />
+          ) : suggestionsQuery.isError && suggestions.length === 0 ? (
+            <GlassCard>
+              <ErrorState
+                title={
+                  isRefreshLimited(suggestionsQuery.error)
+                    ? 'Atualizado recentemente'
+                    : 'Sugestões indisponíveis'
+                }
+                message={suggestionFailureMessage(suggestionsQuery.error)}
+                onRetry={
+                  isRefreshLimited(suggestionsQuery.error)
+                    ? undefined
+                    : () => void suggestionsQuery.refetch()
+                }
+              />
+            </GlassCard>
           ) : suggestions.length === 0 ? (
             <GlassCard>
               <EmptyState
@@ -162,7 +226,9 @@ export default function SuggestionsScreen() {
                 message={
                   dataSource.kind === 'local'
                     ? 'O modo demonstração sugere lugares do catálogo embarcado. Este destino ainda não está nele.'
-                    : 'Não foi possível montar sugestões para este destino agora. Tente atualizar em instantes.'
+                    : permissions.role === 'viewer'
+                      ? 'Ainda não há sugestões compartilhadas nesta viagem.'
+                      : 'O catálogo ainda não tem sugestões para este destino.'
                 }
                 actionLabel={permissions.canEdit ? 'Tentar de novo' : undefined}
                 onAction={permissions.canEdit ? () => refresh.mutate() : undefined}
@@ -180,25 +246,49 @@ export default function SuggestionsScreen() {
             ))
           )}
 
-          {suggestions.length > 0 && suggestions.length < MINIMUM_SUGGESTIONS ? (
+          {generationError && suggestions.length > 0 ? (
+            // "Atualizado recentemente" não é falha: é a janela de seis horas
+            // fazendo o que foi desenhada para fazer. Pintá-la de vermelho
+            // ensinaria a pessoa a ignorar o aviso vermelho de verdade.
+            <InlineNotice
+              tone={isRefreshLimited(generationError) ? 'info' : 'error'}
+              icon={isRefreshLimited(generationError) ? RefreshCw : TriangleAlert}
+            >
+              {suggestionFailureMessage(generationError)}
+              {isRefreshLimited(generationError)
+                ? ''
+                : ' As sugestões já carregadas continuam disponíveis.'}
+            </InlineNotice>
+          ) : null}
+
+          {!generationError && suggestions.length > 0 && suggestions.length < MINIMUM_SUGGESTIONS ? (
             <InlineNotice tone="warning" icon={Sparkles}>
               {`Encontramos ${suggestions.length} ${suggestions.length === 1 ? 'sugestão' : 'sugestões'} para este destino. Ainda estamos construindo o catálogo dele.`}
             </InlineNotice>
           ) : null}
 
           {permissions.canEdit && suggestions.length > 0 ? (
-            <Button
-              label={refreshAllowed ? 'Atualizar sugestões' : 'Atualizado recentemente'}
-              icon={RefreshCw}
-              variant="secondary"
-              fullWidth
-              disabled={!refreshAllowed}
-              loading={refresh.isPending}
-              onPress={() => refresh.mutate()}
-            />
+            <>
+              <Button
+                label={refreshAllowed ? 'Atualizar sugestões' : 'Atualizado recentemente'}
+                icon={RefreshCw}
+                variant="secondary"
+                fullWidth
+                disabled={!refreshAllowed}
+                loading={refresh.isPending}
+                onPress={() => refresh.mutate()}
+              />
+              {!refreshAllowed && !generationError ? (
+                // Botão desabilitado sem motivo escrito vira "está quebrado".
+                <AppText variant="caption" color="secondary">
+                  Gerar sugestões tem custo, então a atualização acontece no máximo uma vez a cada
+                  6 horas por viagem.
+                </AppText>
+              ) : null}
+            </>
           ) : null}
 
-          {!permissions.canEdit && !permissions.isLoading ? (
+          {permissions.role === 'viewer' ? (
             <InlineNotice>
               Você tem acesso somente de visualização nesta viagem. As sugestões aparecem aqui, mas
               adicionar ao roteiro é de quem pode editar.
@@ -245,6 +335,18 @@ export default function SuggestionsScreen() {
       />
     </TripScreenShell>
   );
+}
+
+/** A recusa da janela de seis horas — informação, não erro (§23 do handoff). */
+function isRefreshLimited(error: unknown): boolean {
+  return error instanceof SuggestionGenerationError && error.code === 'REFRESH_LIMITED';
+}
+
+function suggestionFailureMessage(error: unknown): string {
+  const capability = describeBackendCapability(error);
+  if (capability) return capability;
+  if (error instanceof SuggestionGenerationError) return error.message;
+  return 'Não foi possível carregar ou atualizar as sugestões. Verifique sua conexão e tente novamente.';
 }
 
 /* --------------------------------- pedaços -------------------------------- */

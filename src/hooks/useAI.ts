@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { parseAIActions, type AITripAction } from '@/domain/aiActions';
+import {
+  enforceAIActionPromiseCoherence,
+  parseAIActions,
+  type AITripAction,
+} from '@/domain/aiActions';
 /*
  * Anti-spam do lado do cliente (§10).
  *
@@ -15,7 +19,11 @@ import { parseAIActions, type AITripAction } from '@/domain/aiActions';
  * A janela é deslizante e guarda só os instantes das mensagens **enviadas** —
  * tentativa recusada não entra, ou insistir esticaria a própria espera.
  */
-import { AI_RATE_LIMIT, AIRateLimitError } from '@/domain/aiRateLimit';
+import {
+  AI_RATE_LIMIT,
+  AIRateLimitError,
+  AIRequestInFlightError,
+} from '@/domain/aiRateLimit';
 import {
   getDaysUntilTrip,
   getRemainingBudget,
@@ -30,6 +38,33 @@ import { queryKeys } from './queryKeys';
 import { useChecklist, useExpenses, useItinerary } from './useTripData';
 import { useTripMembers } from './useCollaboration';
 import { usePlaces } from './useContent';
+
+/**
+ * Janela do cliente por conta, compartilhada entre montagens da aba.
+ *
+ * Guardar isto dentro do hook permitia zerar o limite trocando rapidamente
+ * para "Especialistas" e voltando para "IA de Viagens", porque a aba é
+ * desmontada nessa troca. O Map vive só na memória deste processo (não
+ * persiste identificador nem mensagem) e mantém a janela móvel durante toda a
+ * sessão do aplicativo. O servidor continua sendo a barreira independente.
+ */
+const clientRateLimitHits = new Map<string, number[]>();
+const clientRequestsInFlight = new Set<string>();
+
+function recentClientSends(key: string, now: number): number[] {
+  const recent = (clientRateLimitHits.get(key) ?? []).filter(
+    (stamp) => now - stamp < AI_RATE_LIMIT.windowMs,
+  );
+  if (recent.length > 0) clientRateLimitHits.set(key, recent);
+  else clientRateLimitHits.delete(key);
+  return recent;
+}
+
+/** Somente testes: cada cenário começa com uma sessão de aplicativo nova. */
+export function resetAIClientRateLimitForTests(): void {
+  clientRateLimitHits.clear();
+  clientRequestsInFlight.clear();
+}
 
 /**
  * A conversa da Easy Trip IA para a viagem escolhida (§47).
@@ -88,22 +123,11 @@ export function useAIConversation(trip: Trip | null) {
    */
   const [appliedActionIds, setAppliedActionIds] = useState<string[]>([]);
 
-  /**
-   * Instantes das mensagens efetivamente enviadas nesta sessão.
-   *
-   * `useRef` e não `useState` de propósito: a decisão "cabe mais uma?" precisa
-   * ser tomada com o valor **do momento do toque**, e não com o que o React
-   * renderizou por último. Dois toques no mesmo frame leem o mesmo estado — e
-   * era assim que o toque duplo virava duas chamadas ao Gemini.
-   */
-  const sentAt = useRef<number[]>([]);
-  /** Uma pergunta em voo por vez, mesmo antes de o React repintar. */
-  const inFlight = useRef(false);
+  const rateLimitKey = user?.id ?? 'anonymous';
 
   const recentSends = useCallback((now: number) => {
-    sentAt.current = sentAt.current.filter((t) => now - t < AI_RATE_LIMIT.windowMs);
-    return sentAt.current;
-  }, []);
+    return recentClientSends(rateLimitKey, now);
+  }, [rateLimitKey]);
 
   /** Segundos até caber outra mensagem. Zero quando já cabe. */
   const retryAfterSeconds = useCallback(
@@ -162,12 +186,13 @@ export function useAIConversation(trip: Trip | null) {
        * conversa com uma pergunta sem resposta e sem explicação.
        */
       const now = Date.now();
-      if (inFlight.current) throw new AIRateLimitError(0);
-      if (recentSends(now).length >= AI_RATE_LIMIT.max) {
+      if (clientRequestsInFlight.has(rateLimitKey)) throw new AIRequestInFlightError();
+      const recent = recentSends(now);
+      if (recent.length >= AI_RATE_LIMIT.max) {
         throw new AIRateLimitError(retryAfterSeconds(now));
       }
-      inFlight.current = true;
-      sentAt.current = [...sentAt.current, now];
+      clientRequestsInFlight.add(rateLimitKey);
+      clientRateLimitHits.set(rateLimitKey, [...recent, now]);
       try {
         const history = messagesQuery.data ?? [];
         await dataSource.ai.addMessage({ conversationId, role: 'user', content: prompt });
@@ -197,29 +222,45 @@ export function useAIConversation(trip: Trip | null) {
           accessToken: session?.accessToken,
         });
 
-        const message = await dataSource.ai.addMessage({
-          conversationId,
-          role: 'assistant',
-          content: reply.content,
-        });
-
         /*
-         * É aqui que a proposta ganha dono.
+         * É aqui que a proposta ganha dono **antes** de o texto ser salvo.
          *
          * `reply.actions` é o que chegou pela rede — cru, sem viagem, sem
          * garantia nenhuma. `parseAIActions` valida contra o schema do domínio e
          * carimba `tripId` com a viagem **desta** conversa, que é o `trip` que
          * esta mutation capturou. O modelo nunca teve chance de escolher a
          * viagem: ele não a viu e não tem campo para ela.
+         *
+         * A coerência usa o número **depois** dessa validação. Usar o array cru
+         * permitiria que uma action inválida mantivesse no histórico frases como
+         * "revise e confirme" embora nenhum card pudesse ser renderizado. Isso
+         * também protege o app enquanto a Function remota estiver numa versão
+         * anterior à correção equivalente do servidor.
          */
         const actions = parseAIActions(reply.actions, trip);
+        const coherent = enforceAIActionPromiseCoherence(reply.content, actions.length);
+
+        if (typeof __DEV__ !== 'undefined' && __DEV__ && coherent.stripped > 0) {
+          // Só contagens: texto da conversa e contexto da viagem são privados.
+          console.warn('AI_REPLY_PROMISE_STRIPPED', {
+            validActions: actions.length,
+            strippedPromises: coherent.stripped,
+          });
+        }
+
+        const message = await dataSource.ai.addMessage({
+          conversationId,
+          role: 'assistant',
+          content: coherent.content,
+        });
+
         if (actions.length > 0) {
           setActionsByMessage((current) => ({ ...current, [message.id]: actions }));
         }
 
-        return { ...reply, messageId: message.id, actions };
+        return { ...reply, content: coherent.content, messageId: message.id, actions };
       } finally {
-        inFlight.current = false;
+        clientRequestsInFlight.delete(rateLimitKey);
       }
     },
     onSettled: () => {
@@ -344,4 +385,4 @@ export function useAIConversation(trip: Trip | null) {
   };
 }
 
-export { AI_RATE_LIMIT, AIRateLimitError };
+export { AI_RATE_LIMIT, AIRateLimitError, AIRequestInFlightError };

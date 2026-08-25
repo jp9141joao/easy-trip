@@ -56,10 +56,18 @@ export function storedFileExists(uri: string): boolean {
   }
 }
 
-/** Removes everything this app wrote — used when deleting the account (§94). */
-export function purgeAllFiles(): void {
+/**
+ * Apaga uma pasta que este aplicativo escreveu.
+ *
+ * Substitui o antigo `purgeAllFiles`, que removia a raiz `easytrip` inteira. No
+ * modo local o arquivo **é** o dado — não há cópia remota — e a raiz guarda os
+ * arquivos de TODAS as contas do aparelho, mais as imagens editoriais. Apagá-la
+ * na saída de uma conta destruía o diário de outra, e apagava arquivos cujos
+ * registros continuavam no banco local, deixando cada anexo quebrado.
+ */
+export function deleteStoredFolder(segments: string[]): void {
   try {
-    const dir = new Directory(Paths.document, ROOT);
+    const dir = new Directory(Paths.document, ROOT, ...segments);
     if (dir.exists) dir.delete();
   } catch {
     // Ignore.

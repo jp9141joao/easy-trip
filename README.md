@@ -99,12 +99,19 @@ Somente `EXPO_PUBLIC_*` chega ao bundle. Veja `.env.example`.
 | `EXPO_PUBLIC_SUPABASE_ANON_KEY` | não | Chave anônima. É pública por design; a autorização real é feita por RLS. |
 | `EXPO_PUBLIC_BFF_URL` | não | URL das Edge Functions. Vazio ⇒ assistente em modo local rotulado. |
 
-**Nunca** no aplicativo: `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY` ou
-qualquer segredo. Eles vivem apenas no servidor:
+**Nunca** no aplicativo: `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
+`TRIP_DAILY_BRIEFING_CRON_SECRET` ou qualquer segredo. Eles vivem apenas no
+servidor:
 
 ```bash
 supabase secrets set GEMINI_API_KEY=...
+supabase secrets set TRIP_DAILY_BRIEFING_CRON_SECRET=...
 ```
+
+`TRIP_DAILY_BRIEFING_CRON_SECRET` deve ser um valor aleatório exclusivo. A
+chamada agendada de `trip-daily-briefing` envia esse valor no header
+`x-easy-trip-cron-secret` e a service role no `Authorization`; a Function exige
+os dois. O exemplo completo de `cron.schedule` fica no cabeçalho da Function.
 
 Há um teste de segurança que verifica isso — veja [Testes](#testes).
 
@@ -137,8 +144,10 @@ node scripts/seed-content-assets.mjs
 
 # 3. BFF
 supabase secrets set GEMINI_API_KEY=...
+supabase secrets set TRIP_DAILY_BRIEFING_CRON_SECRET=...
 supabase functions deploy ai-chat
 supabase functions deploy delete-account
+supabase functions deploy trip-daily-briefing
 ```
 
 Pontos importantes do schema:

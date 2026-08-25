@@ -33,17 +33,24 @@ import type { InvitableRole, TripRole } from '@/domain/collaboration';
 import { parseReservationDetails, type ReservationType } from '@/domain/reservations';
 import {
   MINIMUM_SUGGESTIONS,
+  canRefreshSuggestions,
   findSimilar,
-  generatedSuggestionListSchema,
   normalizeGeneratedSuggestion,
+  partialSuggestionListSchema,
+  type GeneratedSuggestion,
+  SuggestionGenerationError,
   type SuggestionCategory,
 } from '@/domain/suggestions';
 import { DEFAULT_VISIBILITY, parseVisibility } from '@/domain/visibility';
 import { config } from '@/lib/config';
 import { nowISO } from '@/lib/date';
-import { postJson } from '@/services/http';
+import { postJson, ServiceError } from '@/services/http';
 import { deleteMirror } from '@/lib/fileMirror';
 import { OrphanFileError, removeObjects } from './fileLifecycle';
+import {
+  throwBackendError,
+  toBackendCapabilityError,
+} from '../backendCapabilities';
 import type {
   MembershipRepository,
   NotificationRepository,
@@ -152,7 +159,7 @@ const toSuggestion = (row: Row): TripSuggestion => ({
 /* ------------------------------- membership ------------------------------- */
 
 export function createMembershipRepository(deps: CollaborationDeps): MembershipRepository {
-  const { db, unwrapList } = deps;
+  const { db } = deps;
 
   /**
    * Id → nome, e nada mais. Vem da função `trip_member_profiles`, que devolve
@@ -162,7 +169,13 @@ export function createMembershipRepository(deps: CollaborationDeps): MembershipR
    */
   async function memberNames(tripId: string): Promise<Record<string, string>> {
     const { data, error } = await db().rpc('trip_member_profiles', { target_trip: tripId });
-    if (error) return {};
+    if (error) {
+      throwBackendError(
+        error,
+        'MISSING_TRIP_MEMBERS',
+        'Não foi possível carregar os nomes dos viajantes.',
+      );
+    }
     return Object.fromEntries(
       ((data ?? []) as Row[]).map((row) => [row.user_id, row.name as string]),
     );
@@ -170,17 +183,30 @@ export function createMembershipRepository(deps: CollaborationDeps): MembershipR
 
   async function callRpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
     const { data, error } = await db().rpc(fn, args);
-    if (error) throw rpcError(error);
+    if (error) {
+      const capabilityError = toBackendCapabilityError(error, 'MISSING_TRIP_MEMBERS');
+      if (capabilityError) throwBackendError(error, 'MISSING_TRIP_MEMBERS');
+      throw rpcError(error);
+    }
     return data as T;
   }
 
   return {
+    memberNames,
+
     async listMembers(tripId) {
       const [names, result] = await Promise.all([
         memberNames(tripId),
         db().from('trip_members').select('*').eq('trip_id', tripId),
       ]);
-      const rows = unwrapList<Row>(result);
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_TRIP_MEMBERS',
+          'Não foi possível carregar os viajantes.',
+        );
+      }
+      const rows = (result.data ?? []) as Row[];
       // Proprietário primeiro, depois por nome: a lista sempre abre dizendo de
       // quem é a viagem.
       return rows
@@ -202,7 +228,14 @@ export function createMembershipRepository(deps: CollaborationDeps): MembershipR
           .eq('status', 'pending')
           .order('created_at', { ascending: false }),
       ]);
-      return unwrapList<Row>(result).map((row) => toInvite(row, names));
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_TRIP_MEMBERS',
+          'Não foi possível carregar os convites.',
+        );
+      }
+      return ((result.data ?? []) as Row[]).map((row) => toInvite(row, names));
     },
 
     async listPendingInvitesForUser(userId) {
@@ -212,7 +245,14 @@ export function createMembershipRepository(deps: CollaborationDeps): MembershipR
         .eq('invited_user_id', userId)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
-      return unwrapList<Row>(result).map((row) => toInvite(row, {}));
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_TRIP_MEMBERS',
+          'Não foi possível carregar os convites recebidos.',
+        );
+      }
+      return ((result.data ?? []) as Row[]).map((row) => toInvite(row, {}));
     },
 
     async invite(tripId, email, role) {
@@ -253,7 +293,13 @@ export function createMembershipRepository(deps: CollaborationDeps): MembershipR
         .eq('trip_id', tripId)
         .eq('user_id', userId)
         .maybeSingle();
-      if (result.error) return null;
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_TRIP_MEMBERS',
+          'Não foi possível confirmar a permissão nesta viagem.',
+        );
+      }
       return (result.data?.role as TripRole | undefined) ?? null;
     },
   };
@@ -262,7 +308,7 @@ export function createMembershipRepository(deps: CollaborationDeps): MembershipR
 /* ------------------------------ notifications ----------------------------- */
 
 export function createNotificationRepository(deps: CollaborationDeps): NotificationRepository {
-  const { db, unwrapList } = deps;
+  const { db } = deps;
 
   return {
     async list(userId) {
@@ -272,7 +318,14 @@ export function createNotificationRepository(deps: CollaborationDeps): Notificat
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(100);
-      return unwrapList<Row>(result).map(toNotification);
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_NOTIFICATIONS',
+          'Não foi possível carregar as notificações.',
+        );
+      }
+      return ((result.data ?? []) as Row[]).map(toNotification);
     },
 
     async markRead(id) {
@@ -281,7 +334,9 @@ export function createNotificationRepository(deps: CollaborationDeps): Notificat
         .update({ read_at: nowISO() })
         .eq('id', id)
         .is('read_at', null);
-      if (error) throw new Error(error.message);
+      if (error) {
+        throwBackendError(error, 'MISSING_NOTIFICATIONS', 'Não foi possível marcar a notificação.');
+      }
     },
 
     async markAllRead(userId) {
@@ -290,12 +345,20 @@ export function createNotificationRepository(deps: CollaborationDeps): Notificat
         .update({ read_at: nowISO() })
         .eq('user_id', userId)
         .is('read_at', null);
-      if (error) throw new Error(error.message);
+      if (error) {
+        throwBackendError(
+          error,
+          'MISSING_NOTIFICATIONS',
+          'Não foi possível marcar as notificações.',
+        );
+      }
     },
 
     async remove(id) {
       const { error } = await db().from('notifications').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      if (error) {
+        throwBackendError(error, 'MISSING_NOTIFICATIONS', 'Não foi possível excluir a notificação.');
+      }
     },
 
     /**
@@ -305,7 +368,13 @@ export function createNotificationRepository(deps: CollaborationDeps): Notificat
      */
     async deliverDueReminders() {
       const { data, error } = await db().rpc('deliver_due_reminders');
-      if (error) return 0;
+      if (error) {
+        throwBackendError(
+          error,
+          'MISSING_NOTIFICATIONS',
+          'Não foi possível entregar os lembretes pendentes.',
+        );
+      }
       return typeof data === 'number' ? data : 0;
     },
   };
@@ -314,7 +383,7 @@ export function createNotificationRepository(deps: CollaborationDeps): Notificat
 /* -------------------------------- reminders ------------------------------- */
 
 export function createReminderRepository(deps: CollaborationDeps): ReminderRepository {
-  const { db, unwrap, unwrapList, prune } = deps;
+  const { db, prune } = deps;
 
   return {
     async listByTrip(tripId, userId) {
@@ -323,7 +392,14 @@ export function createReminderRepository(deps: CollaborationDeps): ReminderRepos
         .select('*')
         .eq('trip_id', tripId)
         .eq('user_id', userId);
-      return unwrapList<Row>(result).map(toReminder);
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_NOTIFICATIONS',
+          'Não foi possível carregar os lembretes.',
+        );
+      }
+      return ((result.data ?? []) as Row[]).map(toReminder);
     },
 
     async upsert(input) {
@@ -347,12 +423,21 @@ export function createReminderRepository(deps: CollaborationDeps): ReminderRepos
         )
         .select()
         .single();
-      return toReminder(unwrap<Row>(result));
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_NOTIFICATIONS',
+          'Não foi possível salvar o lembrete.',
+        );
+      }
+      return toReminder(result.data as Row);
     },
 
     async remove(id) {
       const { error } = await db().from('reminders').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      if (error) {
+        throwBackendError(error, 'MISSING_NOTIFICATIONS', 'Não foi possível excluir o lembrete.');
+      }
     },
 
     async removeForEntity(userId, entityId, anchor) {
@@ -362,7 +447,9 @@ export function createReminderRepository(deps: CollaborationDeps): ReminderRepos
         .eq('user_id', userId)
         .eq('entity_id', entityId)
         .eq('anchor', anchor);
-      if (error) throw new Error(error.message);
+      if (error) {
+        throwBackendError(error, 'MISSING_NOTIFICATIONS', 'Não foi possível excluir o lembrete.');
+      }
     },
   };
 }
@@ -372,7 +459,7 @@ export function createReminderRepository(deps: CollaborationDeps): ReminderRepos
 export function createTravelReservationRepository(
   deps: CollaborationDeps,
 ): TravelReservationRepository {
-  const { db, unwrap, unwrapList, prune, openableUrl, uploadAttachment, attachmentsBucket } = deps;
+  const { db, prune, openableUrl, uploadAttachment, attachmentsBucket } = deps;
 
   /**
    * A linha vira `Reservation`. `reference` é o localizador — não há coluna
@@ -434,10 +521,24 @@ export function createTravelReservationRepository(
     async listByTrip(tripId) {
       const result = await db()
         .from('tickets')
-        .select('*')
+        // `tickets` já existia na 0001. Um `select('*')` contra o backend
+        // legado portanto dava 200 e deixava tipos antigos (`voo`,
+        // `hospedagem`) chegarem ao domínio novo como se 0011 estivesse
+        // aplicada. Pedir explicitamente o contrato 0009/0011 transforma essa
+        // meia-compatibilidade em um erro de capability verificável.
+        .select(
+          'id,trip_id,user_id,type,title,provider,reference,start_date_time,end_date_time,origin,destination,file_path,mime_type,notes,created_at,visibility,created_by,details,status,address,updated_at,legacy_type',
+        )
         .eq('trip_id', tripId)
         .order('start_date_time', { ascending: true, nullsFirst: false });
-      return Promise.all(unwrapList<Row>(result).map(toReservation));
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_RESERVATIONS_SCHEMA',
+          'Não foi possível carregar as reservas.',
+        );
+      }
+      return Promise.all(((result.data ?? []) as Row[]).map(toReservation));
     },
 
     async create(input) {
@@ -451,12 +552,26 @@ export function createTravelReservationRepository(
         )
         .select()
         .single();
-      return toReservation(unwrap<Row>(result));
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_RESERVATIONS_SCHEMA',
+          'Não foi possível criar a reserva.',
+        );
+      }
+      return toReservation(result.data as Row);
     },
 
     async update(id, patch) {
       const result = await db().from('tickets').update(toRow(patch)).eq('id', id).select().single();
-      return toReservation(unwrap<Row>(result));
+      if (result.error) {
+        throwBackendError(
+          result.error,
+          'MISSING_RESERVATIONS_SCHEMA',
+          'Não foi possível atualizar a reserva.',
+        );
+      }
+      return toReservation(result.data as Row);
     },
 
     /**
@@ -489,6 +604,14 @@ export function createTravelReservationRepository(
         .eq('id', id)
         .maybeSingle();
 
+      if (existing.error) {
+        throwBackendError(
+          existing.error,
+          'MISSING_RESERVATIONS_SCHEMA',
+          'Não foi possível carregar a reserva para exclusão.',
+        );
+      }
+
       const row = existing.data as Row | null;
       const path: string | undefined = row?.file_path ?? undefined;
       const viewer = (await db().auth.getSession()).data.session?.user.id ?? null;
@@ -503,7 +626,13 @@ export function createTravelReservationRepository(
       }
 
       const { error } = await db().from('tickets').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      if (error) {
+        throwBackendError(
+          error,
+          'MISSING_RESERVATIONS_SCHEMA',
+          'Não foi possível excluir a reserva.',
+        );
+      }
     },
 
     uploadDocument: uploadAttachment,
@@ -526,7 +655,7 @@ export function createSuggestionRepository(
   getTrip: (tripId: string) => Promise<SuggestionTripInfo | null>,
   getAccessToken: () => Promise<string | undefined>,
 ): SuggestionRepository {
-  const { db, unwrapList } = deps;
+  const { db } = deps;
 
   async function readAll(tripId: string): Promise<TripSuggestion[]> {
     const result = await db()
@@ -534,7 +663,14 @@ export function createSuggestionRepository(
       .select('*')
       .eq('trip_id', tripId)
       .order('created_at', { ascending: true });
-    return unwrapList<Row>(result).map(toSuggestion);
+    if (result.error) {
+      throwBackendError(
+        result.error,
+        'MISSING_SUGGESTIONS_SCHEMA',
+        'Não foi possível carregar as sugestões.',
+      );
+    }
+    return ((result.data ?? []) as Row[]).map(toSuggestion);
   }
 
   /**
@@ -554,7 +690,15 @@ export function createSuggestionRepository(
       .select('*')
       .ilike('city', trip.destinationCity)
       .limit(12);
-    const places = unwrapList<Row>(result);
+    if (result.error) {
+      throw new SuggestionGenerationError(
+        'CATALOG_UNAVAILABLE',
+        'Não foi possível consultar o catálogo de lugares.',
+        existing,
+        result.error,
+      );
+    }
+    const places = (result.data ?? []) as Row[];
 
     const rows = places
       .filter((place) => !findSimilar({ title: place.name, latitude: place.latitude, longitude: place.longitude }, existing))
@@ -575,12 +719,24 @@ export function createSuggestionRepository(
     if (rows.length === 0) return 0;
 
     // `ignoreDuplicates` porque outro membro pode ter aberto a tela ao mesmo
-    // tempo: o índice único de título por viagem é quem arbitra, e a segunda
-    // inserção não deve virar erro na tela de quem chegou depois.
+    // tempo. `title_key` é a coluna gerada por `lower(title)` na 0012: além de
+    // manter a comparação case-insensitive, ela fornece ao PostgREST um alvo
+    // de conflito endereçável. Sem `onConflict`, o upsert HTTP usa a PK e uma
+    // colisão no índice de título volta como 23505.
     const { error } = await db()
       .from('trip_suggestions')
-      .upsert(rows, { onConflict: 'trip_id,title', ignoreDuplicates: true });
-    if (error) return 0;
+      .upsert(rows, { onConflict: 'trip_id,title_key', ignoreDuplicates: true });
+    if (error) {
+      if (toBackendCapabilityError(error, 'MISSING_SUGGESTIONS_SCHEMA')) {
+        throwBackendError(error, 'MISSING_SUGGESTIONS_SCHEMA');
+      }
+      throw new SuggestionGenerationError(
+        'PERSISTENCE_FAILED',
+        'Não foi possível salvar as sugestões do catálogo.',
+        existing,
+        error,
+      );
+    }
     return rows.length;
   }
 
@@ -595,8 +751,15 @@ export function createSuggestionRepository(
   async function seedFromAi(
     trip: SuggestionTripInfo,
     existing: TripSuggestion[],
+    minimumNeeded: number,
   ): Promise<number> {
-    if (!config.hasBff) return 0;
+    if (!config.hasBff) {
+      throw new SuggestionGenerationError(
+        'AI_UNAVAILABLE',
+        'O serviço de sugestões não está configurado.',
+        existing,
+      );
+    }
 
     let payload: { suggestions?: unknown };
     try {
@@ -610,20 +773,119 @@ export function createSuggestionRepository(
           startDate: trip.startDate,
           endDate: trip.endDate,
           existingTitles: existing.map((s) => s.title),
+          // Quantas ainda faltam para o total mínimo da viagem. O servidor não
+          // tem como saber — o catálogo é lido daqui (§22 do handoff).
+          minimumNeeded,
         },
         { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} },
       );
-    } catch {
-      // A tela já sabe lidar com "menos que o mínimo": ela mostra o que há e
-      // explica. Melhor do que um erro vermelho por cima de sugestões que
-      // vieram do catálogo e estão perfeitamente válidas.
-      return 0;
+    } catch (error) {
+      if (error instanceof ServiceError && error.kind === 'http') {
+        if (error.status === 401 || error.status === 403) {
+          throw new SuggestionGenerationError(
+            'PERMISSION_DENIED',
+            'Sua permissão atual não permite gerar sugestões para esta viagem.',
+            existing,
+            error,
+          );
+        }
+        if (error.status === 429) {
+          throw new SuggestionGenerationError(
+            'REFRESH_LIMITED',
+            'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
+            existing,
+            error,
+          );
+        }
+        /*
+         * 422: gerou, mas não o bastante.
+         *
+         * O que veio é válido e é aproveitado — gravar é melhor do que
+         * descartar, porque a próxima janela só abre em seis horas. Depois de
+         * gravar, o erro sobe assim mesmo: a lista continua abaixo do mínimo e
+         * dizer "pronto" seria mentir (§21 do handoff).
+         */
+        if (error.status === 422) {
+          const salvas = await persistGenerated(trip, existing, error.payload);
+          throw new SuggestionGenerationError(
+            'INCOMPLETE_GENERATION',
+            salvas > 0
+              ? 'Conseguimos apenas algumas sugestões para este destino. Tente de novo mais tarde.'
+              : 'Não encontramos sugestões suficientes para este destino agora.',
+            existing,
+            error,
+          );
+        }
+        if (error.status === 404) {
+          throw new SuggestionGenerationError(
+            'EDGE_FUNCTION_UNAVAILABLE',
+            'O serviço de sugestões não está publicado ou não reconheceu esta viagem.',
+            existing,
+            error,
+          );
+        }
+        if (error.status === 502) {
+          throw new SuggestionGenerationError(
+            'AI_PROVIDER_FAILED',
+            'O Gemini não conseguiu gerar sugestões agora.',
+            existing,
+            error,
+          );
+        }
+        if (error.status === 503) {
+          throw new SuggestionGenerationError(
+            'AI_UNAVAILABLE',
+            'A geração por IA não está configurada neste servidor.',
+            existing,
+            error,
+          );
+        }
+      }
+      throw new SuggestionGenerationError(
+        'AI_UNAVAILABLE',
+        'Não foi possível alcançar o serviço de sugestões.',
+        existing,
+        error,
+      );
     }
 
-    const parsed = generatedSuggestionListSchema.safeParse(payload);
-    if (!parsed.success) return 0;
+    /*
+     * A lista vazia é aceita aqui, e a distinção importa.
+     *
+     * "Nenhuma sugestão nova" é um resultado possível e honesto de um refresh
+     * numa viagem que já está completa — o modelo não repete o que já existe. O
+     * que NÃO é aceitável é um corpo que não é a resposta acordada, e esse
+     * continua virando `INVALID_AI_RESPONSE`.
+     *
+     * Quem decide se o total ficou abaixo do mínimo é `ensure`, depois de
+     * gravar: é lá que catálogo e IA são somados (§22 do handoff).
+     */
+    const parsed = partialSuggestionListSchema.safeParse(payload);
+    if (!parsed.success) {
+      throw new SuggestionGenerationError(
+        'INVALID_AI_RESPONSE',
+        'O serviço respondeu sem sugestões válidas.',
+        existing,
+        parsed.error,
+      );
+    }
 
-    const rows = parsed.data.suggestions
+    return writeGenerated(trip, existing, parsed.data.suggestions);
+  }
+
+  /**
+   * Grava o que a IA produziu, sem repetir o que já existe.
+   *
+   * Separado de `seedFromAi` porque a recusa parcial (422) também traz
+   * sugestões legítimas, e elas precisam do mesmo caminho de deduplicação e
+   * gravação — não de uma segunda implementação que possa divergir dele.
+   */
+  async function writeGenerated(
+    trip: SuggestionTripInfo,
+    existing: TripSuggestion[],
+    generated: readonly GeneratedSuggestion[],
+  ): Promise<number> {
+    const rows = generated
       .map(normalizeGeneratedSuggestion)
       .filter((suggestion) => !findSimilar(suggestion, existing))
       .map((suggestion) => ({
@@ -644,8 +906,42 @@ export function createSuggestionRepository(
 
     const { error } = await db()
       .from('trip_suggestions')
-      .upsert(rows, { onConflict: 'trip_id,title', ignoreDuplicates: true });
-    return error ? 0 : rows.length;
+      .upsert(rows, { onConflict: 'trip_id,title_key', ignoreDuplicates: true });
+    if (error) {
+      if (toBackendCapabilityError(error, 'MISSING_SUGGESTIONS_SCHEMA')) {
+        throwBackendError(error, 'MISSING_SUGGESTIONS_SCHEMA');
+      }
+      throw new SuggestionGenerationError(
+        'PERSISTENCE_FAILED',
+        'Não foi possível salvar as sugestões geradas.',
+        existing,
+        error,
+      );
+    }
+    return rows.length;
+  }
+
+  /**
+   * O parcial que acompanha a recusa 422.
+   *
+   * Tolerante de propósito: um corpo de erro sem sugestões utilizáveis não vira
+   * um segundo erro. O que importa dizer a quem chamou já é "não completou", e
+   * isso quem diz é `seedFromAi` logo depois desta gravação.
+   */
+  async function persistGenerated(
+    trip: SuggestionTripInfo,
+    existing: TripSuggestion[],
+    payload: unknown,
+  ): Promise<number> {
+    const parsed = partialSuggestionListSchema.safeParse(payload);
+    if (!parsed.success || parsed.data.suggestions.length === 0) return 0;
+    try {
+      return await writeGenerated(trip, existing, parsed.data.suggestions);
+    } catch {
+      // Falhar ao gravar o parcial não pode mascarar o motivo real, que é a
+      // geração incompleta. O erro certo sobe logo em seguida.
+      return 0;
+    }
   }
 
   return {
@@ -656,29 +952,102 @@ export function createSuggestionRepository(
       if (!options?.force && existing.length >= MINIMUM_SUGGESTIONS) return existing;
 
       const trip = await getTrip(tripId);
-      if (!trip) return existing;
+      if (!trip) {
+        throw new SuggestionGenerationError(
+          'PERSISTENCE_FAILED',
+          'Não foi possível carregar a viagem para montar sugestões.',
+          existing,
+        );
+      }
+
+      /*
+       * "Atualizar sugestões" dentro da janela de seis horas é uma recusa, não
+       * um sucesso silencioso.
+       *
+       * Antes, o pedido caía fora do `if` de geração e a função devolvia a
+       * lista inalterada: a tela não tinha como distinguir "atualizei e nada
+       * mudou" de "nem tentei". Agora o motivo é o retorno — o mesmo
+       * `REFRESH_LIMITED` que a Function devolve quando o compare-and-set
+       * recusa o claim (§23 do handoff).
+       *
+       * Vem antes do catálogo de propósito: `force` é pedido de atualização, e
+       * dentro da janela não há atualização nenhuma a fazer.
+       */
+      if (options?.force && !canRefreshSuggestions(trip.suggestionsRefreshedAt)) {
+        throw new SuggestionGenerationError(
+          'REFRESH_LIMITED',
+          'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
+          existing,
+        );
+      }
 
       const afterCatalog = (await seedFromCatalog(trip, existing)) > 0 ? await readAll(tripId) : existing;
 
-      if (afterCatalog.length < MINIMUM_SUGGESTIONS || options?.force) {
-        await seedFromAi(trip, afterCatalog);
+      /*
+       * O mínimo é do TOTAL, e o catálogo conta (§22 do handoff).
+       *
+       * Catálogo com 2 → a IA precisa de 1, e uma única sugestão válida fecha
+       * a viagem em 3, com sucesso. Catálogo com 0 → precisa de 3, e duas não
+       * bastam. É esta conta que viaja para a Function em `minimumNeeded`.
+       */
+      const faltam = Math.max(0, MINIMUM_SUGGESTIONS - afterCatalog.length);
+
+      /*
+       * `staleTime` só dura enquanto o cache vive. A marca d'água vem do
+       * Postgres e continua valendo depois de cold start, troca de aparelho e
+       * chamada direta ao repositório. Sem esta condição, uma viagem com menos
+       * de três resultados chamaria o Gemini a cada abertura do aplicativo.
+       *
+       * A Edge Function repete a barreira com um compare-and-set atômico antes
+       * do provedor. Esta checagem economiza a ida à Function; não é a defesa
+       * de segurança/custo contra um cliente modificado.
+       */
+      if (
+        (faltam > 0 || options?.force) &&
+        canRefreshSuggestions(trip.suggestionsRefreshedAt)
+      ) {
+        await seedFromAi(trip, afterCatalog, faltam);
       }
 
-      // A marca d'água é escrita mesmo quando nada novo entrou: ela responde
-      // "quando tentamos pela última vez", e é isso que limita o botão
-      // "Atualizar sugestões" (§43). Se só fosse escrita em caso de sucesso,
-      // uma viagem sem catálogo e sem BFF geraria uma chamada por toque.
-      await db()
-        .from('trips')
-        .update({ suggestions_refreshed_at: nowISO() })
-        .eq('id', tripId);
+      // Não escrevemos `suggestions_refreshed_at` daqui. Owner/editor podem
+      // gerar, mas só owner pode editar a viagem; uma escrita cliente-side
+      // tornaria o editor inconsistente e deixaria uma corrida entre aparelhos.
+      // `claim_trip_suggestion_refresh` é chamado pela Function com o JWT do
+      // usuário e registra a janela atomicamente antes do Gemini.
 
-      return readAll(tripId);
+      const final = await readAll(tripId);
+
+      /*
+       * Última conferência, do lado do cliente.
+       *
+       * A Function já recusa a geração insuficiente com 422, mas ela só
+       * enxerga o que ela mesma gerou. Aqui se vê o total real depois de
+       * gravar — inclusive quando a deduplicação descartou uma sugestão que o
+       * servidor considerou válida. Devolver esta lista como sucesso faria a
+       * tela dizer "pronto" abaixo do mínimo.
+       */
+      if (faltam > 0 && final.length < MINIMUM_SUGGESTIONS) {
+        throw new SuggestionGenerationError(
+          'INCOMPLETE_GENERATION',
+          final.length > afterCatalog.length
+            ? 'Conseguimos apenas algumas sugestões para este destino. Tente de novo mais tarde.'
+            : 'Ainda não encontramos sugestões suficientes para este destino.',
+          final,
+        );
+      }
+
+      return final;
     },
 
     async remove(id) {
       const { error } = await db().from('trip_suggestions').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      if (error) {
+        throwBackendError(
+          error,
+          'MISSING_SUGGESTIONS_SCHEMA',
+          'Não foi possível remover a sugestão.',
+        );
+      }
     },
   };
 }

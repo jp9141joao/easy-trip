@@ -1,7 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClient } from '@tanstack/react-query';
 
-import { readMirror, writeMirrorFromBytes, writeMirrorFromFile } from '@/lib/fileMirror';
+import {
+  readMirror,
+  setMirrorViewer,
+  writeMirrorFromBytes,
+  writeMirrorFromFile,
+} from '@/lib/fileMirror';
 import { hydrateQueries, persistQueries } from '@/lib/queryPersistence';
 import { queryKeys } from '@/hooks/queryKeys';
 
@@ -70,11 +75,18 @@ let client: QueryClient;
 beforeEach(async () => {
   await AsyncStorage.clear();
   resetFs();
+  // O espelho é namespaced pela conta que está olhando. Todo cenário abaixo
+  // acontece dentro da sessão de UID, salvo onde o teste troca de conta.
+  setMirrorViewer(null);
+  setMirrorViewer(UID);
   rede = new Rede();
   client = novoCliente();
 });
 
-afterEach(() => client.clear());
+afterEach(() => {
+  client.clear();
+  setMirrorViewer(null);
+});
 
 /** Fecha e reabre o aplicativo: cliente novo, disco intacto. */
 async function reabrir(userId = UID) {
@@ -178,10 +190,19 @@ describe('isolamento entre contas no aparelho', () => {
     // B entra neste mesmo aparelho.
     expect(await reabrir(OUTRO)).toBe(0);
     expect(client.getQueryData(queryKeys.tripReservations(TRIP))).toBeUndefined();
+    setMirrorViewer(OUTRO);
 
-    // O arquivo de A continua no disco até a saída de A o expurgar — mas B não
-    // tem como chegar nele: nenhum registro de B cita o caminho de A, e o
-    // caminho começa com o UID de A.
-    expect(CAMINHO.startsWith(`${OUTRO}/`)).toBe(false);
+    /*
+     * O arquivo de A continua no disco até a saída de A o expurgar — mas B não
+     * o alcança. Antes, o argumento era o caminho remoto começar com o UID de
+     * A; ele não bastava, porque um arquivo COMPARTILHADO tem caminho de A e é
+     * legitimamente aberto por B. Agora o espelho é endereçado pela conta que
+     * está olhando, e a de B está vazia.
+     */
+    expect(readMirror('attachments', CAMINHO)).toBeUndefined();
+
+    // E ao voltar para A a cópia continua lá: B entrar não apagou nada de A.
+    setMirrorViewer(UID);
+    expect(readMirror('attachments', CAMINHO)).toBeDefined();
   });
 });

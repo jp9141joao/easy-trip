@@ -24,6 +24,7 @@ import type { TripStatus } from '@/domain/types';
 import { useTrips } from '@/hooks/useTrips';
 import { useConnectivity } from '@/providers/ConnectivityProvider';
 import { useTripSelection } from '@/providers/TripSelectionProvider';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { useTheme } from '@/theme';
 
 type Filter = 'all' | TripStatus;
@@ -43,7 +44,7 @@ export default function TripsScreen() {
   const { setCurrentTripId } = useTripSelection();
   const [filter, setFilter] = useState<Filter>('all');
 
-  const { data: trips = [], isLoading, isError, refetch } = useTrips();
+  const { data: trips = [], isLoading, isError, error, refetch } = useTrips();
 
   const filtered = useMemo(
     () => (filter === 'all' ? trips : trips.filter((trip) => getTripStatus(trip) === filter)),
@@ -118,7 +119,10 @@ export default function TripsScreen() {
             ) : isError ? (
               <GlassCard>
                 <ErrorState
-                  message="Não foi possível carregar suas viagens. Verifique sua conexão e tente novamente."
+                  message={
+                    describeBackendCapability(error) ??
+                    'Não foi possível carregar suas viagens. Verifique sua conexão e tente novamente.'
+                  }
                   onRetry={() => void refetch()}
                 />
               </GlassCard>

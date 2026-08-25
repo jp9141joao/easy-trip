@@ -67,6 +67,7 @@ import { useTripRealtime } from '@/hooks/useTripRealtime';
 import { guessMimeType, isImageMime, isPdfMime, storedFileExists } from '@/lib/files';
 import { RESERVATION_TYPE_LABEL } from '@/lib/labels';
 import { dataSource, type UploadableFile } from '@/repositories';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { useTheme } from '@/theme';
 
 /* ------------------------------ data/hora ISO ----------------------------- */
@@ -118,12 +119,17 @@ export default function ReservationsScreen() {
   const theme = useTheme();
   const router = useRouter();
   const toast = useToast();
-  const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
+  const { tripId, trip, isLoading, isError, notFound, errorMessage, refetch } = useTripRoute();
 
   useTripRealtime(tripId);
 
-  const { data: reservations = [], isLoading: loadingReservations } = useReservations(tripId);
-  const { data: reminders = [] } = useReminders(tripId);
+  const reservationsQuery = useReservations(tripId);
+  const reservations = useMemo(
+    () => reservationsQuery.data ?? [],
+    [reservationsQuery.data],
+  );
+  const remindersQuery = useReminders(tripId);
+  const reminders = remindersQuery.data ?? [];
   const mutations = useReservationMutations(tripId);
   const permissions = useTripPermissions(tripId);
 
@@ -156,7 +162,7 @@ export default function ReservationsScreen() {
                 message={
                   notFound
                     ? 'Esta viagem pode ter sido excluída.'
-                    : 'Verifique sua conexão e tente novamente.'
+                    : errorMessage
                 }
                 onRetry={notFound ? () => router.replace('/(tabs)/trips') : () => void refetch()}
               />
@@ -173,12 +179,15 @@ export default function ReservationsScreen() {
       await mutations.remove.mutateAsync(deleting.id);
       toast.success('Reserva excluída');
       setDeleting(null);
-    } catch {
-      toast.error('Não foi possível excluir a reserva.');
+    } catch (error) {
+      toast.error(
+        describeBackendCapability(error) ?? 'Não foi possível excluir a reserva.',
+      );
     }
   };
 
-  const empty = !loadingReservations && reservations.length === 0;
+  const empty =
+    !reservationsQuery.isLoading && !reservationsQuery.isError && reservations.length === 0;
 
   return (
     <TripScreenShell>
@@ -197,11 +206,24 @@ export default function ReservationsScreen() {
             counts={counts}
             selected={filter}
             onSelect={(type) => setFilter((current) => (current === type ? null : type))}
-            onCreate={permissions.canEdit ? setCreatingType : undefined}
+            onCreate={
+              permissions.canEdit && !reservationsQuery.isError ? setCreatingType : undefined
+            }
           />
 
-          {loadingReservations ? (
+          {reservationsQuery.isLoading ? (
             <SkeletonList count={3} lines={2} />
+          ) : reservationsQuery.isError ? (
+            <GlassCard>
+              <ErrorState
+                title="Reservas indisponíveis"
+                message={
+                  describeBackendCapability(reservationsQuery.error) ??
+                  'Não foi possível carregar as reservas desta viagem.'
+                }
+                onRetry={() => void reservationsQuery.refetch()}
+              />
+            </GlassCard>
           ) : empty ? (
             <GlassCard>
               <EmptyState
@@ -233,7 +255,14 @@ export default function ReservationsScreen() {
             ))
           )}
 
-          {!permissions.canEdit && !permissions.isLoading ? (
+          {remindersQuery.isError && !reservationsQuery.isError ? (
+            <InlineNotice tone="error">
+              {describeBackendCapability(remindersQuery.error) ??
+                'As reservas foram carregadas, mas os lembretes estão indisponíveis.'}
+            </InlineNotice>
+          ) : null}
+
+          {permissions.role === 'viewer' ? (
             <InlineNotice>
               Você tem acesso somente de visualização nesta viagem. As reservas compartilhadas
               aparecem aqui, mas não podem ser alteradas.
@@ -242,7 +271,7 @@ export default function ReservationsScreen() {
         </FadeIn>
       </ScrollView>
 
-      {empty || !permissions.canEdit ? null : (
+      {empty || reservationsQuery.isError || !permissions.canEdit ? null : (
         <FloatingActionButton
           icon={Plus}
           label="Reserva"
@@ -251,7 +280,11 @@ export default function ReservationsScreen() {
       )}
 
       <ReservationEditorSheet
-        visible={Boolean(creatingType) || Boolean(editing)}
+        visible={
+          permissions.canEdit &&
+          !reservationsQuery.isError &&
+          (Boolean(creatingType) || Boolean(editing))
+        }
         reservation={editing}
         initialType={creatingType ?? 'flight'}
         isShared={permissions.isShared}
@@ -284,7 +317,7 @@ export default function ReservationsScreen() {
       />
 
       <ConfirmDialog
-        visible={Boolean(deleting)}
+        visible={permissions.canEdit && !reservationsQuery.isError && Boolean(deleting)}
         title="Excluir reserva?"
         message={`"${deleting?.title}", o documento anexado e os lembretes ligados a ela serão removidos. Essa ação não poderá ser desfeita.`}
         confirmLabel="Excluir"
@@ -392,7 +425,8 @@ function ReservationViewerSheet({
 }) {
   const theme = useTheme();
   const toast = useToast();
-  const { data: reminders = [] } = useReminders(tripId);
+  const remindersQuery = useReminders(tripId);
+  const reminders = remindersQuery.data ?? [];
   const reminderMutations = useReminderMutations(tripId);
 
   if (!reservation) return null;
@@ -516,33 +550,52 @@ function ReservationViewerSheet({
           <AppText variant="label" color="secondary">
             Lembretes
           </AppText>
-          {reminderAnchors(reservation.type).map((anchor) => (
-            <ReminderField
-              key={anchor}
-              label={anchorLabel(reservation.type, anchor)}
-              anchorAt={anchor === 'start' ? reservation.startAt : reservation.endAt}
-              reminder={findReminder(reminders, reservation.id, anchor)}
-              pending={reminderMutations.set.isPending}
-              onSet={(minutesBefore) => {
-                reminderMutations.set.mutate(
-                  { reservation, anchor, minutesBefore },
-                  {
-                    onSuccess: () => toast.success('Lembrete ativado'),
-                    onError: (error) =>
-                      toast.error(
-                        error instanceof Error ? error.message : 'Não foi possível criar o lembrete.',
-                      ),
-                  },
-                );
-              }}
-              onClear={() =>
-                reminderMutations.clear.mutate(
-                  { entityId: reservation.id, anchor },
-                  { onSuccess: () => toast.success('Lembrete desativado') },
-                )
-              }
-            />
-          ))}
+          {remindersQuery.isLoading ? (
+            <SkeletonList count={1} lines={1} />
+          ) : remindersQuery.isError ? (
+            <InlineNotice tone="error">
+              {describeBackendCapability(remindersQuery.error) ??
+                'Não foi possível carregar os lembretes desta reserva.'}
+            </InlineNotice>
+          ) : (
+            reminderAnchors(reservation.type).map((anchor) => (
+              <ReminderField
+                key={anchor}
+                label={anchorLabel(reservation.type, anchor)}
+                anchorAt={anchor === 'start' ? reservation.startAt : reservation.endAt}
+                reminder={findReminder(reminders, reservation.id, anchor)}
+                pending={reminderMutations.set.isPending}
+                onSet={(minutesBefore) => {
+                  reminderMutations.set.mutate(
+                    { reservation, anchor, minutesBefore },
+                    {
+                      onSuccess: () => toast.success('Lembrete ativado'),
+                      onError: (error) =>
+                        toast.error(
+                          describeBackendCapability(error) ??
+                            (error instanceof Error
+                              ? error.message
+                              : 'Não foi possível criar o lembrete.'),
+                        ),
+                    },
+                  );
+                }}
+                onClear={() =>
+                  reminderMutations.clear.mutate(
+                    { entityId: reservation.id, anchor },
+                    {
+                      onSuccess: () => toast.success('Lembrete desativado'),
+                      onError: (error) =>
+                        toast.error(
+                          describeBackendCapability(error) ??
+                            'Não foi possível desativar o lembrete.',
+                        ),
+                    },
+                  )
+                }
+              />
+            ))
+          )}
         </View>
 
         {reservation.fileUrl ? (

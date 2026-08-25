@@ -2,6 +2,7 @@ import {
   deleteMirror,
   purgeMirrorForUser,
   readMirror,
+  setMirrorViewer,
   writeMirrorFromBytes,
   writeMirrorFromFile,
 } from '@/lib/fileMirror';
@@ -16,6 +17,10 @@ import {
  *
  * O dublê de sistema de arquivos em `tests/setup.ts` guarda os arquivos de
  * verdade — sem isso, "o arquivo está no aparelho" passaria sempre.
+ *
+ * Aqui o espectador é sempre A: o que se mede é a mecânica de gravar, ler e
+ * apagar uma cópia. O isolamento ENTRE contas — que é outra coisa, e é onde
+ * estava o defeito — mora em `file-mirror-accounts.test.ts`.
  */
 
 const A = '11111111-1111-4111-8111-111111111111';
@@ -28,7 +33,15 @@ const caminhoB = `${B}/${TRIP}/bilhete.pdf`;
 /* eslint-disable @typescript-eslint/no-require-imports */
 const resetFs = () => (require('expo-file-system') as { __reset: () => void }).__reset();
 
-beforeEach(() => resetFs());
+beforeEach(() => {
+  resetFs();
+  // Sem espectador não há espelho: uma cópia local sem dono é exatamente o que
+  // este módulo passou a recusar. Todo cenário abaixo roda dentro da sessão A.
+  setMirrorViewer(null);
+  setMirrorViewer(A);
+});
+
+afterEach(() => setMirrorViewer(null));
 
 describe('gravar e ler a cópia local', () => {
   it('antes de espelhar, não há cópia', () => {
@@ -78,7 +91,7 @@ describe('a exclusão remove as duas pontas', () => {
     expect(() => deleteMirror('attachments', caminhoA)).not.toThrow();
   });
 
-  it('apagar o espelho de um não toca no do outro', async () => {
+  it('apagar um espelho não toca nos outros arquivos da mesma conta', async () => {
     await writeMirrorFromFile('attachments', caminhoA, 'file:///cache/a.pdf');
     await writeMirrorFromFile('attachments', caminhoB, 'file:///cache/b.pdf');
 
@@ -89,17 +102,18 @@ describe('a exclusão remove as duas pontas', () => {
   });
 });
 
-describe('isolamento por conta', () => {
-  it('o expurgo de A não alcança os arquivos de B', async () => {
+describe('o expurgo da conta', () => {
+  it('leva tudo o que a conta baixou, inclusive o que outra pessoa enviou', async () => {
     await writeMirrorFromFile('attachments', caminhoA, 'file:///cache/a.pdf');
     await writeMirrorFromFile('journal', `${A}/entrada/foto.jpg`, 'file:///cache/foto.jpg');
+    // Caminho remoto sob o UID de B, cópia local baixada por A: é de A.
     await writeMirrorFromFile('attachments', caminhoB, 'file:///cache/b.pdf');
 
     purgeMirrorForUser(A);
 
     expect(readMirror('attachments', caminhoA)).toBeUndefined();
     expect(readMirror('journal', `${A}/entrada/foto.jpg`)).toBeUndefined();
-    expect(readMirror('attachments', caminhoB)).toBeDefined();
+    expect(readMirror('attachments', caminhoB)).toBeUndefined();
   });
 
   it('o expurgo varre os três buckets privados da conta', async () => {

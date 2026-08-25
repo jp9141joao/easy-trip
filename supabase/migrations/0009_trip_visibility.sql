@@ -143,9 +143,14 @@ comment on column public.expenses.paid_by is
 -- linha privada sem dono — invisível para todo mundo, inclusive para quem a
 -- criou, e impossível de apagar pela interface.
 --
--- O trigger é `before insert` e só age quando o campo veio vazio, então uma
--- escrita server-side legítima (migração, Edge Function) ainda consegue
--- declarar o autor. E `auth.uid()` é a sessão, nunca um id de formulário.
+-- Para uma sessão autenticada, o valor enviado pelo cliente nunca decide a
+-- autoria: INSERT sempre recebe `auth.uid()` e UPDATE sempre conserva o autor
+-- anterior. Isto impede tanto forjar autoria na criação quanto transformar um
+-- item compartilhado de outra pessoa em privado "roubando" `created_by`.
+--
+-- Migrações e rotinas realmente server-side rodam sem `auth.uid()`. Só nesse
+-- caso o valor explícito é preservado, inclusive em UPDATE, para manter
+-- backfills e manutenção administrativa possíveis sem abrir o override ao app.
 -- ----------------------------------------------------------------------------
 create or replace function public.set_created_by()
 returns trigger
@@ -154,8 +159,12 @@ security definer
 set search_path = public
 as $$
 begin
-  if new.created_by is null then
-    new.created_by := auth.uid();
+  if auth.uid() is not null then
+    if tg_op = 'INSERT' then
+      new.created_by := auth.uid();
+    elsif tg_op = 'UPDATE' then
+      new.created_by := old.created_by;
+    end if;
   end if;
   return new;
 end;
@@ -171,11 +180,78 @@ begin
   loop
     execute format('drop trigger if exists set_created_by on public.%I', alvo);
     execute format(
-      'create trigger set_created_by before insert on public.%I
+      'create trigger set_created_by before insert or update on public.%I
          for each row execute function public.set_created_by()', alvo);
   end loop;
 end;
 $$;
+
+-- ----------------------------------------------------------------------------
+-- 4.1. Nomes de autores históricos, sem recolocá-los na lista de membros
+--
+-- A 0008 cria o RPC antes de `created_by` existir. Agora ele pode incluir quem
+-- assinou conteúdo compartilhado que permaneceu na viagem após sua saída, e
+-- também quem consta como pagador de uma despesa compartilhada. Assim a UI
+-- mantém "Adicionado/Pago por Maria" sem expor telefone, e-mail ou perfil.
+--
+-- O primeiro predicado é a barreira de acesso: ex-membro e outsider não
+-- recebem nem mesmo o mapa de nomes. A lista "Viajantes" continua consultando
+-- `trip_members`; portanto aparecer neste mapa não torna ninguém membro ativo.
+-- ----------------------------------------------------------------------------
+create or replace function public.trip_member_profiles(target_trip uuid)
+returns table (user_id uuid, name text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select p.user_id, p.name
+    from public.profiles p
+   where public.is_trip_member(target_trip)
+     and p.user_id in (
+       select m.user_id
+         from public.trip_members m
+        where m.trip_id = target_trip
+       union
+       select i.invited_user_id
+         from public.trip_invites i
+        where i.trip_id = target_trip and i.status = 'pending'
+       union
+       select t.user_id
+         from public.trips t
+        where t.id = target_trip
+       union
+       select x.created_by
+         from public.itinerary_items x
+        where x.trip_id = target_trip and x.visibility = 'shared'
+       union
+       select x.created_by
+         from public.checklist_items x
+        where x.trip_id = target_trip and x.visibility = 'shared'
+       union
+       select x.created_by
+         from public.expenses x
+        where x.trip_id = target_trip and x.visibility = 'shared'
+       union
+       select x.paid_by
+         from public.expenses x
+        where x.trip_id = target_trip and x.visibility = 'shared'
+       union
+       select x.created_by
+         from public.journal_entries x
+        where x.trip_id = target_trip and x.visibility = 'shared'
+       union
+       select x.created_by
+         from public.tickets x
+        where x.trip_id = target_trip and x.visibility = 'shared'
+     );
+$$;
+
+comment on function public.trip_member_profiles(uuid) is
+  'Mapa mínimo id → nome: membros/convites e autores ou pagadores históricos de conteúdo compartilhado.';
+
+revoke all on function public.trip_member_profiles(uuid) from public, anon;
+grant execute on function public.trip_member_profiles(uuid) to authenticated, service_role;
 
 -- ----------------------------------------------------------------------------
 -- 5. RLS — a regra única, aplicada às cinco tabelas

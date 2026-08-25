@@ -135,7 +135,7 @@ console.log('\n== §43 TICKET: linha + arquivo ==');
   const path = `${A.id}/${tripA.id}/bilhete.pdf`;
   check((await upload(A, 'attachments', path, PDF, 'application/pdf')) === 200, '2: upload do bilhete');
   const tk = (await rest(A, 'tickets', { method: 'POST', prefer: 'return=representation', body: {
-    trip_id: tripA.id, user_id: A.id, type: 'voo', title: 'TAP 1234',
+    trip_id: tripA.id, user_id: A.id, type: 'flight', title: 'TAP 1234',
     file_path: path, mime_type: 'application/pdf' } })).body[0];
 
   check(await rowExists('tickets', tk.id), '3: ANTES — a linha existe');
@@ -221,7 +221,7 @@ console.log('\n== §5-G / §47 arquivo de OUTRO usuário ==');
   // A grava na PRÓPRIA linha um caminho que é de B. A RLS deixa A apagar a
   // linha dele; o que não pode é isso virar "apagar o arquivo de B".
   const tk = (await rest(A, 'tickets', { method: 'POST', prefer: 'return=representation', body: {
-    trip_id: tripA.id, user_id: A.id, type: 'outro', title: 'forjado', file_path: pB } })).body[0];
+    trip_id: tripA.id, user_id: A.id, type: 'other', title: 'forjado', file_path: pB } })).body[0];
 
   const r = await deleteWithFiles(A, 'attachments', [pB], 'tickets', tk.id);
   check(!r.ok, `26: a exclusão é interrompida (${r.motivo})`);
@@ -243,7 +243,7 @@ console.log('\n== §5-B falha parcial: o objeto não pode sair sem a linha ==');
   const pB = `${B.id}/${tripB.id}/preso.pdf`;
   await upload(B, 'attachments', pB, PDF, 'application/pdf');
   const tk = (await rest(A, 'tickets', { method: 'POST', prefer: 'return=representation', body: {
-    trip_id: tripA.id, user_id: A.id, type: 'outro', title: 'preso', file_path: pB } })).body[0];
+    trip_id: tripA.id, user_id: A.id, type: 'other', title: 'preso', file_path: pB } })).body[0];
 
   const r = await deleteWithFiles(A, 'attachments', [pB], 'tickets', tk.id);
   check(!r.ok && (await rowExists('tickets', tk.id)),
@@ -272,7 +272,7 @@ console.log('\n== §11 URL assinada não é identidade durável ==');
 
   check(Boolean(assinada.signedURL || assinada.signedUrl), '34: a URL assinada é gerada a partir do caminho');
   const tk = (await rest(A, 'tickets', { method: 'POST', prefer: 'return=representation', body: {
-    trip_id: tripA.id, user_id: A.id, type: 'voo', title: 'assinada', file_path: path } })).body[0];
+    trip_id: tripA.id, user_id: A.id, type: 'flight', title: 'assinada', file_path: path } })).body[0];
 
   const gravado = (await rest(A, `tickets?select=file_path&id=eq.${tk.id}`)).body[0].file_path;
   check(gravado === path, '35: o que ficou gravado é o CAMINHO, não a URL');
@@ -287,7 +287,7 @@ console.log('\n== §46 exclusão de conta continua limpando tudo (P-02) ==');
   const path = `${A.id}/${tripA.id}/para-purgar.pdf`;
   await upload(A, 'attachments', path, PDF, 'application/pdf');
   await rest(A, 'tickets', { method: 'POST', body: {
-    trip_id: tripA.id, user_id: A.id, type: 'voo', title: 'purga', file_path: path } });
+    trip_id: tripA.id, user_id: A.id, type: 'flight', title: 'purga', file_path: path } });
   check(await objectExists('attachments', path), '37: ANTES — há arquivo da conta A');
 
   const r = await fetch(`${API}/functions/v1/delete-account`, {

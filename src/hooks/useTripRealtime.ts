@@ -39,7 +39,6 @@ import { queryKeys } from './queryKeys';
  */
 export function useTripRealtime(tripId?: string) {
   const queryClient = useQueryClient();
-  const { user } = useAuth();
 
   useEffect(() => {
     // Modo demonstração não tem servidor, e portanto não tem o que sincronizar:
@@ -58,10 +57,18 @@ export function useTripRealtime(tripId?: string) {
       tickets: () =>
         queryClient.invalidateQueries({ queryKey: queryKeys.tripReservations(tripId) }),
       journal_entries: () => queryClient.invalidateQueries({ queryKey: queryKeys.journal(tripId) }),
-      trip_members: () =>
-        queryClient.invalidateQueries({ queryKey: queryKeys.tripMembers(tripId) }),
-      trip_invites: () =>
-        queryClient.invalidateQueries({ queryKey: queryKeys.tripInvites(tripId) }),
+      trip_members: async () => {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.tripMembers(tripId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.tripMemberNames(tripId) }),
+        ]);
+      },
+      trip_invites: async () => {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.tripInvites(tripId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.tripMemberNames(tripId) }),
+        ]);
+      },
       trip_suggestions: () =>
         queryClient.invalidateQueries({ queryKey: queryKeys.suggestions(tripId) }),
     };
@@ -87,11 +94,21 @@ export function useTripRealtime(tripId?: string) {
     };
   }, [tripId, queryClient]);
 
-  /**
-   * O sino é por PESSOA, não por viagem: o convite chega para uma viagem que o
-   * convidado ainda não abriu — e não poderia abrir. Por isso este canal é
-   * filtrado por `user_id` e vive enquanto a sessão viver.
-   */
+}
+
+/**
+ * O sino é por PESSOA, não por viagem: o convite chega para uma viagem que o
+ * convidado ainda não abriu — e não poderia abrir. Por isso este canal é
+ * filtrado por `user_id` e fica montado uma única vez na raiz autenticada.
+ *
+ * Ele não vive em `useTripRealtime`: cada tela de viagem monta esse hook, o que
+ * duplicava a assinatura de notificações e, na Home (onde ela mais importa),
+ * não deixava assinatura nenhuma ativa.
+ */
+export function useNotificationRealtime() {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+
   useEffect(() => {
     const userId = user?.id;
     if (!config.hasSupabase || !userId) return;

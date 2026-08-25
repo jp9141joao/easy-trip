@@ -11,6 +11,15 @@ export class ServiceError extends Error {
     readonly kind: ServiceErrorKind,
     message: string,
     readonly status?: number,
+    /**
+     * O corpo que o serviço mandou junto com a recusa, quando ele é JSON.
+     *
+     * Existe porque uma recusa pode carregar resultado parcial legítimo: a
+     * Function de sugestões devolve 422 com as sugestões válidas que conseguiu
+     * gerar quando não alcançou o mínimo pedido. Sem isto o chamador teria de
+     * escolher entre confiar num 200 que mente ou jogar fora o que veio.
+     */
+    readonly payload?: unknown,
   ) {
     super(message);
     this.name = 'ServiceError';
@@ -112,7 +121,20 @@ export async function postJson<T>(
       signal: controller.signal,
     });
     if (!response.ok) {
-      throw new ServiceError('http', `Serviço respondeu ${response.status}`, response.status);
+      // Ler o corpo da recusa não pode virar uma segunda falha: um serviço que
+      // responde 500 com HTML continua sendo um 500, não um erro de parse.
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = undefined;
+      }
+      throw new ServiceError(
+        'http',
+        `Serviço respondeu ${response.status}`,
+        response.status,
+        payload,
+      );
     }
     return (await response.json()) as T;
   } catch (error) {

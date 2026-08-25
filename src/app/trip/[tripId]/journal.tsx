@@ -19,6 +19,7 @@ import {
   FloatingActionButton,
   GlassCard,
   IconButton,
+  InlineNotice,
   SkeletonList,
   TextField,
   useToast,
@@ -43,7 +44,7 @@ export default function JournalScreen() {
   const theme = useTheme();
   const router = useRouter();
   const toast = useToast();
-  const { tripId, trip, isLoading, isError, notFound, refetch } = useTripRoute();
+  const { tripId, trip, isLoading, isError, notFound, errorMessage, refetch } = useTripRoute();
 
   useTripRealtime(tripId);
 
@@ -79,7 +80,7 @@ export default function JournalScreen() {
                 message={
                   notFound
                     ? 'Esta viagem pode ter sido excluída.'
-                    : 'Verifique sua conexão e tente novamente.'
+                    : errorMessage
                 }
                 onRetry={notFound ? () => router.replace('/(tabs)/trips') : () => void refetch()}
               />
@@ -121,8 +122,8 @@ export default function JournalScreen() {
               icon={BookOpen}
               title="Nenhuma memória registrada"
               message="Escreva sobre o dia, anexe fotos e guarde o que você não quer esquecer."
-              actionLabel="Criar primeira entrada"
-              onAction={() => setEditorOpen(true)}
+              actionLabel={permissions.canEdit ? 'Criar primeira entrada' : undefined}
+              onAction={permissions.canEdit ? () => setEditorOpen(true) : undefined}
             />
           ) : (
             entries.map((entry) => {
@@ -162,23 +163,34 @@ export default function JournalScreen() {
                         <VisibilityBadge visibility={entry.visibility} />
                       ) : null}
 
-                      <IconButton
-                        icon={Trash2}
-                        accessibilityLabel={`Excluir registro de ${formatWeekdayDate(entry.entryDate)}`}
-                        onPress={() => setDeleting(entry)}
-                        size={16}
-                        color={theme.colors.textTertiary}
-                        style={{ width: 32, height: 32 }}
-                      />
+                      {permissions.canEdit ? (
+                        <IconButton
+                          icon={Trash2}
+                          accessibilityLabel={`Excluir registro de ${formatWeekdayDate(entry.entryDate)}`}
+                          onPress={() => setDeleting(entry)}
+                          size={16}
+                          color={theme.colors.textTertiary}
+                          style={{ width: 32, height: 32 }}
+                        />
+                      ) : null}
                     </View>
 
                     <Pressable
-                      onPress={() => {
-                        setEditing(entry);
-                        setEditorOpen(true);
-                      }}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Editar registro: ${entry.content.slice(0, 60)}`}
+                      disabled={!permissions.canEdit}
+                      onPress={
+                        permissions.canEdit
+                          ? () => {
+                              setEditing(entry);
+                              setEditorOpen(true);
+                            }
+                          : undefined
+                      }
+                      accessibilityRole={permissions.canEdit ? 'button' : undefined}
+                      accessibilityLabel={
+                        permissions.canEdit
+                          ? `Editar registro: ${entry.content.slice(0, 60)}`
+                          : undefined
+                      }
                     >
                       <AppText variant="body" color="secondary">
                         {entry.content}
@@ -212,10 +224,17 @@ export default function JournalScreen() {
               );
             })
           )}
+
+          {permissions.role === 'viewer' ? (
+            <InlineNotice>
+              Você tem acesso somente de visualização nesta viagem. Registros compartilhados podem
+              ser lidos, mas não alterados.
+            </InlineNotice>
+          ) : null}
         </FadeIn>
       </ScrollView>
 
-      {emptyCtaVisible ? null : (
+      {emptyCtaVisible || !permissions.canEdit ? null : (
         <FloatingActionButton
           icon={Plus}
           label="Registro"
@@ -227,7 +246,7 @@ export default function JournalScreen() {
       )}
 
       <JournalEditorSheet
-        visible={editorOpen}
+        visible={permissions.canEdit && editorOpen}
         entry={editing}
         tripStart={trip.startDate}
         isShared={permissions.isShared}
@@ -257,7 +276,7 @@ export default function JournalScreen() {
       </BottomSheet>
 
       <ConfirmDialog
-        visible={Boolean(deleting)}
+        visible={permissions.canEdit && Boolean(deleting)}
         title="Excluir registro?"
         message="O texto e as fotos deste registro serão removidos. Essa ação não poderá ser desfeita."
         confirmLabel="Excluir"

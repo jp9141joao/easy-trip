@@ -9,7 +9,12 @@ import {
   type ReactNode,
 } from 'react';
 
-import { prefsStorage } from '@/lib/storage';
+import {
+  clearTripSelection,
+  discardLegacyTripSelection,
+  readTripSelection,
+  writeTripSelection,
+} from '@/lib/tripSelectionStorage';
 import { useAuth } from './AuthProvider';
 
 /**
@@ -20,8 +25,6 @@ import { useAuth } from './AuthProvider';
  * mix-up (§100) structurally impossible: there is no second copy of a trip
  * anywhere to drift out of sync.
  */
-
-const STORAGE_KEY = 'currentTripId';
 
 interface TripSelectionValue {
   currentTripId: string | null;
@@ -34,50 +37,77 @@ const TripSelectionContext = createContext<TripSelectionValue | null>(null);
 
 export function TripSelectionProvider({ children }: { children: ReactNode }) {
   const [currentTripId, setCurrentTripIdState] = useState<string | null>(null);
-  const [restoring, setRestoring] = useState(true);
-
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      const stored = await prefsStorage.get<string | null>(STORAGE_KEY, null);
-      if (active) {
-        setCurrentTripIdState(stored);
-        setRestoring(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
+  const [restoring, setRestoring] = useState(false);
+  const restoreGeneration = useRef(0);
 
   /*
    * A seleção pertence à conta, não ao aparelho.
    *
-   * `clearPrivateState()` já apaga a chave no disco durante a saída, mas o
-   * valor também vive aqui, em estado React — e estado React não some porque
-   * um `AsyncStorage.removeItem` rodou. Sem isto, sair da conta deixava
-   * `currentTripId` apontando para a viagem da conta anterior até o aplicativo
-   * ser reaberto: exatamente o P-06, só que em memória.
-   *
-   * O gatilho é a troca do dono da sessão, o que cobre os dois casos de uma
-   * vez — sair (dono → `null`) e entrar com outra conta (dono → outro id).
+   * Disco e memória usam o mesmo dono. Não existe leitura global no bootstrap:
+   * primeiro o Auth descobre a conta, só então esta conta lê sua própria chave.
+   * Isso fecha o caso `null → B` em que a antiga chave global ainda continha a
+   * viagem de A.
    */
   const { user } = useAuth();
   const ownerId = user?.id ?? null;
-  const previousOwner = useRef<string | null>(null);
+  const activeOwnerId = useRef<string | null>(ownerId);
+  activeOwnerId.current = ownerId;
 
   useEffect(() => {
-    if (previousOwner.current !== null && previousOwner.current !== ownerId) {
-      setCurrentTripIdState(null);
+    let active = true;
+    const bornAt = restoreGeneration.current + 1;
+    restoreGeneration.current = bornAt;
+    setCurrentTripIdState(null);
+
+    if (!ownerId) {
+      setRestoring(false);
+      return () => {
+        active = false;
+      };
     }
-    previousOwner.current = ownerId;
+
+    setRestoring(true);
+    (async () => {
+      const stored = await readTripSelection(ownerId);
+      // The legacy bare string has no owner and is never applied. Removing it
+      // is safe because current versions never write that global key.
+      void discardLegacyTripSelection().catch(() => undefined);
+      if (
+        active &&
+        bornAt === restoreGeneration.current &&
+        activeOwnerId.current === ownerId
+      ) {
+        setCurrentTripIdState(stored);
+        setRestoring(false);
+      }
+    })().catch(() => {
+      if (
+        active &&
+        bornAt === restoreGeneration.current &&
+        activeOwnerId.current === ownerId
+      ) {
+        setCurrentTripIdState(null);
+        setRestoring(false);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
   }, [ownerId]);
 
-  const setCurrentTripId = useCallback((tripId: string | null) => {
-    setCurrentTripIdState(tripId);
-    if (tripId) void prefsStorage.set(STORAGE_KEY, tripId);
-    else void prefsStorage.remove(STORAGE_KEY);
-  }, []);
+  const setCurrentTripId = useCallback(
+    (tripId: string | null) => {
+      // A callback captured by A must not write into B after an async screen
+      // transition. The key is owner-scoped, and the in-memory write is fenced
+      // by the same owner.
+      if (!ownerId || activeOwnerId.current !== ownerId) return;
+      setCurrentTripIdState(tripId);
+      if (tripId) void writeTripSelection(ownerId, tripId);
+      else void clearTripSelection(ownerId);
+    },
+    [ownerId],
+  );
 
   const value = useMemo<TripSelectionValue>(
     () => ({ currentTripId, setCurrentTripId, restoring }),

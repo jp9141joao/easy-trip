@@ -94,6 +94,7 @@ jest.mock('@/hooks/useAI', () => {
   return {
     AI_RATE_LIMIT: actual.AI_RATE_LIMIT,
     AIRateLimitError: actual.AIRateLimitError,
+    AIRequestInFlightError: actual.AIRequestInFlightError,
     useAIConversation: (trip: Trip | null) => ({
       conversationId: trip ? 'conv-trip-paris' : undefined,
       messages: trip ? state.messages : [],

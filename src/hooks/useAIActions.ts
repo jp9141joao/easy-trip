@@ -17,7 +17,7 @@
  */
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import type { AITripAction } from '@/domain/aiActions';
 import type { Trip } from '@/domain/types';
@@ -31,7 +31,12 @@ import {
 } from '@/services/aiActionExecutor';
 import { queryKeys } from './queryKeys';
 
-export class AIActionBlockedError extends Error {}
+export class AIActionBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AIActionBlockedError';
+  }
+}
 
 export function useAIActionRunner(trip: Trip | null) {
   const { user } = useAuth();
@@ -40,11 +45,21 @@ export function useAIActionRunner(trip: Trip | null) {
 
   /** Chave da proposta em execução — normalmente o id da mensagem. */
   const [runningKey, setRunningKey] = useState<string | null>(null);
+  /**
+   * Trava síncrona do executor.
+   *
+   * `setRunningKey` só aparece no próximo render. Dois toques no mesmo frame
+   * portanto enxergavam o mesmo `runningKey === null` da closure e iniciavam
+   * dois INSERTs. O ref muda antes do primeiro `await`, que é a fronteira que
+   * o segundo toque precisa enxergar.
+   */
+  const runningKeyRef = useRef<string | null>(null);
   const [undoing, setUndoing] = useState(false);
+  const undoingRef = useRef(false);
 
   const invalidate = useCallback(async () => {
     if (!trip || !user) return;
-    await Promise.all([
+    const results = await Promise.allSettled([
       queryClient.invalidateQueries({ queryKey: queryKeys.itinerary(trip.id) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.checklist(trip.id) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.expenses(trip.id) }),
@@ -52,6 +67,14 @@ export function useAIActionRunner(trip: Trip | null) {
       queryClient.invalidateQueries({ queryKey: queryKeys.trips(user.id) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.goals(user.id) }),
     ]);
+
+    const failed = results.filter((result) => result.status === 'rejected').length;
+    if (typeof __DEV__ !== 'undefined' && __DEV__ && failed > 0) {
+      // Não inclui erro nem query key: ambos podem carregar ids. A gravação
+      // já terminou e continua sendo sucesso; isto registra apenas que a
+      // atualização visual precisará do próximo foco/refetch.
+      console.warn('AI_ACTION_CACHE_INVALIDATION_FAILED', { failed });
+    }
   }, [queryClient, trip, user]);
 
   const run = useCallback(
@@ -65,7 +88,7 @@ export function useAIActionRunner(trip: Trip | null) {
       }
       // O bloqueio do toque duplo é aqui, e não só no `disabled` do botão: um
       // segundo toque que chegue no mesmo frame não vê o estado atualizado.
-      if (runningKey) {
+      if (runningKeyRef.current || undoingRef.current) {
         throw new AIActionBlockedError('Já existe uma sugestão sendo aplicada.');
       }
       if (isOffline) {
@@ -74,27 +97,34 @@ export function useAIActionRunner(trip: Trip | null) {
         );
       }
 
+      runningKeyRef.current = key;
       setRunningKey(key);
       try {
         const report = await executeAIActions(actions, { trip, userId: user.id, visibility });
         await invalidate();
         return report;
       } finally {
+        runningKeyRef.current = null;
         setRunningKey(null);
       }
     },
-    [invalidate, isOffline, runningKey, trip, user],
+    [invalidate, isOffline, trip, user],
   );
 
   const undo = useCallback(
     async (report: AIActionReport) => {
       if (!trip || !user) return { removed: 0, failed: 0 };
+      if (undoingRef.current || runningKeyRef.current) {
+        throw new AIActionBlockedError('Aguarde a operação atual terminar.');
+      }
+      undoingRef.current = true;
       setUndoing(true);
       try {
         const result = await undoAIActions(report, { trip, userId: user.id });
         await invalidate();
         return result;
       } finally {
+        undoingRef.current = false;
         setUndoing(false);
       }
     },

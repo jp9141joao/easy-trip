@@ -21,14 +21,17 @@ import {
 import { AuroraBackground } from '@/components/ui/Surface';
 import { CURRENCIES, type CurrencyCode, type Trip } from '@/domain/types';
 import { useTripRoute } from '@/features/trip/useTripRoute';
+import { useTripPermissions } from '@/hooks/useCollaboration';
 import { useDeleteTrip, useUpdateTrip } from '@/hooks/useTrips';
 import { parseISODate } from '@/lib/date';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { useTheme } from '@/theme';
 
 export default function EditTripScreen() {
   const theme = useTheme();
   const router = useRouter();
-  const { trip, isLoading, notFound } = useTripRoute();
+  const { tripId, trip, isLoading, isError, notFound, errorMessage, refetch } = useTripRoute();
+  const permissions = useTripPermissions(tripId);
 
   if (isLoading) {
     return (
@@ -45,7 +48,7 @@ export default function EditTripScreen() {
     );
   }
 
-  if (notFound || !trip) {
+  if (isError || notFound || !trip) {
     return (
       <View
         style={{
@@ -57,19 +60,107 @@ export default function EditTripScreen() {
       >
         <GlassCard>
           <ErrorState
-            title="Viagem não encontrada"
-            message="Esta viagem pode ter sido excluída."
-            onRetry={() => router.replace('/(tabs)/trips')}
-            retryLabel="Voltar para viagens"
+            title={notFound ? 'Viagem não encontrada' : 'Não foi possível carregar'}
+            message={notFound ? 'Esta viagem pode ter sido excluída.' : errorMessage}
+            onRetry={notFound ? () => router.replace('/(tabs)/trips') : () => void refetch()}
+            retryLabel={notFound ? 'Voltar para viagens' : 'Tentar novamente'}
           />
         </GlassCard>
       </View>
     );
   }
 
+  if (permissions.status === 'loading' || permissions.status === 'idle') {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: theme.colors.background,
+          padding: theme.spacing.screen,
+          paddingTop: 100,
+        }}
+      >
+        <SkeletonList count={3} lines={2} />
+      </View>
+    );
+  }
+
+  if (permissions.status === 'error') {
+    return (
+      <TripEditErrorState
+        title="Não foi possível confirmar sua permissão"
+        message={
+          describeBackendCapability(permissions.error) ??
+          'Verifique sua conexão e tente novamente. A edição permanece bloqueada até a permissão ser confirmada.'
+        }
+        retryLabel="Tentar novamente"
+        onRetry={() => void permissions.refetch()}
+      />
+    );
+  }
+
+  if (permissions.status === 'unavailable') {
+    return (
+      <TripEditErrorState
+        title="Permissão indisponível"
+        message="Não foi possível confirmar sua participação nesta viagem. A edição permanece bloqueada."
+        retryLabel="Tentar novamente"
+        onRetry={() => void permissions.refetch()}
+      />
+    );
+  }
+
+  // O lápis do Hub já é exclusivo do proprietário, mas a rota também pode ser
+  // aberta por deep link. O guarda precisa viver aqui para editor/viewer nunca
+  // montarem — nem por um frame — os controles de salvar e excluir.
+  if (permissions.role !== 'owner') {
+    return (
+      <TripEditErrorState
+        title="Acesso negado"
+        message="Apenas o proprietário pode editar ou excluir esta viagem."
+        retryLabel="Voltar para a viagem"
+        onRetry={() => router.replace(`/trip/${tripId}/itinerary`)}
+      />
+    );
+  }
+
   // Keying on the trip id means the form's initial state comes from props on
   // first render — no effect syncing state, and switching trips remounts clean.
   return <EditTripForm key={trip.id} trip={trip} />;
+}
+
+function TripEditErrorState({
+  title,
+  message,
+  retryLabel,
+  onRetry,
+}: {
+  title: string;
+  message: string;
+  retryLabel: string;
+  onRetry: () => void;
+}) {
+  const theme = useTheme();
+
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: theme.colors.background,
+        padding: theme.spacing.screen,
+        paddingTop: 100,
+      }}
+    >
+      <GlassCard>
+        <ErrorState
+          title={title}
+          message={message}
+          onRetry={onRetry}
+          retryLabel={retryLabel}
+        />
+      </GlassCard>
+    </View>
+  );
 }
 
 function EditTripForm({ trip }: { trip: Trip }) {

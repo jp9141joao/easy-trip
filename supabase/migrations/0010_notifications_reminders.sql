@@ -76,6 +76,14 @@ drop policy if exists notifications_update on public.notifications;
 create policy notifications_update on public.notifications
   for update using (user_id = auth.uid()) with check (user_id = auth.uid());
 
+-- RLS decide *qual linha* a pessoa pode tocar; privilégio por coluna decide
+-- *o que* ela pode alterar. Sem este recorte, a policy acima deixaria o dono
+-- reescrever `title`, `type`, `data` e `created_at` da própria notificação.
+-- O cliente só marca como lida. `service_role` conserva o UPDATE de tabela
+-- recebido pelos default privileges da 0005 para as rotinas server-side.
+revoke update on table public.notifications from authenticated;
+grant update (read_at) on table public.notifications to authenticated;
+
 drop policy if exists notifications_delete on public.notifications;
 create policy notifications_delete on public.notifications
   for delete using (user_id = auth.uid());

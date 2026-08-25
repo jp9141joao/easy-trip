@@ -2,6 +2,7 @@ import {
   AI_ACTION_LIMITS,
   countActionItems,
   describeExpenseDescription,
+  enforceAIActionPromiseCoherence,
   findChecklistDuplicate,
   findItineraryDuplicate,
   isWithinTrip,
@@ -358,5 +359,34 @@ describe('estimativa na descrição', () => {
         estimated: true,
       }),
     ).toBe('Estimativa — Alimentação');
+  });
+});
+
+describe('coerência entre texto e action validada no cliente', () => {
+  it.each([
+    'Revise.',
+    'Confirme no aplicativo.',
+    'Clique em implementar.',
+    'Adicione abaixo.',
+    'Posso aplicar.',
+    'Preparei a proposta abaixo.',
+  ])('remove a promessa sem card: %s', (promise) => {
+    const result = enforceAIActionPromiseCoherence(
+      `Aqui está a informação que encontrei. ${promise}`,
+      0,
+    );
+
+    expect(result.content).toBe('Aqui está a informação que encontrei.');
+    expect(result.stripped).toBe(1);
+  });
+
+  it('mantém a promessa quando existe action validada na mesma resposta', () => {
+    const content = 'Preparei a proposta abaixo. Revise e confirme no aplicativo.';
+    expect(enforceAIActionPromiseCoherence(content, 1)).toEqual({ content, stripped: 0 });
+  });
+
+  it('não inventa proposta quando a resposta era somente uma promessa', () => {
+    const result = enforceAIActionPromiseCoherence('Posso aplicar isso agora.', 0);
+    expect(result.content).toMatch(/não consegui montar uma proposta aplicável/i);
   });
 });

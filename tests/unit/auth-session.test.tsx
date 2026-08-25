@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
 import { prefsStorage } from '@/lib/storage';
+import { tripSelectionStorageKey } from '@/lib/tripSelectionStorage';
 import { AuthProvider, useAuth } from '@/providers/AuthProvider';
 
 /**
@@ -303,6 +304,25 @@ describe('entrar', () => {
     expect(result.current.session).toBeNull();
     expect(result.current.profile).toBeNull();
   });
+
+  it('uma entrada explícita permite voltar à própria identidade que saiu', async () => {
+    mockState.restored = SESSION_A;
+    const { result } = await mount();
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+    expect(result.current.isAuthenticated).toBe(false);
+
+    // O tombstone barra somente eventos passivos antigos. Digitar as
+    // credenciais de A novamente é uma decisão nova e o remove.
+    await act(async () => {
+      await result.current.signIn('a@easytrip.app', 'senha-secreta');
+    });
+
+    expect(result.current.isAuthenticated).toBe(true);
+    expect(result.current.user?.id).toBe('uid-a');
+  });
 });
 
 describe('cadastrar', () => {
@@ -352,7 +372,7 @@ describe('cadastrar', () => {
 describe('sair', () => {
   it('J: limpa sessão, perfil e a viagem selecionada no aparelho', async () => {
     mockState.restored = SESSION_A;
-    await prefsStorage.set('currentTripId', 'trip-da-conta-anterior');
+    await prefsStorage.set(tripSelectionStorageKey('uid-a'), 'trip-da-conta-anterior');
     const { result } = await mount();
 
     await act(async () => {
@@ -365,13 +385,13 @@ describe('sair', () => {
     expect(result.current.role).toBe('user');
     // P-06: sem isto, a próxima conta a entrar neste aparelho abriria apontando
     // para a viagem da conta anterior.
-    expect(await prefsStorage.get('currentTripId', null)).toBeNull();
+    expect(await prefsStorage.get(tripSelectionStorageKey('uid-a'), null)).toBeNull();
   });
 
   it('saída que falha não desloga ninguém nem limpa nada', async () => {
     mockState.restored = SESSION_A;
     mockState.signOutFails = true;
-    await prefsStorage.set('currentTripId', 'trip-atual');
+    await prefsStorage.set(tripSelectionStorageKey('uid-a'), 'trip-atual');
     const { result } = await mount();
 
     await act(async () => {
@@ -383,7 +403,7 @@ describe('sair', () => {
     expect(result.current.isAuthenticated).toBe(true);
     expect(result.current.session).not.toBeNull();
     expect(result.current.profile?.userId).toBe('uid-a');
-    expect(await prefsStorage.get('currentTripId', null)).toBe('trip-atual');
+    expect(await prefsStorage.get(tripSelectionStorageKey('uid-a'), null)).toBe('trip-atual');
     expect(mockCalls.purgeLocalFiles).toEqual([]);
   });
 
