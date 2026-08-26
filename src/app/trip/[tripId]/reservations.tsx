@@ -280,6 +280,23 @@ export default function ReservationsScreen() {
       )}
 
       <ReservationEditorSheet
+        /*
+          A CHAVE É A CORREÇÃO DO "ABRE SEMPRE COMO VOO" (§30 do handoff).
+
+          O formulário guarda a modalidade em `useState`, e `useState` só lê o
+          valor inicial no PRIMEIRO render. Sem chave, esta folha montava uma
+          única vez — junto com a tela, quando `creatingType` e `editing` ainda
+          eram `null` e o `initialType` era o `?? 'flight'` da linha abaixo.
+          Depois disso, tocar em "Trem" trocava a prop e não trocava mais nada:
+          o modal abria "Nova reserva · Voo", com Voo selecionado, e gravava
+          `flight`. Valia para as seis modalidades e também para a edição.
+
+          Trocando a chave a cada abertura, cada uma é uma montagem nova e todo
+          o estado local — modalidade, visibilidade, datas, campos específicos —
+          nasce do registro certo. O `type` abaixo ainda é derivado por
+          segurança, para que a folha não dependa só de quem a renderiza.
+        */
+        key={editing?.id ?? creatingType ?? 'fechado'}
         visible={
           permissions.canEdit &&
           !reservationsQuery.isError &&
@@ -734,10 +751,34 @@ function ReservationEditorSheet({
   const toast = useToast();
 
   const [file, setFile] = useState<UploadableFile | null>(null);
-  const [type, setType] = useState<ReservationType>(reservation?.type ?? initialType);
-  const [visibility, setVisibility] = useState<Visibility>(
-    reservation?.visibility ?? DEFAULT_VISIBILITY.reservation,
-  );
+
+  /*
+    Modalidade e visibilidade: escolha da pessoa quando houve uma, e o valor do
+    registro quando não houve.
+
+    Guardadas junto com a identidade da reserva que estavam editando. É o que
+    impede o estado velho de sobreviver a uma reabertura: se a folha for
+    remontada (o caso normal, pela chave lá em cima) o estado nasce vazio; se
+    por algum motivo não for, `identidade` muda e a escolha antiga deixa de
+    valer sozinha, sem `useEffect` de sincronização — que seria mais uma fonte
+    de estado capaz de ficar para trás, exatamente como o `useState` ficou.
+  */
+  const identidade = reservation?.id ?? `novo:${initialType}`;
+  const [escolha, setEscolha] = useState<{
+    identidade: string;
+    type?: ReservationType;
+    visibility?: Visibility;
+  }>({ identidade });
+
+  const doRegistro = escolha.identidade === identidade ? escolha : { identidade };
+  const type: ReservationType = doRegistro.type ?? reservation?.type ?? initialType;
+  const visibility: Visibility =
+    doRegistro.visibility ?? reservation?.visibility ?? DEFAULT_VISIBILITY.reservation;
+
+  const setType = (value: ReservationType) =>
+    setEscolha((atual) => ({ ...(atual.identidade === identidade ? atual : {}), identidade, type: value }));
+  const setVisibility = (value: Visibility) =>
+    setEscolha((atual) => ({ ...(atual.identidade === identidade ? atual : {}), identidade, visibility: value }));
   const [details, setDetails] = useState<Record<string, string>>({});
   const [startDate, setStartDate] = useState<string | undefined>();
   const [startTime, setStartTime] = useState<string | undefined>();
@@ -788,6 +829,7 @@ function ReservationEditorSheet({
   const close = () => {
     reset();
     setFile(null);
+    setEscolha({ identidade });
     setDetails({});
     setStartDate(undefined);
     setStartTime(undefined);
@@ -914,7 +956,14 @@ function ReservationEditorSheet({
       visible={visible}
       onClose={close}
       title={reservation ? 'Editar reserva' : `Nova reserva · ${category.label}`}
-      subtitle={reservation ? RESERVATION_TYPE_LABEL[reservation.type] : 'Escolha a modalidade'}
+      // Na criação o subtítulo NOMEIA a modalidade selecionada em vez de pedir
+      // que se escolha uma: ela já foi escolhida na grade de categorias, e
+      // "Escolha a modalidade" sugeria o contrário (§32 do handoff).
+      subtitle={
+        reservation
+          ? RESERVATION_TYPE_LABEL[reservation.type]
+          : `${category.emoji} ${category.label} selecionado`
+      }
     >
       <View style={{ gap: theme.spacing.lg }}>
         {!reservation ? (

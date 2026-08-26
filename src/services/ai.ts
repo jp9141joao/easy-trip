@@ -32,6 +32,7 @@ import {
   EXPENSE_CATEGORY_LABEL,
   ITINERARY_TYPE_LABEL,
 } from '@/lib/labels';
+import { AIRequestError, aiTrace, readServerFailure } from '@/lib/aiTrace';
 import { postJson, ServiceError } from './http';
 import type { Visibility } from '@/domain/visibility';
 import { getZoneDate } from './timezone';
@@ -119,6 +120,25 @@ export interface AIService {
 
 /* ------------------------------ remote (BFF) ------------------------------ */
 
+/**
+ * Quanto o cliente espera pelo `ai-chat`.
+ *
+ * O PADRÃO DE 30s ERA A CAUSA DO "Não foi possível obter uma resposta agora".
+ *
+ * `postJson` espera 30 segundos e desiste. Isso bastava enquanto a Function
+ * fazia UMA chamada ao Gemini. Desde que ela ganhou a tentativa de reparo do
+ * roteiro de dia inteiro, uma resposta pode custar duas gerações em sequência,
+ * de até 2048 tokens cada — e a soma passa de 30s com facilidade. O que o
+ * usuário via era o indicador rodando meio minuto e depois um erro genérico,
+ * enquanto o servidor terminava de responder para ninguém.
+ *
+ * O número aqui é deliberadamente MAIOR do que o orçamento que a Function se
+ * dá (`AI_CHAT_BUDGET_MS`, em `supabase/functions/ai-chat/index.ts`). Assim
+ * quem estoura o prazo primeiro é sempre o servidor, que sabe dizer o que
+ * aconteceu, e não o cliente, que só sabe dizer "abortei".
+ */
+export const AI_REQUEST_TIMEOUT_MS = 75_000;
+
 class RemoteAIService implements AIService {
   readonly kind = 'gemini' as const;
 
@@ -133,7 +153,10 @@ class RemoteAIService implements AIService {
     history: AIMessage[];
     accessToken?: string;
   }): Promise<AIReply> {
+    const comecou = Date.now();
     let response: { content?: string; actions?: unknown; error?: string };
+
+    aiTrace('AI_REQUEST_BEGIN', {});
     try {
       response = await postJson<{ content?: string; actions?: unknown; error?: string }>(
         `${config.bffUrl.replace(/\/$/, '')}/ai-chat`,
@@ -143,27 +166,112 @@ class RemoteAIService implements AIService {
           // Only the recent turns travel — the BFF caps and sanitises anyway.
           history: history.slice(-12).map(({ role, content }) => ({ role, content })),
         },
-        { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} },
+        {
+          headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+          timeoutMs: AI_REQUEST_TIMEOUT_MS,
+        },
       );
+      aiTrace('AI_HTTP_STATUS', { httpStatus: 200, ms: Date.now() - comecou });
     } catch (error) {
+      const status = error instanceof ServiceError ? error.status : undefined;
+      const kind = error instanceof ServiceError ? error.kind : undefined;
+
+      /*
+       * O QUE O SERVIDOR DISSE VEM PRIMEIRO.
+       *
+       * `HTTP_502 · TRANSPORT` só informa que a nossa Function recusou — foi
+       * exatamente o que apareceu no Android e não permitiu distinguir Gemini
+       * fora do ar de defeito nosso. Quando o corpo da recusa traz o código, a
+       * linha DEV passa a dizer `GEMINI_UNAVAILABLE · UPSTREAM`.
+       *
+       * O fallback continua existindo: uma recusa sem corpo, ou vinda de um
+       * intermediário, ainda precisa render algum rótulo.
+       */
+      const servidor = readServerFailure(
+        error instanceof ServiceError ? error.payload : undefined,
+      );
+      const code =
+        servidor.code ?? TRANSPORT_CODE[kind ?? ''] ?? (status ? `HTTP_${status}` : 'UNKNOWN');
+      const stage = servidor.stage ?? 'TRANSPORT';
+
+      aiTrace('AI_REQUEST_ERROR', {
+        httpStatus: status,
+        code,
+        errorName: error instanceof Error ? error.name : undefined,
+        stage,
+        ms: Date.now() - comecou,
+      });
+
       // 429 é o limite do servidor. Chega aqui quando o limitador do cliente não
       // pegou — outro aparelho da mesma conta, ou o app reaberto, que zera a
       // janela local. É espera, não falha: a tela precisa saber a diferença.
       if (error instanceof ServiceError && error.status === 429) {
         throw new AIRateLimitError(0);
       }
-      throw error;
+      throw new AIRequestError(
+        {
+          httpStatus: status,
+          code,
+          errorName: error instanceof Error ? error.name : undefined,
+          stage,
+        },
+        error instanceof Error ? error.message : 'Falha ao consultar o assistente.',
+      );
     }
 
-    if (!response.content) {
-      throw new ServiceError('parse', response.error ?? 'O assistente não retornou resposta.');
+    aiTrace('AI_RESPONSE_RECEIVED', {
+      size: typeof response.content === 'string' ? response.content.length : 0,
+      actionCount: Array.isArray(response.actions) ? response.actions.length : 0,
+      ms: Date.now() - comecou,
+    });
+
+    /*
+     * Resposta 200 sem texto utilizável é falha, e precisa DIZER isso.
+     *
+     * Antes virava um `ServiceError('parse')` genérico e chegava à tela como
+     * "não foi possível obter uma resposta" — indistinguível de queda de rede.
+     * São problemas opostos: um se resolve tentando de novo, o outro não.
+     */
+    if (!hasRenderableText(response.content)) {
+      aiTrace('AI_REQUEST_ERROR', {
+        httpStatus: 200,
+        code: 'EMPTY_CONTENT',
+        stage: 'PARSE',
+        size: typeof response.content === 'string' ? response.content.length : 0,
+      });
+      throw new AIRequestError(
+        { httpStatus: 200, code: 'EMPTY_CONTENT', stage: 'PARSE' },
+        response.error ?? 'O assistente não retornou resposta.',
+      );
     }
+
     return {
-      content: response.content,
+      content: response.content!,
       local: false,
       actions: Array.isArray(response.actions) ? response.actions : [],
     };
   }
+}
+
+const TRANSPORT_CODE: Record<string, string> = {
+  offline: 'OFFLINE',
+  timeout: 'TIMEOUT',
+  parse: 'BAD_RESPONSE_BODY',
+  unsupported: 'UNSUPPORTED',
+  unconfigured: 'UNCONFIGURED',
+};
+
+/**
+ * O texto tem alguma coisa para a pessoa LER?
+ *
+ * Foi o que faltou para a bolha do "•" (§4 do handoff): uma resposta cujo
+ * conteúdo é só pontuação — um marcador de lista solto, um traço, um bullet —
+ * renderiza uma bolha que não diz nada e fica no histórico para sempre. Letra
+ * ou dígito é o critério: emoji e pontuação sozinhos não são resposta.
+ */
+export function hasRenderableText(content: string | undefined | null): boolean {
+  if (typeof content !== 'string') return false;
+  return /[\p{L}\p{N}]/u.test(content);
 }
 
 /* ------------------------------- local mode ------------------------------- */

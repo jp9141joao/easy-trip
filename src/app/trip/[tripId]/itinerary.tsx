@@ -7,7 +7,12 @@ import { ScrollView, View } from 'react-native';
 
 import { ActivityCard } from '@/components/cards';
 import { VisibilityField } from '@/components/collaboration';
-import { ActivityWeather, DayRouteCard } from '@/components/trip';
+import {
+  ActivityWeather,
+  DayRouteCard,
+  LocationPicker,
+  type PickedLocation,
+} from '@/components/trip';
 import { MembersSummary } from '@/components/collaboration/MemberRow';
 import {
   BottomSheet,
@@ -27,6 +32,7 @@ import {
   TimeField,
   useToast,
 } from '@/components/ui';
+import type { Coordinates } from '@/domain/route';
 import { groupItineraryByDate, sortItinerary } from '@/domain/selectors';
 import { itineraryItemSchema, type ItineraryItemInput } from '@/domain/schemas';
 import { ITINERARY_TYPES, type ItineraryItem, type ItineraryType } from '@/domain/types';
@@ -223,6 +229,13 @@ export default function ItineraryScreen() {
         item={editing}
         tripStart={trip.startDate}
         tripEnd={trip.endDate}
+        // O destino da viagem é onde o mapa abre quando o item ainda não tem
+        // ponto. Sem isso, a primeira marcação começaria no meio do oceano.
+        tripCenter={
+          trip.latitude !== undefined && trip.longitude !== undefined
+            ? { latitude: trip.latitude, longitude: trip.longitude }
+            : undefined
+        }
         nextSortOrder={sortItinerary(items).length}
         isShared={permissions.isShared}
         onClose={() => setEditorOpen(false)}
@@ -250,25 +263,15 @@ export default function ItineraryScreen() {
 /* ------------------------------ coordenadas ------------------------------- */
 
 /**
- * Texto do campo → número, ou nada.
+ * A pessoa mexeu no ponto? Só então a origem passa a ser `manual`.
  *
- * "Ou nada" é a parte que importa: campo vazio tem de virar `undefined`, e não
- * `0`. Latitude 0 e longitude 0 são um ponto real no Atlântico, e uma atividade
- * que caísse lá apareceria no mini mapa com um marcador numerado — sem que
- * ninguém tivesse digitado coordenada nenhuma.
+ * Compara com o que o mapa devolveu, e não mais com o texto de dois campos:
+ * um item que veio do catálogo de Sugestões e foi salvo sem tocar no mapa
+ * continua marcado como do catálogo, que é a informação verdadeira sobre a
+ * procedência daquela coordenada.
  */
-function parseCoordinate(value?: string): number | undefined {
-  if (!value?.trim()) return undefined;
-  const parsed = Number(value.trim().replace(',', '.'));
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-/** A pessoa mexeu na coordenada? Só então a origem passa a ser `manual`. */
-function coordinatesChanged(item: ItineraryItem, values: ItineraryItemInput): boolean {
-  return (
-    parseCoordinate(values.latitude) !== item.latitude ||
-    parseCoordinate(values.longitude) !== item.longitude
-  );
+function coordinatesChanged(item: ItineraryItem, ponto: PickedLocation | null): boolean {
+  return ponto?.latitude !== item.latitude || ponto?.longitude !== item.longitude;
 }
 
 /* ----------------------------- activity editor ---------------------------- */
@@ -278,6 +281,7 @@ function ActivityEditorSheet({
   item,
   tripStart,
   tripEnd,
+  tripCenter,
   nextSortOrder,
   isShared,
   onClose,
@@ -288,6 +292,7 @@ function ActivityEditorSheet({
   item: ItineraryItem | null;
   tripStart: string;
   tripEnd: string;
+  tripCenter?: Coordinates;
   nextSortOrder: number;
   isShared: boolean;
   onClose: () => void;
@@ -311,16 +316,53 @@ function ActivityEditorSheet({
       type: item?.type ?? 'atividade',
       title: item?.title ?? '',
       description: item?.description,
-      placeName: item?.placeName,
-      address: item?.address,
-      latitude: item?.latitude !== undefined ? String(item.latitude) : undefined,
-      longitude: item?.longitude !== undefined ? String(item.longitude) : undefined,
+      // `placeName`, `address`, `latitude` e `longitude` continuam no schema —
+      // o banco os quer, e a rota, o clima e o "Como chegar" dependem deles —
+      // mas saíram do formulário: quem os escreve agora é o `LocationPicker`,
+      // a partir do ponto tocado no mapa (§20–§23 do handoff).
       reservationReference: item?.reservationReference,
     },
   });
 
   const chosenDate = useWatch({ control, name: 'date' });
   const outsideTrip = chosenDate ? !isWithin(chosenDate, tripStart, tripEnd) : false;
+
+  /*
+   * O ponto marcado no mapa.
+   *
+   * Fica fora do `react-hook-form` porque não é um campo de texto e não tem
+   * validação de string: é um par de números que existe ou não existe. O
+   * `null` inicial significa "a pessoa não mexeu", e aí vale o que está no
+   * item — do mesmo jeito que o formulário de reservas resolve a modalidade,
+   * e pelo mesmo motivo: estado que só lê o valor inicial fica para trás
+   * quando a folha é reaproveitada.
+   */
+  const identidade = item?.id ?? 'novo';
+  const [pontoEscolhido, setPontoEscolhido] = useState<{
+    identidade: string;
+    value: PickedLocation | null;
+  } | null>(null);
+
+  /*
+   * Editar abre no ponto que está gravado, com o endereço que está gravado
+   * (§26). `address` vem definido — mesmo vazio — para o mapa entender que
+   * este ponto já foi resolvido e não pedir ao geocoder de novo a cada
+   * abertura da folha.
+   */
+  const coordinates: PickedLocation | null =
+    pontoEscolhido?.identidade === identidade
+      ? pontoEscolhido.value
+      : item?.latitude !== undefined && item?.longitude !== undefined
+        ? {
+            latitude: item.latitude,
+            longitude: item.longitude,
+            address: item.address ?? '',
+            placeName: item.placeName,
+          }
+        : null;
+
+  const setCoordinates = (value: PickedLocation | null) =>
+    setPontoEscolhido({ identidade, value });
 
   const persist = async (values: ItineraryItemInput) => {
     try {
@@ -334,11 +376,13 @@ function ActivityEditorSheet({
             type: values.type as ItineraryType,
             title: values.title,
             description: values.description,
-            placeName: values.placeName,
-            address: values.address,
-            latitude: parseCoordinate(values.latitude),
-            longitude: parseCoordinate(values.longitude),
-            placeSource: coordinatesChanged(item, values) ? 'manual' : item.placeSource,
+            // Resolvidos pelo mapa, não digitados. Vazio vira `undefined`
+            // para não gravar string vazia onde o certo é "não sei" (§24).
+            placeName: coordinates?.placeName || undefined,
+            address: coordinates?.address || undefined,
+            latitude: coordinates?.latitude,
+            longitude: coordinates?.longitude,
+            placeSource: coordinatesChanged(item, coordinates) ? 'manual' : item.placeSource,
             reservationReference: values.reservationReference,
             visibility,
           },
@@ -351,11 +395,11 @@ function ActivityEditorSheet({
           type: values.type as ItineraryType,
           title: values.title,
           description: values.description,
-          placeName: values.placeName,
-          address: values.address,
-          latitude: parseCoordinate(values.latitude),
-          longitude: parseCoordinate(values.longitude),
-          placeSource: parseCoordinate(values.latitude) === undefined ? undefined : 'manual',
+          placeName: coordinates?.placeName || undefined,
+          address: coordinates?.address || undefined,
+          latitude: coordinates?.latitude,
+          longitude: coordinates?.longitude,
+          placeSource: coordinates ? 'manual' : undefined,
           reservationReference: values.reservationReference,
           completed: false,
           sortOrder: nextSortOrder,
@@ -363,6 +407,7 @@ function ActivityEditorSheet({
         });
       }
       reset();
+      setPontoEscolhido(null);
       setConfirmOutside(false);
       onSaved();
     } catch {
@@ -471,80 +516,29 @@ function ActivityEditorSheet({
           />
         </View>
 
-        <Controller
-          control={control}
-          name="placeName"
-          render={({ field, fieldState }) => (
-            <TextField
-              label="Local"
-              placeholder="Nome do lugar"
-              value={field.value}
-              onChangeText={field.onChange}
-              error={fieldState.error?.message}
-            />
-          )}
-        />
-
         {/*
-          Localização (§17).
+          LOCALIZAÇÃO — só o mapa (§20, §21 do handoff).
 
-          O endereço é texto livre; as coordenadas são o que faz o item entrar
-          no mapa do dia, na distância e na previsão por horário. Sem elas o
-          item continua perfeitamente válido — só não é desenhável.
+          Saíram daqui, nesta ordem: "Latitude" e "Longitude" (rodada
+          anterior), e agora "Local" e "Endereço". Nenhum dos quatro é
+          pergunta que se faça a quem está planejando uma viagem — quem sabe o
+          endereço de um restaurante em Tóquio é o aparelho, não a pessoa.
 
-          O caminho preferido para preencher isto não é digitar: é adicionar
-          pelo módulo Sugestões, que já traz a coordenada do catálogo. Estes
-          campos existem para o caso em que a pessoa tem o ponto e quer
-          registrá-lo à mão.
+          O mapa passou a ser a FONTE DA VERDADE: um toque define o ponto, o
+          geocoder do sistema resolve o endereço, e os dois são gravados
+          juntos. Continuam existindo no banco `latitude`, `longitude`,
+          `address` e `placeName` — sem eles não há rota do dia, distância,
+          "Como chegar", clima por horário nem contexto para a IA (§23). O que
+          mudou foi quem os escreve.
         */}
-        <Controller
-          control={control}
-          name="address"
-          render={({ field, fieldState }) => (
-            <TextField
-              label="Endereço"
-              placeholder="Rua, número, bairro"
-              value={field.value}
-              onChangeText={field.onChange}
-              error={fieldState.error?.message}
-            />
-          )}
+        <LocationPicker
+          value={coordinates}
+          onChange={setCoordinates}
+          // Sem ponto ainda, o mapa abre no destino da viagem: é onde a
+          // atividade quase certamente é, e poupa a pessoa de atravessar o
+          // planeta arrastando.
+          fallbackCenter={tripCenter}
         />
-
-        <View style={{ flexDirection: 'row', gap: theme.spacing.md }}>
-          <Controller
-            control={control}
-            name="latitude"
-            render={({ field, fieldState }) => (
-              <View style={{ flex: 1 }}>
-                <TextField
-                  label="Latitude"
-                  placeholder="48.8606"
-                  value={field.value}
-                  onChangeText={field.onChange}
-                  error={fieldState.error?.message}
-                  keyboardType="numbers-and-punctuation"
-                />
-              </View>
-            )}
-          />
-          <Controller
-            control={control}
-            name="longitude"
-            render={({ field, fieldState }) => (
-              <View style={{ flex: 1 }}>
-                <TextField
-                  label="Longitude"
-                  placeholder="2.3376"
-                  value={field.value}
-                  onChangeText={field.onChange}
-                  error={fieldState.error?.message}
-                  keyboardType="numbers-and-punctuation"
-                />
-              </View>
-            )}
-          />
-        </View>
 
         <VisibilityField
           value={visibility}

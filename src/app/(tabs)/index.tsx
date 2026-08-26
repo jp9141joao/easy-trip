@@ -50,7 +50,7 @@ import { useArticles, useOffers, usePlaces } from '@/hooks/useContent';
 import { useCurrentTrip } from '@/hooks/useTrips';
 import { useChecklist, useExpenses, useItinerary } from '@/hooks/useTripData';
 import { formatMoney } from '@/lib/currency';
-import { formatDateRange, formatWeekdayDate } from '@/lib/date';
+import { formatClockTime, formatDateRange, formatWeekdayDate } from '@/lib/date';
 import { ITINERARY_TYPE_LABEL } from '@/lib/labels';
 import { useAuth } from '@/providers/AuthProvider';
 import { useConnectivity } from '@/providers/ConnectivityProvider';
@@ -297,7 +297,7 @@ export default function DashboardScreen() {
                           }}
                         >
                           <AppText variant="caption" color="brand" mono weight="bold">
-                            {activity.startTime ?? '--:--'}
+                            {formatClockTime(activity.startTime) ?? '--:--'}
                           </AppText>
                         </View>
 

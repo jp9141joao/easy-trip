@@ -36,7 +36,7 @@ import type {
 import { avatarStoragePath, validateAvatar } from '@/domain/avatar';
 import { DEFAULT_VISIBILITY, parseVisibility } from '@/domain/visibility';
 import { parseUserRole } from '@/domain/roles';
-import { nowISO, todayISO } from '@/lib/date';
+import { formatClockTime, nowISO, todayISO } from '@/lib/date';
 import { createId } from '@/lib/id';
 import { isUuid, likeContains } from '@/lib/postgrest';
 import {
@@ -262,8 +262,15 @@ const toItinerary = (row: Row): ItineraryItem => ({
   id: row.id,
   tripId: row.trip_id,
   date: row.date,
-  startTime: row.start_time ?? undefined,
-  endTime: row.end_time ?? undefined,
+  /*
+   * O contrato de `ItineraryItem` diz "HH:mm", e o PostgREST entrega o `time`
+   * do Postgres como "HH:MM:SS". A passagem crua violava o próprio tipo, e o
+   * resultado aparecia na tela: "01:59:00" no trilho da Jornada e "até
+   * 19:59:00" na etiqueta, empurrando "Compartilhado" para fora do cartão
+   * (§17 do handoff). Normalizar aqui conserta todo mundo de uma vez.
+   */
+  startTime: formatClockTime(row.start_time),
+  endTime: formatClockTime(row.end_time),
   type: row.type,
   title: row.title,
   description: row.description ?? undefined,

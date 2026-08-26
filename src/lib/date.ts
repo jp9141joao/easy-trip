@@ -113,6 +113,27 @@ export function formatWeekdayDate(value: ISODate): string {
 }
 
 /** Normalises free-form time input to `HH:mm`, or `null` when unparseable. */
+/**
+ * "10:00:00" → "10:00". O que a pessoa lê é hora e minuto (§17 do handoff).
+ *
+ * O `time` do Postgres chega pelo PostgREST como `HH:MM:SS`, e o cartão da
+ * Jornada mostrava exatamente isso: "01:59:00", "até 19:59:00". Os segundos
+ * não dizem nada sobre um passeio, ocupam espaço numa linha que já disputa
+ * lugar com as etiquetas, e empurravam "Compartilhado" para fora do cartão.
+ *
+ * O corte é só de APRESENTAÇÃO: quem guarda o valor continua guardando o que
+ * veio. Devolve `undefined` para o que não é hora — melhor não mostrar nada do
+ * que mostrar lixo formatado.
+ */
+export function formatClockTime(value?: string | null): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const match = /^\s*(\d{1,2}):([0-5]\d)(?::[0-5]\d)?(?:\.\d+)?\s*$/.exec(value);
+  if (!match) return undefined;
+  const hours = Number(match[1]);
+  if (hours > 23) return undefined;
+  return `${String(hours).padStart(2, '0')}:${match[2]}`;
+}
+
 export function normalizeTime(value: string): string | null {
   const match = value.trim().match(/^(\d{1,2})[:h]?(\d{2})?$/);
   if (!match) return null;

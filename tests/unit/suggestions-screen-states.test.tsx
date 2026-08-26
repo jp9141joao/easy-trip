@@ -224,7 +224,16 @@ describe('o papel ainda não foi resolvido', () => {
 });
 
 describe('estados da própria coleção', () => {
-  it('erro de geração sem nada carregado vira estado de erro com nova tentativa', () => {
+  /*
+   * §15 do handoff — cada causa tem o seu texto.
+   *
+   * Antes tudo isto era "Sugestões indisponíveis" com um "Tentar de novo" ao
+   * lado. Foi o que apareceu no Android para Moscovo, e não dizia nada: o
+   * mesmo cartão servia para a janela de seis horas, para falta de permissão,
+   * para o serviço não publicado e para queda de rede — quatro problemas com
+   * quatro saídas diferentes, e um deles sequer é problema.
+   */
+  it('a falha do provedor é dita como falha do provedor, e permite nova tentativa', () => {
     Object.assign(mockSuggestionsQuery, {
       isError: true,
       error: new SuggestionGenerationError('AI_PROVIDER_FAILED', 'O Gemini falhou agora.'),
@@ -232,8 +241,61 @@ describe('estados da própria coleção', () => {
 
     const view = render();
 
-    expect(view.getByText('Sugestões indisponíveis')).toBeTruthy();
-    expect(view.getByText('O Gemini falhou agora.')).toBeTruthy();
+    expect(view.getByText('A geração falhou')).toBeTruthy();
+    expect(view.getByText('Tentar novamente')).toBeTruthy();
+  });
+
+  it('sem conexão, o texto fala de conexão — e não de geração', () => {
+    Object.assign(mockSuggestionsQuery, {
+      isError: true,
+      error: new SuggestionGenerationError(
+        'AI_UNAVAILABLE',
+        'Não foi possível alcançar o serviço de sugestões.',
+        [],
+        undefined,
+        { transport: 'offline' },
+      ),
+    });
+
+    const view = render();
+
+    expect(view.getByText('Sem conexão com o serviço')).toBeTruthy();
+    expect(view.getByText('Tentar novamente')).toBeTruthy();
+  });
+
+  it('sem permissão, não há botão que possa dar certo', () => {
+    Object.assign(mockSuggestionsQuery, {
+      isError: true,
+      error: new SuggestionGenerationError(
+        'PERMISSION_DENIED',
+        'Sua permissão atual não permite gerar sugestões.',
+        [],
+        undefined,
+        { httpStatus: 403 },
+      ),
+    });
+
+    const view = render();
+
+    expect(view.getByText('Sem permissão para gerar')).toBeTruthy();
+    expect(view.queryByText('Tentar de novo')).toBeNull();
+  });
+
+  it('a Function não publicada é dita como serviço, e não como destino sem sugestões', () => {
+    Object.assign(mockSuggestionsQuery, {
+      isError: true,
+      error: new SuggestionGenerationError(
+        'EDGE_FUNCTION_UNAVAILABLE',
+        'O serviço de sugestões não está publicado.',
+        [],
+        undefined,
+        { httpStatus: 404 },
+      ),
+    });
+
+    const view = render();
+
+    expect(view.getByText('Serviço não publicado')).toBeTruthy();
   });
 
   it('a janela de seis horas não é apresentada como falha', () => {
@@ -247,6 +309,8 @@ describe('estados da própria coleção', () => {
     expect(view.getByText('Atualizado recentemente')).toBeTruthy();
     // Recusa de janela não oferece "tentar de novo": tentar não muda nada.
     expect(view.queryByText('Tentar de novo')).toBeNull();
+    // E diz quando será possível de novo, em vez de parecer definitivo (§15).
+    expect(view.getByText(/poderá atualizar as sugestões novamente mais tarde/)).toBeTruthy();
   });
 
   it('geração incompleta mostra o que veio e diz que não completou', () => {
@@ -262,11 +326,10 @@ describe('estados da própria coleção', () => {
 
     const view = render();
 
+    // O que já existe FICA na tela: uma falha parcial não apaga conteúdo bom.
     expect(view.getByText('Sugestão a')).toBeTruthy();
     expect(view.getByText('Sugestão b')).toBeTruthy();
-    expect(
-      view.getByText(/Conseguimos apenas algumas sugestões para este destino\./),
-    ).toBeTruthy();
+    expect(view.getByText(/Conseguimos apenas parte das sugestões/)).toBeTruthy();
   });
 
   it('sucesso mostra a lista e o botão de atualizar', () => {

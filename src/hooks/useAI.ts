@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   enforceAIActionPromiseCoherence,
+  hasRenderableText,
   parseAIActions,
   type AITripAction,
 } from '@/domain/aiActions';
+import { AIRequestError, aiTrace } from '@/lib/aiTrace';
 /*
  * Anti-spam do lado do cliente (§10).
  *
@@ -194,6 +196,7 @@ export function useAIConversation(trip: Trip | null) {
       clientRequestsInFlight.add(rateLimitKey);
       clientRateLimitHits.set(rateLimitKey, [...recent, now]);
       try {
+        aiTrace('USER_SEND', { size: prompt.length });
         const history = messagesQuery.data ?? [];
         await dataSource.ai.addMessage({ conversationId, role: 'user', content: prompt });
         await queryClient.invalidateQueries({ queryKey: queryKeys.aiMessages(conversationId) });
@@ -237,15 +240,47 @@ export function useAIConversation(trip: Trip | null) {
          * também protege o app enquanto a Function remota estiver numa versão
          * anterior à correção equivalente do servidor.
          */
+        aiTrace('AI_PARSE_BEGIN', { size: reply.content.length });
         const actions = parseAIActions(reply.actions, trip);
         const coherent = enforceAIActionPromiseCoherence(reply.content, actions.length);
 
-        if (typeof __DEV__ !== 'undefined' && __DEV__ && coherent.stripped > 0) {
-          // Só contagens: texto da conversa e contexto da viagem são privados.
-          console.warn('AI_REPLY_PROMISE_STRIPPED', {
-            validActions: actions.length,
-            strippedPromises: coherent.stripped,
+        aiTrace('AI_PARSE_RESULT', {
+          parsed: true,
+          size: coherent.content.length,
+          code: coherent.stripped > 0 ? 'PROMISES_STRIPPED' : undefined,
+        });
+        aiTrace('AI_ACTION_COUNT', {
+          actionCount: actions.length,
+          itineraryItems: actions.reduce(
+            (total, action) => total + (action.type === 'itinerary.add' ? action.items.length : 0),
+            0,
+          ),
+        });
+
+        /*
+         * A BOLHA DO "•" MORRE AQUI (§4 do handoff).
+         *
+         * Uma resposta cujo texto não tem letra nem dígito — um marcador de
+         * lista solto, um traço, um bullet — não é resposta: renderiza uma
+         * bolha muda e fica no histórico para sempre, reaparecendo a cada
+         * abertura da conversa. Gravar isso é pior do que falhar, porque a
+         * falha some quando a pessoa tenta de novo e a bolha não.
+         *
+         * As duas camadas de coerência já não produzem esse resíduo; esta é a
+         * última barreira, e vale também para o que chegar pela rede de uma
+         * versão anterior da Function.
+         */
+        if (!hasRenderableText(coherent.content)) {
+          aiTrace('AI_REQUEST_ERROR', {
+            httpStatus: 200,
+            code: 'EMPTY_AFTER_PARSE',
+            stage: 'PARSE',
+            size: coherent.content.length,
           });
+          throw new AIRequestError(
+            { httpStatus: 200, code: 'EMPTY_AFTER_PARSE', stage: 'PARSE' },
+            'O assistente respondeu sem nada legível. Tente novamente.',
+          );
         }
 
         const message = await dataSource.ai.addMessage({
@@ -253,14 +288,17 @@ export function useAIConversation(trip: Trip | null) {
           role: 'assistant',
           content: coherent.content,
         });
+        aiTrace('AI_MESSAGE_COMMIT', { size: coherent.content.length });
 
         if (actions.length > 0) {
           setActionsByMessage((current) => ({ ...current, [message.id]: actions }));
+          aiTrace('AI_ACTION_COMMIT', { actionCount: actions.length });
         }
 
         return { ...reply, content: coherent.content, messageId: message.id, actions };
       } finally {
         clientRequestsInFlight.delete(rateLimitKey);
+        aiTrace('AI_REQUEST_END', {});
       }
     },
     onSettled: () => {

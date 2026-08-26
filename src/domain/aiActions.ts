@@ -390,12 +390,30 @@ const ACTION_PROMISE_PATTERNS = [
   /\bposso (adicionar|aplicar|implementar|registrar|incluir)\b/i,
 ];
 
-function splitActionPromiseSentences(content: string): string[] {
-  return content
-    .split(/\n+/)
-    .flatMap((line) => line.match(/[^.!?]+[.!?]?/g) ?? [])
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
+function splitActionPromiseSentences(line: string): string[] {
+  return (line.match(/[^.!?]+[.!?]?/g) ?? []).map((sentence) => sentence.trim()).filter(Boolean);
+}
+
+/**
+ * Um marcador de lista sem texto — "- ", "* ", "1. " — e mais nada.
+ *
+ * É o resíduo que sobra quando o corte de promessas leva embora o conteúdo de
+ * um item de lista. Renderizado pelo `Markdown`, vira uma bolha com um "•"
+ * solto: o defeito visto no Android (§4 do handoff).
+ */
+function isBareListMarker(line: string): boolean {
+  return /^\s*(?:[-*+]|\d{1,3}[.)])\s*$/.test(line);
+}
+
+/**
+ * Tem alguma coisa para a pessoa LER?
+ *
+ * Letra ou dígito. Pontuação sozinha — um traço, um bullet, dois pontos — não
+ * é resposta, e uma bolha com isso dentro fica no histórico sem dizer nada.
+ */
+export function hasRenderableText(content: string | undefined | null): boolean {
+  if (typeof content !== 'string') return false;
+  return /[\p{L}\p{N}]/u.test(content);
 }
 
 /**
@@ -411,15 +429,38 @@ export function enforceAIActionPromiseCoherence(
 ): { content: string; stripped: number } {
   if (validActionCount > 0) return { content, stripped: 0 };
 
-  const sentences = splitActionPromiseSentences(content);
-  const kept = sentences.filter(
-    (sentence) => !ACTION_PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
-  );
-  const stripped = sentences.length - kept.length;
+  /*
+   * Linha a linha, como no servidor (`supabase/functions/ai-chat/protocol.ts`).
+   *
+   * Juntar tudo com espaço achatava a resposta inteira num parágrafo — o
+   * roteiro perdia a lista — e deixava para trás o marcador de um item cujo
+   * texto tinha sido cortado. Uma linha "- " vira uma bolha com um "•" e nada
+   * mais, que é exatamente o que apareceu no aparelho.
+   */
+  let stripped = 0;
+  const linhas: string[] = [];
+
+  for (const linha of content.split('\n')) {
+    if (linha.trim().length === 0) {
+      linhas.push('');
+      continue;
+    }
+
+    const sentences = splitActionPromiseSentences(linha);
+    const kept = sentences.filter(
+      (sentence) => !ACTION_PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
+    );
+    stripped += sentences.length - kept.length;
+
+    const rebuilt = kept.join(' ').replace(/[ \t]+/g, ' ').trimEnd();
+    if (rebuilt.trim().length === 0 || isBareListMarker(rebuilt)) continue;
+    linhas.push(rebuilt);
+  }
+
   if (stripped === 0) return { content, stripped: 0 };
 
-  const rebuilt = kept.join(' ').replace(/[ \t]+/g, ' ').trim();
-  if (rebuilt) return { content: rebuilt, stripped };
+  const rebuilt = linhas.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (hasRenderableText(rebuilt)) return { content: rebuilt, stripped };
 
   return {
     content:

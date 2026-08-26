@@ -37,7 +37,7 @@ import type {
   Trip,
 } from '@/domain/types';
 import { formatMoney } from '@/lib/currency';
-import { formatLongDate, formatShortDate } from '@/lib/date';
+import { formatClockTime, formatLongDate, formatShortDate } from '@/lib/date';
 import {
   ADVISOR_STATUS_LABEL,
   COST_LEVEL_LABEL,
@@ -95,7 +95,7 @@ export function ActivityCard({
       {/* Timeline rail */}
       <View style={{ alignItems: 'center', width: 52 }}>
         <AppText variant="caption" color={item.completed ? 'tertiary' : 'brand'} weight="semibold" mono>
-          {item.startTime ?? '--:--'}
+          {formatClockTime(item.startTime) ?? '--:--'}
         </AppText>
         <View
           style={{
@@ -119,7 +119,7 @@ export function ActivityCard({
         accessibilityLabel={[
           item.title,
           ITINERARY_TYPE_LABEL[item.type],
-          item.startTime ? `às ${item.startTime}` : null,
+          item.startTime ? `às ${formatClockTime(item.startTime) ?? item.startTime}` : null,
           item.completed ? 'Concluída' : null,
           showVisibility ? visibilityAccessibilityLabel(item.visibility) : null,
           authorLabel,
@@ -154,10 +154,32 @@ export function ActivityCard({
               </AppText>
             ) : null}
 
-            <View style={{ flexDirection: 'row', gap: theme.spacing.sm, marginTop: 2 }}>
+            {/*
+              A linha de etiquetas QUEBRA (§18).
+
+              Sem `flexWrap` as três — tipo, "até HH:mm" e "Compartilhado" —
+              disputavam uma linha só dentro de uma coluna `flex: 1`, e a
+              última era cortada na borda direita do cartão. Quebrar é o
+              comportamento certo: são informações independentes, e nenhuma
+              delas precisa estar na mesma linha das outras.
+            */}
+            <View
+              style={{
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: theme.spacing.sm,
+                rowGap: theme.spacing.xs,
+                marginTop: 2,
+              }}
+            >
               <Badge label={ITINERARY_TYPE_LABEL[item.type]} tone="neutral" />
-              {item.endTime ? (
-                <Badge label={`até ${item.endTime}`} tone="neutral" icon={Clock} />
+              {formatClockTime(item.endTime) ? (
+                <Badge
+                  label={`até ${formatClockTime(item.endTime)}`}
+                  tone="neutral"
+                  icon={Clock}
+                />
               ) : null}
               {showVisibility ? <VisibilityBadge visibility={item.visibility} /> : null}
             </View>

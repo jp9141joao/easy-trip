@@ -1,10 +1,15 @@
 import { Redirect, Tabs } from 'expo-router';
-import type { ComponentProps } from 'react';
+import { useRef, type ComponentProps } from 'react';
 import * as Haptics from 'expo-haptics';
 import { Compass, Home, Target, UserRoundCheck, type LucideIcon } from 'lucide-react-native';
 import { Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import {
+  DockMetricsProvider,
+  dockBottomOffset,
+  useReportDockTop,
+} from '@/components/navigation/DockMetrics';
 import { AppText } from '@/components/ui';
 import { useKeyboardVisible } from '@/hooks/useKeyboard';
 import { useAuth } from '@/providers/AuthProvider';
@@ -27,15 +32,23 @@ export default function TabsLayout() {
 
   if (!isAuthenticated) return <Redirect href="/(auth)/login" />;
 
+  /*
+    O provider envolve as abas para que uma tela consiga perguntar quanto
+    espaço o dock ocupa DE VERDADE — altura medida mais o deslocamento da área
+    segura —, em vez de reservar um número fixo que só acerta num aparelho. É o
+    que corrige o vão entre o composer da IA e a navbar (§7, §8 do handoff).
+  */
   return (
-    <Tabs
-      screenOptions={{ headerShown: false }}
-      tabBar={(props) => <FloatingDock {...props} />}
-    >
-      {TABS.map((tab) => (
-        <Tabs.Screen key={tab.name} name={tab.name} options={{ title: tab.label }} />
-      ))}
-    </Tabs>
+    <DockMetricsProvider>
+      <Tabs
+        screenOptions={{ headerShown: false }}
+        tabBar={(props) => <FloatingDock {...props} />}
+      >
+        {TABS.map((tab) => (
+          <Tabs.Screen key={tab.name} name={tab.name} options={{ title: tab.label }} />
+        ))}
+      </Tabs>
+    </DockMetricsProvider>
   );
 }
 
@@ -48,6 +61,8 @@ function FloatingDock({ state, navigation }: BottomTabBarProps) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const keyboardVisible = useKeyboardVisible();
+  const reportDockTop = useReportDockTop();
+  const barRef = useRef<View>(null);
 
   // Enquanto o usuário digita, o dock e o teclado disputam a mesma faixa
   // inferior — e trocar de aba não é o que se quer fazer no meio de uma frase.
@@ -62,10 +77,39 @@ function FloatingDock({ state, navigation }: BottomTabBarProps) {
         position: 'absolute',
         left: theme.spacing.screen,
         right: theme.spacing.screen,
-        bottom: Math.max(insets.bottom, theme.spacing.md),
+        // A mesma expressão que `dockBottomOffset` devolve a quem precisa
+        // calcular a folga. Importada, e não repetida: duas cópias divergem na
+        // primeira vez que uma delas mudar.
+        bottom: dockBottomOffset(insets, theme),
       }}
     >
       <View
+        ref={barRef}
+        testID="floating-dock-bar"
+        collapsable={false}
+        /*
+          Publica o TOPO da barra em coordenadas da janela — não a altura dela.
+
+          A diferença é a correção do vão: com a altura, quem consome precisa
+          supor onde a tela termina para saber se há sobreposição, e foi essa
+          suposição que errou duas vezes. Com a posição, a sobreposição é uma
+          subtração entre dois números medidos.
+        */
+        onLayout={(event) => {
+          const localY = event.nativeEvent.layout.y;
+          const node = barRef.current;
+          if (!node?.measureInWindow) {
+            reportDockTop(localY);
+            return;
+          }
+          // Vale desde já; `measureInWindow` refina quando responder.
+          reportDockTop(localY);
+          node.measureInWindow((_x, y, _w, height) => {
+            // 0×0 é "ainda não posicionado", não "está no topo da janela".
+            if (!Number.isFinite(y) || (y === 0 && height === 0)) return;
+            reportDockTop(y);
+          });
+        }}
         style={[
           {
             flexDirection: 'row',

@@ -45,6 +45,7 @@ import {
   type Expense,
   type ExpenseCategory,
 } from '@/domain/types';
+import { CurrencyConverterCard } from '@/components/trip';
 import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useExpenseMutations, useExpenses } from '@/hooks/useTripData';
@@ -207,6 +208,17 @@ export default function FinanceScreen() {
               </View>
             </View>
           </GlassCard>
+
+          {/*
+            O conversor entra logo abaixo do resumo do orçamento, e antes da
+            lista: ele é ferramenta de consulta rápida ("quanto é isso em
+            rublos?"), e quem abre a Carteira no meio da viagem costuma estar
+            justamente com essa pergunta na mão (§23, §27 do handoff).
+
+            Some sozinho quando não sabemos a moeda do país — sem card quebrado
+            e sem seletor pedindo à pessoa um dado que o sistema deveria ter.
+          */}
+          <CurrencyConverterCard trip={trip} />
 
           {unconverted ? (
             <InlineNotice icon={TriangleAlert} tone="warning">

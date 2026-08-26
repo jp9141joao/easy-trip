@@ -178,6 +178,53 @@ jest.mock('expo-haptics', () => ({
   ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
 }));
 
+/* --------------------------------- Rastro IA ------------------------------- */
+
+/**
+ * O rastro da IA (`src/lib/aiTrace.ts`) escreve uma linha por fase em DEV — e
+ * `__DEV__` é verdadeiro no Jest. São centenas de linhas por execução: elas
+ * afogam a saída dos testes e chegaram a fazer uma suíte vizinha estourar o
+ * tempo limite só pelo custo de imprimir.
+ *
+ * O canal continua exercitável: `onAITrace` entrega os mesmos eventos aos
+ * testes que quiserem observá-los, sem passar pelo console.
+ */
+const consoleLog = console.log.bind(console);
+console.log = (...args: unknown[]) => {
+  if (typeof args[0] === 'string' && args[0].startsWith('AI_TRACE ')) return;
+  consoleLog(...(args as []));
+};
+
+/* ---------------------------------- Mapas --------------------------------- */
+
+/**
+ * `react-native-maps` só existe com módulo nativo — em Node ele nem carrega.
+ *
+ * O dublê não desenha mapa nenhum e não precisa: o que os testes verificam é o
+ * CONTRATO em volta dele. Que um toque no mapa vira uma coordenada, que o
+ * marcador aparece só quando há ponto, e que nenhum número de latitude chega à
+ * tela. Para isso bastam views que repassam props e eventos.
+ */
+jest.mock('react-native-maps', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+
+  const MapView = ({ children, ...props }: Record<string, unknown> & { children?: unknown }) =>
+    React.createElement(View, props, children as never);
+  const passthrough = (props: Record<string, unknown>) => React.createElement(View, props);
+
+  return {
+    __esModule: true,
+    default: MapView,
+    MapView,
+    Marker: passthrough,
+    Polyline: passthrough,
+    Callout: passthrough,
+    PROVIDER_DEFAULT: undefined,
+    PROVIDER_GOOGLE: 'google',
+  };
+});
+
 /* --------------------------------- Ícones --------------------------------- */
 
 // `lucide-react-native` só publica ESM (.mjs), que o transform do jest-expo não

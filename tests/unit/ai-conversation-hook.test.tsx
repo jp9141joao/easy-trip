@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
+import { onAITrace, type AITraceFields } from '@/lib/aiTrace';
 import { AIRateLimitError, AIRequestInFlightError } from '@/domain/aiRateLimit';
 import type { AIMessage, Trip } from '@/domain/types';
 import { resetAIClientRateLimitForTests, useAIConversation } from '@/hooks/useAI';
@@ -395,7 +396,10 @@ describe('C. a proposta que fica pendente', () => {
   });
 
   it('remove promessa depois que a validação local descarta a action', async () => {
-    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // O aviso solto virou rastro estruturado (§2 do handoff): as mesmas
+    // contagens, agora numa fase nomeada que o aparelho também emite.
+    const fases: { fase: string; campos: AITraceFields }[] = [];
+    const parar = onAITrace((fase, campos) => fases.push({ fase, campos }));
     reply.content =
       'Encontrei algumas opções para amanhã. Preparei a proposta abaixo. ' +
       'Revise e confirme no aplicativo.';
@@ -417,10 +421,13 @@ describe('C. a proposta que fica pendente', () => {
     const assistant = db.messages.find((message) => message.role === 'assistant');
     expect(assistant?.content).toBe('Encontrei algumas opções para amanhã.');
     expect(view.result.current.pendingProposal).toBeNull();
-    expect(warning).toHaveBeenCalledWith('AI_REPLY_PROMISE_STRIPPED', {
-      validActions: 0,
-      strippedPromises: 2,
+    expect(fases.find((f) => f.fase === 'AI_PARSE_RESULT')?.campos).toMatchObject({
+      code: 'PROMISES_STRIPPED',
     });
+    expect(fases.find((f) => f.fase === 'AI_ACTION_COUNT')?.campos).toMatchObject({
+      actionCount: 0,
+    });
+    parar();
   });
 
   it('aplicada, deixa de estar aberta — e não pode reaplicar', async () => {
@@ -500,5 +507,108 @@ describe('C. a proposta que fica pendente', () => {
     expect(second.actions[0].type).toBe('itinerary.add');
     expect(view.result.current.actionsFor(first.messageId)).toHaveLength(1);
     expect(view.result.current.actionsFor(second.messageId)).toHaveLength(1);
+  });
+});
+
+/* -------------------- D. o que o aparelho não conseguia ver ------------------- */
+
+/**
+ * §1–§8 do handoff: os dois sintomas do Android físico.
+ *
+ * A bolha do "•" e o "Não foi possível obter uma resposta agora" chegavam à
+ * tela sem dizer o que tinha acontecido. Estes casos fixam as duas garantias
+ * que faltavam: nada ilegível vira mensagem, e toda falha carrega status,
+ * código e fase.
+ */
+describe('D. a resposta ilegível nunca vira mensagem', () => {
+  it.each(['•', '- ', '   ', '*'])('%p é recusado em vez de virar bolha', async (texto) => {
+    reply.content = texto;
+    reply.actions = [];
+    const view = await montar();
+
+    await act(async () => {
+      await expect(view.result.current.send.mutateAsync('monte um roteiro')).rejects.toMatchObject({
+        name: 'AIRequestError',
+        fields: { code: 'EMPTY_AFTER_PARSE', stage: 'PARSE' },
+      });
+    });
+
+    // A pergunta fica (ela foi feita), mas nenhuma bolha muda entra no histórico.
+    expect(db.messages.filter((m) => m.role === 'assistant')).toHaveLength(0);
+  });
+
+  it('recarregar a conversa não faz o "•" reaparecer', async () => {
+    reply.content = '•';
+    const primeira = await montar();
+    await act(async () => {
+      await primeira.result.current.send.mutateAsync('monte um roteiro').catch(() => undefined);
+    });
+
+    // Uma segunda montagem lê o que está gravado. Se um "•" tivesse sido
+    // persistido, ele voltaria aqui — e voltava, a cada abertura da aba.
+    const segunda = await montar();
+    await waitFor(() => expect(segunda.result.current.isLoading).toBe(false));
+    for (const message of segunda.result.current.messages) {
+      expect(message.content.trim()).not.toMatch(/^(?:[-*+•]|\d{1,3}[.)])$/);
+    }
+  });
+});
+
+describe('D2. toda falha diz status, código e fase', () => {
+  it('o rastro registra começo, erro e fim mesmo quando o envio falha', async () => {
+    const fases: string[] = [];
+    const parar = onAITrace((fase) => fases.push(fase));
+    mockAiSend.mockRejectedValueOnce(new Error('boom'));
+    const view = await montar();
+
+    await act(async () => {
+      await view.result.current.send.mutateAsync('oi').catch(() => undefined);
+    });
+    parar();
+
+    expect(fases).toContain('USER_SEND');
+    expect(fases).toContain('AI_REQUEST_END');
+  });
+
+  it('o rastro conta as actions que sobreviveram à validação', async () => {
+    const eventos: { fase: string; campos: AITraceFields }[] = [];
+    const parar = onAITrace((fase, campos) => eventos.push({ fase, campos }));
+    reply.content = 'Seu dia está montado.';
+    reply.actions = [
+      {
+        type: 'itinerary.add',
+        label: 'Adicionar ao roteiro',
+        items: [
+          { title: 'Louvre', date: '2026-08-23' },
+          { title: 'Orsay', date: '2026-08-23' },
+          { title: 'Sena', date: '2026-08-23' },
+        ],
+      },
+    ];
+    const view = await montar();
+
+    await act(async () => {
+      await view.result.current.send.mutateAsync('monte um roteiro');
+    });
+    parar();
+
+    expect(eventos.find((e) => e.fase === 'AI_ACTION_COUNT')?.campos).toMatchObject({
+      actionCount: 1,
+      itineraryItems: 3,
+    });
+    expect(eventos.some((e) => e.fase === 'AI_MESSAGE_COMMIT')).toBe(true);
+    expect(eventos.some((e) => e.fase === 'AI_ACTION_COMMIT')).toBe(true);
+  });
+
+  it('toque duplo continua fazendo UMA chamada só', async () => {
+    const view = await montar();
+
+    await act(async () => {
+      const primeira = view.result.current.send.mutateAsync('monte um roteiro');
+      const segunda = view.result.current.send.mutateAsync('monte um roteiro');
+      await Promise.all([primeira, segunda.catch(() => undefined)]);
+    });
+
+    expect(mockAiSend).toHaveBeenCalledTimes(1);
   });
 });

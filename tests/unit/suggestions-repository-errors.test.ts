@@ -225,22 +225,75 @@ describe('Supabase suggestion repository failures', () => {
     fetch.mockRestore();
   });
 
-  it('does not call Gemini again after a cold start inside the six-hour window', async () => {
+  /**
+   * O ESTADO PRESO DE MOSCOVO (§13 do handoff).
+   *
+   * A tela do Android mostrava "Sugestões indisponíveis / Ainda não encontramos
+   * sugestões suficientes para este destino", com um botão "Tentar novamente"
+   * que não tinha como funcionar. A causa não era o backend: uma tentativa
+   * anterior tinha consumido a janela de seis horas — o claim é gasto ANTES do
+   * Gemini, de propósito, para proteger custo — e, dentro da janela, este
+   * caminho nem chama a Function.
+   *
+   * Ou seja: não houve geração nenhuma para ser "incompleta". Chamar aquilo de
+   * `INCOMPLETE_GENERATION` fazia a tela pintar uma falha permanente onde o
+   * sistema só estava dentro do próprio limite. O código honesto é
+   * `REFRESH_LIMITED`, que a tela apresenta como informação com prazo.
+   */
+  it('reports the closed six-hour window as REFRESH_LIMITED, not a failed generation', async () => {
     const fetch = jest.spyOn(global, 'fetch');
     const refreshedAt = new Date().toISOString();
 
     const firstColdStart = repositoryHarness({ places: [], refreshedAt }).repository;
 
-    /*
-     * A abertura normal da tela dentro da janela: nada é gerado, e o resultado
-     * é honesto sobre estar abaixo do mínimo em vez de devolver `[]` como se
-     * fosse a lista final (§21 do handoff).
-     */
     await expect(firstColdStart.ensure('trip-1')).rejects.toMatchObject({
       name: 'SuggestionGenerationError',
-      code: 'INCOMPLETE_GENERATION',
+      code: 'REFRESH_LIMITED',
     } satisfies Partial<SuggestionGenerationError>);
+    // A economia continua sendo a razão de ser da janela: nenhuma ida ao Gemini.
     expect(fetch).not.toHaveBeenCalled();
+    fetch.mockRestore();
+  });
+
+  it('carries a sanitised diagnostic saying the window was closed', async () => {
+    const fetch = jest.spyOn(global, 'fetch');
+    const { repository } = repositoryHarness({
+      places: [],
+      refreshedAt: new Date().toISOString(),
+    });
+
+    // O que faltava no aparelho: distinguir "janela fechada" de "backend fora"
+    // sem abrir o Metro. Só números e rótulos — nada de token nem de corpo.
+    await expect(repository.ensure('trip-1')).rejects.toMatchObject({
+      code: 'REFRESH_LIMITED',
+      diagnostics: { refreshWindowOpen: false, forced: false, totalCount: 0 },
+    });
+    fetch.mockRestore();
+  });
+
+  it('a genuine partial generation stays INCOMPLETE_GENERATION', async () => {
+    // Contraprova do teste acima: com a janela ABERTA, a geração acontece,
+    // volta insuficiente, e aí "incompleta" é a palavra certa.
+    const fetch = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        suggestions: [
+          {
+            title: 'Passeio pelo Sena',
+            category: 'lugares',
+            description: 'Um passeio pelas margens do rio para conhecer diferentes áreas de Paris.',
+          },
+        ],
+      }),
+    } as Response);
+    const { repository } = repositoryHarness({ places: [] });
+
+    await expect(repository.ensure('trip-1')).rejects.toMatchObject({
+      code: 'INCOMPLETE_GENERATION',
+      diagnostics: { refreshWindowOpen: true, catalogCount: 0, aiCount: 1 },
+    });
+    expect(fetch).toHaveBeenCalled();
     fetch.mockRestore();
   });
 

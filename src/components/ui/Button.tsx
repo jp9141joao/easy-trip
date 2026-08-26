@@ -1,4 +1,5 @@
 import * as Haptics from 'expo-haptics';
+import * as React from 'react';
 import type { LucideIcon } from 'lucide-react-native';
 import {
   ActivityIndicator,
@@ -244,6 +245,67 @@ export function ButtonRow({ children }: { children: React.ReactNode }) {
   return (
     <View style={{ flexDirection: 'row', gap: theme.spacing.md, alignItems: 'center' }}>
       {children}
+    </View>
+  );
+}
+
+/**
+ * Uma fileira de botões que vira coluna quando os rótulos não cabem (§14).
+ *
+ * O DEFEITO: dois botões `flex: 1` lado a lado num cartão de sugestão. Num
+ * aparelho de 360dp cada um ficava com cerca de 120dp, e "Adicionar ao
+ * roteiro" — que é a ação principal do cartão — aparecia como "Adicionar ao
+ * r...". Um botão que não diz o que faz não é um botão.
+ *
+ * `numberOfLines={1}` no rótulo não é o problema: rótulo de botão em duas
+ * linhas é pior. O problema é insistir na fileira quando ela não cabe.
+ *
+ * A DECISÃO É MEDIDA, NÃO ADIVINHADA
+ *
+ * A largura vem do `onLayout` do próprio contêiner — não da largura da tela,
+ * que ignora as margens da tela, o recuo do cartão e o aninhamento. O que se
+ * estima é só quanto CADA botão precisa (`minItemWidth`), que é uma
+ * propriedade do rótulo mais largo e por isso fica com quem chama.
+ *
+ * Enquanto a largura não foi medida, a fileira é a aposta: é o layout certo na
+ * maioria dos casos, e um quadro em coluna a mais chamaria atenção à toa.
+ */
+export function AdaptiveButtonRow({
+  children,
+  minItemWidth = 168,
+}: {
+  children: React.ReactNode;
+  /** Quanto o botão mais largo precisa para mostrar o rótulo inteiro. */
+  minItemWidth?: number;
+}) {
+  const theme = useTheme();
+  const [width, setWidth] = React.useState<number | null>(null);
+
+  const items = React.Children.toArray(children).filter(Boolean);
+  const gap = theme.spacing.sm;
+  const needed = items.length * minItemWidth + gap * Math.max(items.length - 1, 0);
+  const stacked = width !== null && width < needed;
+
+  return (
+    <View
+      testID="adaptive-button-row"
+      onLayout={(event) => {
+        const medida = event.nativeEvent.layout.width;
+        setWidth((atual) => (atual !== null && Math.abs(atual - medida) < 1 ? atual : medida));
+      }}
+      style={{
+        flexDirection: stacked ? 'column' : 'row',
+        // Esticados na coluna: um botão de 140dp centralizado numa largura de
+        // 320 pareceria desalinhado com o resto do cartão.
+        alignItems: 'stretch',
+        gap,
+      }}
+    >
+      {items.map((child, index) => (
+        <View key={index} style={stacked ? undefined : { flex: 1 }}>
+          {child}
+        </View>
+      ))}
     </View>
   );
 }

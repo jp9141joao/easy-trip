@@ -1,6 +1,12 @@
 export { AppText, type AppTextProps } from './AppText';
 export { AppImage } from './AppImage';
-export { Button, ButtonRow, FloatingActionButton, IconButton } from './Button';
+export {
+  AdaptiveButtonRow,
+  Button,
+  ButtonRow,
+  FloatingActionButton,
+  IconButton,
+} from './Button';
 export {
   DateField,
   MoneyField,

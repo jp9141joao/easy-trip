@@ -5,6 +5,7 @@ import { Pressable, ScrollView, View } from 'react-native';
 
 import { VisibilityField } from '@/components/collaboration';
 import {
+  AdaptiveButtonRow,
   AppText,
   Badge,
   BottomSheet,
@@ -28,7 +29,10 @@ import {
   SuggestionGenerationError,
   canRefreshSuggestions,
   formatDuration,
+  formatSuggestionDiagnostics,
+  suggestionScreenState,
   type SuggestionCategory,
+  type SuggestionScreenState,
   type TripSuggestion,
 } from '@/domain/suggestions';
 import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
@@ -89,6 +93,16 @@ export default function SuggestionsScreen() {
   );
   const grouped = useSuggestionsByCategory(suggestions);
   const generationError = refresh.error ?? suggestionsQuery.error;
+  /*
+   * A incompatibilidade de backend continua tendo a palavra final.
+   *
+   * `describeBackendCapability` sabe dizer "este servidor não tem a 0012", que
+   * é mais específico do que qualquer código de geração — e repetir agora não
+   * resolve, então não há botão.
+   */
+  const failureState = backendState(suggestionsQuery.error) ?? suggestionScreenState(suggestionsQuery.error);
+  const noticeState: SuggestionScreenState =
+    backendState(generationError) ?? suggestionScreenState(generationError);
 
   const visible = category ? (grouped.get(category) ?? []) : suggestions;
 
@@ -203,20 +217,24 @@ export default function SuggestionsScreen() {
           ) : suggestionsQuery.isLoading ? (
             <SkeletonList count={3} lines={3} />
           ) : suggestionsQuery.isError && suggestions.length === 0 ? (
+            /*
+             * Oito situações, oito textos (§15 do handoff).
+             *
+             * Antes tudo isto era "Sugestões indisponíveis" com um "Tentar
+             * novamente" ao lado — inclusive a janela de seis horas, que não é
+             * falha, e a falta de permissão, que repetir nunca resolve. Um
+             * botão que não pode funcionar ensina que o aplicativo quebrou.
+             * Agora o código da falha escolhe título, tom e se há retentativa.
+             */
             <GlassCard>
               <ErrorState
-                title={
-                  isRefreshLimited(suggestionsQuery.error)
-                    ? 'Atualizado recentemente'
-                    : 'Sugestões indisponíveis'
-                }
-                message={suggestionFailureMessage(suggestionsQuery.error)}
+                title={failureState.title}
+                message={failureState.message}
                 onRetry={
-                  isRefreshLimited(suggestionsQuery.error)
-                    ? undefined
-                    : () => void suggestionsQuery.refetch()
+                  failureState.retryable ? () => void suggestionsQuery.refetch() : undefined
                 }
               />
+              <DiagnosticsLine error={suggestionsQuery.error} />
             </GlassCard>
           ) : suggestions.length === 0 ? (
             <GlassCard>
@@ -247,18 +265,27 @@ export default function SuggestionsScreen() {
           )}
 
           {generationError && suggestions.length > 0 ? (
-            // "Atualizado recentemente" não é falha: é a janela de seis horas
-            // fazendo o que foi desenhada para fazer. Pintá-la de vermelho
-            // ensinaria a pessoa a ignorar o aviso vermelho de verdade.
-            <InlineNotice
-              tone={isRefreshLimited(generationError) ? 'info' : 'error'}
-              icon={isRefreshLimited(generationError) ? RefreshCw : TriangleAlert}
-            >
-              {suggestionFailureMessage(generationError)}
-              {isRefreshLimited(generationError)
-                ? ''
-                : ' As sugestões já carregadas continuam disponíveis.'}
-            </InlineNotice>
+            /*
+             * Já existe sugestão persistida: ela FICA na tela, e a falha vira
+             * um aviso ao lado — nunca uma tela vazia por cima de conteúdo bom
+             * (§15 do handoff).
+             *
+             * "Atualizado recentemente" não é falha: é a janela de seis horas
+             * fazendo o que foi desenhada para fazer. Pintá-la de vermelho
+             * ensinaria a pessoa a ignorar o aviso vermelho de verdade.
+             */
+            <View style={{ gap: theme.spacing.xs }}>
+              <InlineNotice
+                tone={noticeState.tone}
+                icon={noticeState.tone === 'info' ? RefreshCw : TriangleAlert}
+              >
+                {noticeState.message}
+                {noticeState.tone === 'info'
+                  ? ''
+                  : ' As sugestões já carregadas continuam disponíveis.'}
+              </InlineNotice>
+              <DiagnosticsLine error={generationError} />
+            </View>
           ) : null}
 
           {!generationError && suggestions.length > 0 && suggestions.length < MINIMUM_SUGGESTIONS ? (
@@ -337,16 +364,49 @@ export default function SuggestionsScreen() {
   );
 }
 
-/** A recusa da janela de seis horas — informação, não erro (§23 do handoff). */
-function isRefreshLimited(error: unknown): boolean {
-  return error instanceof SuggestionGenerationError && error.code === 'REFRESH_LIMITED';
+/**
+ * O status real da tentativa, visível SÓ em desenvolvimento (§12 do handoff).
+ *
+ * No Android físico não havia como saber se "Sugestões indisponíveis" era 401,
+ * 403, 422, 429, rede ou catálogo vazio — e corrigir por hipótese, nesse
+ * estado, é chutar. Esta linha responde isso no próprio aparelho.
+ *
+ * O que ela mostra é só o que `SuggestionAttemptDiagnostics` permite existir:
+ * códigos fechados e contagens. Não há JWT, não há `service_role`, não há
+ * chave do Gemini e não há corpo de resposta — nem em desenvolvimento, porque
+ * o dado sanitizado é construído na origem, e não filtrado aqui.
+ */
+function backendState(error: unknown): SuggestionScreenState | null {
+  const capability = describeBackendCapability(error);
+  return capability
+    ? {
+        kind: 'unavailable',
+        title: 'Recurso indisponível neste servidor',
+        message: capability,
+        tone: 'warning',
+        retryable: false,
+      }
+    : null;
 }
 
-function suggestionFailureMessage(error: unknown): string {
-  const capability = describeBackendCapability(error);
-  if (capability) return capability;
-  if (error instanceof SuggestionGenerationError) return error.message;
-  return 'Não foi possível carregar ou atualizar as sugestões. Verifique sua conexão e tente novamente.';
+function DiagnosticsLine({ error }: { error: unknown }) {
+  const theme = useTheme();
+  if (typeof __DEV__ === 'undefined' || !__DEV__) return null;
+
+  const detalhe = formatSuggestionDiagnostics(error);
+  if (!detalhe) return null;
+
+  return (
+    <AppText
+      variant="caption"
+      color="tertiary"
+      mono
+      style={{ marginTop: theme.spacing.sm }}
+      accessibilityLabel={`Diagnóstico de desenvolvimento: ${detalhe}`}
+    >
+      {`DEV · ${detalhe}`}
+    </AppText>
+  );
 }
 
 /* --------------------------------- pedaços -------------------------------- */
@@ -452,18 +512,21 @@ function SuggestionCard({
         <Badge label="Do catálogo Easy Trip" tone="neutral" />
       )}
 
-      <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
-        <Button label="Ver detalhes" variant="secondary" size="sm" onPress={onDetails} style={{ flex: 1 }} />
+      {/*
+        Empilha quando "Adicionar ao roteiro" não cabe ao lado de "Ver
+        detalhes" (§14). Num aparelho de 360dp a fileira dava cerca de 120dp
+        por botão e o rótulo principal virava "Adicionar ao r..." — um botão
+        que não diz o que faz.
+
+        200 é o que o rótulo mais largo precisa com o ícone e o respiro
+        interno; abaixo disso a coluna é o layout honesto.
+      */}
+      <AdaptiveButtonRow minItemWidth={200}>
+        <Button label="Ver detalhes" variant="secondary" size="sm" fullWidth onPress={onDetails} />
         {canAdd ? (
-          <Button
-            label="Adicionar ao roteiro"
-            icon={Plus}
-            size="sm"
-            onPress={onAdd}
-            style={{ flex: 1 }}
-          />
+          <Button label="Adicionar ao roteiro" icon={Plus} size="sm" fullWidth onPress={onAdd} />
         ) : null}
-      </View>
+      </AdaptiveButtonRow>
     </GlassCard>
   );
 }

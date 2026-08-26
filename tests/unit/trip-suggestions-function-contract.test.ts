@@ -40,6 +40,36 @@ describe('trip-suggestions server-side cost and role contract', () => {
   });
 
   /**
+   * §14 do handoff — completar dentro da MESMA execução.
+   *
+   * O claim de seis horas é consumido antes do provedor, de propósito. Isso
+   * significa que uma volta que devolve 1 de 3 deixa a viagem incompleta por
+   * seis horas — foi assim que a tela de Moscovo travou. A única hora em que
+   * dá para corrigir isso sem abrir mão da proteção de custo é aqui, com o
+   * claim já ganho: um segundo pedido, menor, pelo que falta.
+   *
+   * UMA tentativa. Duas chamadas por claim é o teto, e um modelo que devolveu
+   * pouco duas vezes não devolve mais na terceira — repetir só gastaria.
+   */
+  it('completes a short generation once, inside the same claim', () => {
+    expect(functionSource).toContain('if (suggestions.length < minimumNeeded)');
+    expect(functionSource).toContain('const faltam = minimumNeeded - suggestions.length;');
+
+    // O segundo pedido leva os títulos que já vieram, para não repetir.
+    expect(functionSource).toContain('...suggestions.map((item) => String(item.title ?? \'\'))');
+
+    // E é UM só: nenhum laço em volta da chamada ao provedor.
+    const chamadas = functionSource.match(/await generate\(/g) ?? [];
+    expect(chamadas).toHaveLength(2);
+    expect(functionSource).not.toMatch(/(while|for)\s*\([^)]*\)\s*\{[^}]*generate\(/);
+  });
+
+  it('still refuses the first round failing — there is nothing to complete', () => {
+    expect(functionSource).toContain('if (primeira === null)');
+    expect(functionSource).toContain("json({ error: 'Não foi possível gerar sugestões agora.' }, 502)");
+  });
+
+  /**
    * §21/§22 — geração parcial não pode sair como 200.
    *
    * O total mínimo é da VIAGEM (catálogo + IA), e só o cliente sabe quanto o

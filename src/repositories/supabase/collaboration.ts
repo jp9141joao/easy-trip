@@ -39,6 +39,7 @@ import {
   partialSuggestionListSchema,
   type GeneratedSuggestion,
   SuggestionGenerationError,
+  type SuggestionAttemptDiagnostics,
   type SuggestionCategory,
 } from '@/domain/suggestions';
 import { DEFAULT_VISIBILITY, parseVisibility } from '@/domain/visibility';
@@ -696,6 +697,7 @@ export function createSuggestionRepository(
         'Não foi possível consultar o catálogo de lugares.',
         existing,
         result.error,
+        { catalogCount: 0 },
       );
     }
     const places = (result.data ?? []) as Row[];
@@ -752,12 +754,29 @@ export function createSuggestionRepository(
     trip: SuggestionTripInfo,
     existing: TripSuggestion[],
     minimumNeeded: number,
+    base: SuggestionAttemptDiagnostics,
   ): Promise<number> {
+    /**
+     * O diagnóstico desta tentativa, montado a cada saída.
+     *
+     * Existe porque, no aparelho, todos estes caminhos chegavam ao mesmo texto
+     * de tela — e não havia como saber, do Android, se o que aconteceu foi 401,
+     * 403, 422, 429, rede ou catálogo vazio (§12 do handoff). São só números e
+     * rótulos fechados: nenhum token, nenhum corpo de resposta.
+     */
+    const diag = (extra: SuggestionAttemptDiagnostics = {}): SuggestionAttemptDiagnostics => ({
+      ...base,
+      minimumNeeded,
+      ...extra,
+    });
+
     if (!config.hasBff) {
       throw new SuggestionGenerationError(
         'AI_UNAVAILABLE',
         'O serviço de sugestões não está configurado.',
         existing,
+        undefined,
+        diag({ transport: 'unconfigured' }),
       );
     }
 
@@ -780,6 +799,14 @@ export function createSuggestionRepository(
         { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} },
       );
     } catch (error) {
+      const transporte = error instanceof ServiceError ? error.kind : undefined;
+      const status = error instanceof ServiceError ? error.status : undefined;
+      const codigo =
+        error instanceof ServiceError && error.payload && typeof error.payload === 'object'
+          ? String((error.payload as Record<string, unknown>).code ?? '') || undefined
+          : undefined;
+      const rede = diag({ transport: transporte, httpStatus: status, responseCode: codigo });
+
       if (error instanceof ServiceError && error.kind === 'http') {
         if (error.status === 401 || error.status === 403) {
           throw new SuggestionGenerationError(
@@ -787,6 +814,7 @@ export function createSuggestionRepository(
             'Sua permissão atual não permite gerar sugestões para esta viagem.',
             existing,
             error,
+            rede,
           );
         }
         if (error.status === 429) {
@@ -795,6 +823,7 @@ export function createSuggestionRepository(
             'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
             existing,
             error,
+            rede,
           );
         }
         /*
@@ -814,6 +843,7 @@ export function createSuggestionRepository(
               : 'Não encontramos sugestões suficientes para este destino agora.',
             existing,
             error,
+            diag({ ...rede, aiCount: salvas }),
           );
         }
         if (error.status === 404) {
@@ -822,6 +852,7 @@ export function createSuggestionRepository(
             'O serviço de sugestões não está publicado ou não reconheceu esta viagem.',
             existing,
             error,
+            rede,
           );
         }
         if (error.status === 502) {
@@ -830,6 +861,7 @@ export function createSuggestionRepository(
             'O Gemini não conseguiu gerar sugestões agora.',
             existing,
             error,
+            rede,
           );
         }
         if (error.status === 503) {
@@ -838,6 +870,7 @@ export function createSuggestionRepository(
             'A geração por IA não está configurada neste servidor.',
             existing,
             error,
+            rede,
           );
         }
       }
@@ -846,6 +879,7 @@ export function createSuggestionRepository(
         'Não foi possível alcançar o serviço de sugestões.',
         existing,
         error,
+        rede,
       );
     }
 
@@ -867,6 +901,7 @@ export function createSuggestionRepository(
         'O serviço respondeu sem sugestões válidas.',
         existing,
         parsed.error,
+        diag({ httpStatus: 200, transport: 'parse' }),
       );
     }
 
@@ -961,6 +996,20 @@ export function createSuggestionRepository(
       }
 
       /*
+       * A janela de seis horas está aberta AGORA?
+       *
+       * Lido uma vez, no começo, e carregado no diagnóstico até o fim: é a
+       * informação que faltava para explicar a tela de Moscovo, onde a mesma
+       * frase servia para "nunca gerou" e para "gerou, falhou, e a janela foi
+       * consumida mesmo assim".
+       */
+      const janelaAberta = canRefreshSuggestions(trip.suggestionsRefreshedAt);
+      const base: SuggestionAttemptDiagnostics = {
+        refreshWindowOpen: janelaAberta,
+        forced: Boolean(options?.force),
+      };
+
+      /*
        * "Atualizar sugestões" dentro da janela de seis horas é uma recusa, não
        * um sucesso silencioso.
        *
@@ -973,15 +1022,18 @@ export function createSuggestionRepository(
        * Vem antes do catálogo de propósito: `force` é pedido de atualização, e
        * dentro da janela não há atualização nenhuma a fazer.
        */
-      if (options?.force && !canRefreshSuggestions(trip.suggestionsRefreshedAt)) {
+      if (options?.force && !janelaAberta) {
         throw new SuggestionGenerationError(
           'REFRESH_LIMITED',
           'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
           existing,
+          undefined,
+          { ...base, totalCount: existing.length },
         );
       }
 
-      const afterCatalog = (await seedFromCatalog(trip, existing)) > 0 ? await readAll(tripId) : existing;
+      const doCatalogo = await seedFromCatalog(trip, existing);
+      const afterCatalog = doCatalogo > 0 ? await readAll(tripId) : existing;
 
       /*
        * O mínimo é do TOTAL, e o catálogo conta (§22 do handoff).
@@ -1002,11 +1054,12 @@ export function createSuggestionRepository(
        * do provedor. Esta checagem economiza a ida à Function; não é a defesa
        * de segurança/custo contra um cliente modificado.
        */
-      if (
-        (faltam > 0 || options?.force) &&
-        canRefreshSuggestions(trip.suggestionsRefreshedAt)
-      ) {
-        await seedFromAi(trip, afterCatalog, faltam);
+      let daIa = 0;
+      if ((faltam > 0 || options?.force) && janelaAberta) {
+        daIa = await seedFromAi(trip, afterCatalog, faltam, {
+          ...base,
+          catalogCount: doCatalogo,
+        });
       }
 
       // Não escrevemos `suggestions_refreshed_at` daqui. Owner/editor podem
@@ -1026,13 +1079,49 @@ export function createSuggestionRepository(
        * servidor considerou válida. Devolver esta lista como sucesso faria a
        * tela dizer "pronto" abaixo do mínimo.
        */
+      const diagnostico: SuggestionAttemptDiagnostics = {
+        ...base,
+        minimumNeeded: faltam,
+        catalogCount: doCatalogo,
+        aiCount: daIa,
+        totalCount: final.length,
+      };
+
       if (faltam > 0 && final.length < MINIMUM_SUGGESTIONS) {
+        /*
+         * A JANELA FECHADA NÃO É UMA GERAÇÃO INCOMPLETA — E ERA AQUI QUE A
+         * TELA DE MOSCOVO TRAVAVA.
+         *
+         * Com `suggestions_refreshed_at` recente, o bloco acima nem chamou a
+         * Function: não houve geração para ser incompleta. Ainda assim o erro
+         * que subia daqui era `INCOMPLETE_GENERATION`, que a tela pinta como
+         * "Sugestões indisponíveis" com um botão "Tentar novamente" — um botão
+         * que, por definição, não tinha como funcionar antes das seis horas.
+         * A pessoa via uma falha permanente onde o sistema só estava dentro do
+         * próprio limite de custo.
+         *
+         * `REFRESH_LIMITED` é o que de fato aconteceu, e a tela já sabe
+         * apresentá-lo como informação — sem botão morto e com prazo (§13,
+         * §15 do handoff).
+         */
+        if (!janelaAberta) {
+          throw new SuggestionGenerationError(
+            'REFRESH_LIMITED',
+            'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
+            final,
+            undefined,
+            diagnostico,
+          );
+        }
+
         throw new SuggestionGenerationError(
           'INCOMPLETE_GENERATION',
           final.length > afterCatalog.length
             ? 'Conseguimos apenas algumas sugestões para este destino. Tente de novo mais tarde.'
             : 'Ainda não encontramos sugestões suficientes para este destino.',
           final,
+          undefined,
+          diagnostico,
         );
       }
 

@@ -236,9 +236,14 @@ describe('teclado aberto e fechado', () => {
 
     // O dock sai de cena com o teclado (`(tabs)/_layout.tsx` devolve `null`),
     // então manter a folga dele deixaria o composer boiando acima do teclado.
+    //
+    // A folga passou a ser o respiro pedido no §11 do handoff — 8 a 12pt acima
+    // do teclado — e não mais a área segura inferior: o teclado já cobre essa
+    // faixa, e somá-la de novo era mais uma contagem dupla.
     const aberto = flat(composerRow(view).props.style).paddingBottom as number;
     expect(aberto).toBeLessThan(fechado);
-    expect(aberto).toBeGreaterThanOrEqual(metrics.insets.bottom);
+    expect(aberto).toBeGreaterThanOrEqual(8);
+    expect(aberto).toBeLessThanOrEqual(12);
   });
 
   it('fechar o teclado devolve a folga original — sem resíduo', async () => {

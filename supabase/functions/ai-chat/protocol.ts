@@ -170,7 +170,60 @@ Regras absolutas sobre actions:
 
 13. O campo "content" é a conversa e "actions" é a proposta. Não escreva JSON
     dentro de "content", e não descreva a proposta como se ela fosse um
-    formulário — a pessoa vai vê-la na tela de revisão.`;
+    formulário — a pessoa vai vê-la na tela de revisão.
+
+=== ROTEIRO DE DIA INTEIRO ===
+
+14. Quando a pessoa pedir um ROTEIRO — "monte um roteiro", "roteiro para
+    amanhã", "monte meu dia", "o que faço no dia 12", "planeje o dia" ou
+    equivalente —, o padrão é de 3 a 6 atividades para aquele dia, em ordem
+    cronológica, com 'startTime' preenchido em cada uma.
+
+    Um dia inteiro tem manhã, almoço, tarde e noite. Devolver UMA atividade
+    para um pedido de dia inteiro não é um roteiro: é uma sugestão solta, e a
+    pessoa fica com o dia vazio achando que planejou.
+
+    ONDE O ROTEIRO VAI. Cada atividade é um item de 'actions[0].items', com
+    'title', 'date' e 'startTime'. O roteiro NÃO se escreve como lista dentro
+    de "content" — nem com hífen, nem com bullet, nem com "09:00 · ...".
+
+    Um dia inteiro escrito em "content" e ausente de "actions" é o PIOR
+    resultado possível: a pessoa lê o dia pronto na tela, tenta aplicar e não
+    há nada para aplicar. Prefira devolver a action e escrever uma frase curta
+    a devolver um texto bonito e vazio.
+
+    Em "content" vai só a apresentação — uma ou duas frases dizendo que a
+    proposta está pronta para revisão. A lista fica na proposta.
+
+    Não precisa ser exatamente cinco atividades. Precisa ser um dia.
+
+    DATA NOMEADA PELA PESSOA. "dia 18 de setembro", "18/09", "2026-09-18" ou
+    "primeiro dia da viagem" são a mesma coisa: um pedido de dia inteiro para
+    aquela data. Resolva-a para 'AAAA-MM-DD' usando 'trip.today' e o período
+    da viagem, repita-a em 'date' em TODOS os itens, e devolva a action na
+    mesma resposta. Pedir a data de novo, ou responder com o roteiro em texto,
+    é falhar o pedido.
+
+15. Devolva MENOS de 3 itens só quando:
+    - a pessoa pediu explicitamente uma coisa só ("quero só um restaurante
+      para amanhã", "me indica um museu");
+    - o recorte pedido comporta menos ("planeje só a minha manhã");
+    - alguma restrição que ela declarou obriga isso.
+    Fora desses casos, um pedido de dia inteiro devolve o dia inteiro.
+
+16. DATA FORA DA VIAGEM. Se a pessoa pedir um dia que não está entre
+    'trip.startDate' e 'trip.endDate' — "amanhã", quando amanhã é antes da
+    viagem —, não invente e não ajuste em silêncio: diga que a data está fora
+    do período e OFEREÇA uma alternativa concreta, normalmente o primeiro dia
+    da viagem. Nessa resposta 'actions' fica vazio, porque ainda é pergunta.
+
+17. ACEITE DE PROPOSTA ANTERIOR. Se a sua mensagem anterior ofereceu uma data
+    e a pessoa responder "pode ser", "sim", "pode", "faça isso", "isso mesmo",
+    "claro", "beleza" ou equivalente, ela está ACEITANDO aquela oferta. Não
+    responda genericamente e não pergunte de novo qual data.
+    Resolva a data que VOCÊ ofereceu, monte o roteiro completo dela (regra 14)
+    e devolva a action 'itinerary.add' na MESMA resposta. Uma aceitação que
+    volta como conversa sem proposta é a pessoa dizendo "sim" para o vazio.`;
 
 /* ------------------------- saída estruturada (§12) ------------------------- */
 
@@ -468,6 +521,21 @@ const DEFAULT_LABEL: Record<string, string> = {
  * exatamente como o defeito relatado: a IA fala da proposta, e proposta nenhuma
  * chega à tela.
  */
+/**
+ * Por que o modelo parou de gerar.
+ *
+ * Rótulo fechado da própria API — `STOP`, `MAX_TOKENS`, `SAFETY`, … —, nunca
+ * conteúdo. Existe porque `MAX_TOKENS` é indistinguível de "o modelo não quis
+ * responder" olhando só para o texto: os dois chegam como resposta curta ou
+ * vazia, e um se resolve com mais orçamento de saída enquanto o outro não.
+ */
+export function readFinishReason(data: unknown): string | null {
+  const record = asRecord(data);
+  const candidates = Array.isArray(record?.candidates) ? record.candidates : [];
+  const first = asRecord(candidates[0]);
+  return typeof first?.finishReason === 'string' ? first.finishReason : null;
+}
+
 export function joinCandidateText(data: unknown): string {
   const record = asRecord(data);
   const candidates = Array.isArray(record?.candidates) ? record.candidates : [];
@@ -541,9 +609,26 @@ const PROMISE_PATTERNS = [
   /\bposso (adicionar|aplicar|implementar|registrar|incluir)\b/i,
 ];
 
-/** Divide em frases preservando a pontuação — inclusive quebras de linha. */
+/** Divide UMA linha em frases, preservando a pontuação. */
 function splitSentences(text: string): string[] {
-  return text.split(/(?<=[.!?:])\s+|\n+/).filter((piece) => piece.length > 0);
+  return text.split(/(?<=[.!?:])\s+/).filter((piece) => piece.trim().length > 0);
+}
+
+/**
+ * Um marcador de lista sem texto — "- ", "* ", "1. " — e mais nada.
+ *
+ * É o resíduo que sobra quando o corte de promessas leva embora o conteúdo de
+ * um item de lista. Renderizado, vira uma bolha com um "•" solto e nada mais:
+ * o defeito relatado no aparelho (§4 do handoff). Uma linha assim não é
+ * resposta e não pode sobreviver ao corte.
+ */
+function isBareListMarker(line: string): boolean {
+  return /^\s*(?:[-*+]|\d{1,3}[.)])\s*$/.test(line);
+}
+
+/** Tem alguma coisa para a pessoa LER? Pontuação sozinha não é resposta. */
+export function hasRenderableText(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text);
 }
 
 /**
@@ -563,15 +648,43 @@ export function enforcePromiseCoherence(
 ): { content: string; stripped: number } {
   if (actionCount > 0) return { content, stripped: 0 };
 
-  const sentences = splitSentences(content);
-  const kept = sentences.filter(
-    (sentence) => !PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
-  );
-  const stripped = sentences.length - kept.length;
+  /*
+   * O corte acontece LINHA A LINHA, e não no texto todo de uma vez.
+   *
+   * A versão anterior juntava tudo com espaço, e uma resposta em Markdown
+   * saía do corte como um parágrafo só — o roteiro perdia a lista, os títulos
+   * e as quebras. Pior: um item cujo texto tinha sido cortado deixava para
+   * trás o marcador sozinho, e uma linha "- " renderiza uma bolha com um "•"
+   * e nada mais, que foi o defeito visto no aparelho.
+   *
+   * Preservando a linha, o que sai do corte continua sendo Markdown válido, e
+   * um item que ficou vazio é descartado inteiro em vez de virar resíduo.
+   */
+  let stripped = 0;
+  const linhas: string[] = [];
+
+  for (const linha of content.split('\n')) {
+    if (linha.trim().length === 0) {
+      linhas.push('');
+      continue;
+    }
+
+    const sentences = splitSentences(linha);
+    const kept = sentences.filter(
+      (sentence) => !PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
+    );
+    stripped += sentences.length - kept.length;
+
+    const rebuilt = kept.join(' ').replace(/[ \t]+/g, ' ').trimEnd();
+    // Linha que virou só marcador some junto com o que ela carregava.
+    if (rebuilt.trim().length === 0 || isBareListMarker(rebuilt)) continue;
+    linhas.push(rebuilt);
+  }
+
   if (stripped === 0) return { content, stripped: 0 };
 
-  const rebuilt = kept.join(' ').replace(/[ \t]+/g, ' ').trim();
-  if (rebuilt.length > 0) return { content: rebuilt, stripped };
+  const rebuilt = linhas.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (hasRenderableText(rebuilt)) return { content: rebuilt, stripped };
 
   return {
     content:
@@ -600,12 +713,24 @@ export interface ModelOutput {
  * também limpa as promessas — antes ele produzia texto prometendo um botão que
  * a degradação tinha acabado de descartar.
  */
-export function readModelOutput(rawText: string): ModelOutput {
+export function readModelOutput(
+  rawText: string,
+  options: { enforceCoherence?: boolean } = {},
+): ModelOutput {
+  // O reparo de roteiro (abaixo) precisa ver a resposta **antes** do corte de
+  // promessas: uma resposta que promete "montei seu dia" sem action é
+  // exatamente a que deve ser reparada, e cortar a frase primeiro apagaria o
+  // sinal. Quem pede `enforceCoherence: false` assume o compromisso de chamar
+  // `enforcePromiseCoherence` no fim, com a contagem final de actions.
+  const { enforceCoherence = true } = options;
+  const coerce = (text: string, count: number) =>
+    enforceCoherence ? enforcePromiseCoherence(text, count) : { content: text, stripped: 0 };
+
   const parsed = extractJson(rawText);
   const record = asRecord(parsed);
 
   if (!record) {
-    const coherent = enforcePromiseCoherence(rawText, 0);
+    const coherent = coerce(rawText, 0);
     return {
       content: coherent.content,
       actions: [],
@@ -616,7 +741,7 @@ export function readModelOutput(rawText: string): ModelOutput {
   const rawActions = Array.isArray(record.actions) ? record.actions : [];
   const actions = validateActions(rawActions);
   const text = typeof record.content === 'string' ? record.content.trim() : '';
-  const coherent = enforcePromiseCoherence(text || rawText, actions.length);
+  const coherent = coerce(text || rawText, actions.length);
 
   return {
     content: coherent.content,
@@ -628,6 +753,275 @@ export function readModelOutput(rawText: string): ModelOutput {
       parsed: true,
     },
   };
+}
+
+/* ------------------------- roteiro de dia inteiro -------------------------- */
+
+/**
+ * Quantas paradas um roteiro de dia inteiro precisa ter para ser um dia.
+ *
+ * Três é o piso, não a meta: o alvo pedido ao modelo é 3–6. O piso existe
+ * porque foi exatamente ele que faltou no aparelho — "monte um roteiro para
+ * amanhã" voltou com UMA atividade, e uma atividade não é um dia planejado. É
+ * pior do que uma resposta vazia, porque a pessoa fecha a tela achando que
+ * planejou.
+ */
+export const FULL_DAY_MIN_ITEMS = 3;
+export const FULL_DAY_MAX_ITEMS = 6;
+
+export interface ItineraryRequest {
+  /** O pedido é de um dia inteiro e, portanto, exige 3–6 paradas. */
+  expectsFullDay: boolean;
+  /** A pessoa pediu explicitamente UMA coisa — um item basta. */
+  singleItem: boolean;
+  /** O recorte é de um período ("só a manhã") — menos de 3 é legítimo. */
+  partialPeriod: boolean;
+  /** Isto é um "pode ser" respondendo a uma oferta da mensagem anterior. */
+  acceptsPriorOffer: boolean;
+}
+
+export interface ChatTurn {
+  role?: string;
+  content?: string;
+}
+
+/** minúsculas, sem acento, sem pontuação — para comparar intenção, não texto. */
+function fold(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** "Monte um roteiro", "planeje meu dia", "o que fazer amanhã". */
+const FULL_DAY_PATTERNS = [
+  /\broteiro\b/,
+  /\bitinerario\b/,
+  /\b(monte|montar|monta|planeje|planejar|planeja|organize|organizar|prepare|preparar|faca|fazer|cria|criar|crie|sugira|sugerir)\b[^.!?]{0,40}\b(meu|o|um|nosso|para o|do)?\s*dia\b/,
+  /\bprograma(cao)?\b[^.!?]{0,20}\bdia\b/,
+  /\bo que (fazer|faco|posso fazer)\b/,
+  /\bcomo (fica|seria|ficaria)\b[^.!?]{0,20}\b(meu )?dia\b/,
+];
+
+/** "Quero só um restaurante", "me indica um museu", "apenas uma atividade". */
+const SINGLE_ITEM_PATTERNS = [
+  /\b(so|apenas|somente|unicamente)\b\s*(mais\s+)?(um|uma)\b/,
+  /\b(um|uma)\b\s*(unic[ao]|so)\b/,
+  /\bme (indica|indique|recomenda|recomende|sugira|sugere)\b[^.!?]{0,20}\b(um|uma)\b/,
+];
+
+/** "Planeje só a minha manhã" — um período, não o dia. */
+const PARTIAL_PERIOD_PATTERNS = [
+  /\b(so|apenas|somente)\b[^.!?]{0,20}\b(manha|tarde|noite|almoco|jantar|cafe da manha)\b/,
+  /\b(minha|meu|a|o)\s+(manha|tarde|noite)\b/,
+];
+
+/**
+ * "Pode ser", "sim", "faça isso" — aceitação curta, sem pedido novo dentro.
+ *
+ * O teto de palavras é o que separa "pode ser" de "pode ser, mas troque o
+ * museu pelo parque": a segunda carrega instrução e não deve ser tratada como
+ * um simples "sim" à oferta anterior.
+ */
+const ACCEPTANCE_PATTERNS = [
+  /^(sim|claro|isso|ok|okay|beleza|blz|perfeito|otimo|certo|combinado|vamos|bora|manda|manda ver|fechado|top|show)$/,
+  /^(pode|pode ser|pode sim|pode fazer|pode montar|pode gerar|pode criar|pode preparar)$/,
+  /^(sim pode|sim claro|sim por favor|isso mesmo|isso ai|acho bom|acho otimo|tudo bem|ta bom|ta otimo|por favor)$/,
+  /^(faca|faca isso|faz isso|facam isso|manda esse|quero sim|quero esse|vamos nessa|melhor assim)$/,
+  /^(sim|claro|ok|beleza|perfeito|isso)\s+(pode|faca|faz|monta|monte|manda|vamos|por favor)(\s+isso)?$/,
+];
+
+const ACCEPTANCE_MAX_WORDS = 5;
+
+/**
+ * A mensagem anterior do assistente ofereceu montar alguma coisa?
+ *
+ * Sem essa condição, um "sim" solto viraria pedido de roteiro em qualquer
+ * ponto da conversa — inclusive respondendo a "quer que eu detalhe o
+ * orçamento?". A oferta tem de existir para que o aceite signifique algo.
+ */
+const OFFER_PATTERNS = [
+  /\bposso (montar|preparar|planejar|sugerir|organizar|criar|gerar|fazer)\b/,
+  /\bquer que eu (monte|prepare|planeje|sugira|organize|crie|gere|faca)\b/,
+  /\b(monto|preparo|planejo|organizo)\b[^.!?]{0,40}\?/,
+  /\bprimeiro dia da viagem\b/,
+  /\bposso (usar|considerar|assumir)\b[^.!?]{0,40}\bdia\b/,
+];
+
+function isAcceptance(prompt: string): boolean {
+  const folded = fold(prompt);
+  if (!folded) return false;
+  if (folded.split(' ').length > ACCEPTANCE_MAX_WORDS) return false;
+  return ACCEPTANCE_PATTERNS.some((pattern) => pattern.test(folded));
+}
+
+/** O último turno do assistente no histórico, já normalizado. */
+function lastAssistantTurn(history: readonly ChatTurn[]): string {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const turn = history[index];
+    if (!turn || typeof turn.content !== 'string') continue;
+    if (turn.role === 'assistant' || turn.role === 'model') return fold(turn.content);
+    if (turn.role === 'user') return '';
+  }
+  return '';
+}
+
+/**
+ * O que este pedido espera de volta.
+ *
+ * Roda no servidor porque é o servidor que decide se vale gastar uma segunda
+ * chamada ao Gemini para completar o roteiro. Não interpreta a resposta do
+ * modelo — interpreta o PEDIDO, que é dado do usuário e nunca vira comando:
+ * o resultado só liga ou desliga uma exigência de quantidade.
+ */
+export function classifyItineraryRequest(
+  prompt: string,
+  history: readonly ChatTurn[] = [],
+): ItineraryRequest {
+  const folded = fold(prompt);
+  const previous = lastAssistantTurn(history);
+
+  const acceptsPriorOffer =
+    isAcceptance(prompt) && OFFER_PATTERNS.some((pattern) => pattern.test(previous));
+
+  const singleItem = SINGLE_ITEM_PATTERNS.some((pattern) => pattern.test(folded));
+  const partialPeriod = PARTIAL_PERIOD_PATTERNS.some((pattern) => pattern.test(folded));
+
+  // O aceite herda a intenção da oferta: quem respondeu "pode ser" a "posso
+  // montar para o primeiro dia?" pediu um roteiro, mesmo sem escrever a
+  // palavra. É o caso que voltava genérico no aparelho.
+  const askedNow = FULL_DAY_PATTERNS.some((pattern) => pattern.test(folded));
+  const askedBefore = acceptsPriorOffer && FULL_DAY_PATTERNS.some((p) => p.test(previous));
+
+  return {
+    expectsFullDay: (askedNow || askedBefore) && !singleItem && !partialPeriod,
+    singleItem,
+    partialPeriod,
+    acceptsPriorOffer,
+  };
+}
+
+/** Os itens da action de roteiro, quando ela existe. */
+export function itineraryItemCount(actions: readonly unknown[]): number {
+  for (const entry of actions) {
+    const action = asRecord(entry);
+    if (action?.type !== 'itinerary.add') continue;
+    return Array.isArray(action.items) ? action.items.length : 0;
+  }
+  return -1;
+}
+
+/**
+ * Esta resposta precisa de uma segunda tentativa?
+ *
+ * Duas formas de falhar o contrato do dia inteiro, e as duas custam a mesma
+ * coisa para a pessoa: nenhuma action (texto prometendo um dia que não chegou
+ * à tela) e action com uma ou duas paradas (um "roteiro" que não cobre o dia).
+ */
+export function needsItineraryRepair(
+  request: ItineraryRequest,
+  actions: readonly unknown[],
+): boolean {
+  if (!request.expectsFullDay) return false;
+  const count = itineraryItemCount(actions);
+  return count < FULL_DAY_MIN_ITEMS;
+}
+
+/**
+ * A instrução da tentativa de reparo.
+ *
+ * É deliberadamente uma instrução de COMPLETAR, não de refazer: manter a data
+ * e as paradas que já vieram preserva o que o modelo acertou e evita que a
+ * segunda resposta contradiga a primeira na mesma conversa. As proibições são
+ * repetidas aqui porque esta chamada tem prompt próprio e uma instrução que só
+ * vive no system prompt tem menos peso do que a que vem no turno atual.
+ */
+export function buildRepairInstruction(have: number): string {
+  const faltam = Math.max(FULL_DAY_MIN_ITEMS - Math.max(have, 0), 1);
+  return [
+    'A resposta anterior não cumpriu o contrato de roteiro de dia inteiro:',
+    have <= 0
+      ? 'ela não trouxe nenhuma action "itinerary.add" — o roteiro ficou escrito' +
+        ' em "content", como texto, e a pessoa não tem o que aplicar.'
+      : `ela trouxe apenas ${have} ${have === 1 ? 'atividade' : 'atividades'}.`,
+    '',
+    // O modelo já demonstrou entender o pedido: ele produz o dia inteiro, mas
+    // escreve em prosa. Repetir "monte um roteiro" não corrige isso — o que
+    // corrige é dizer ONDE o dado tem de estar.
+    'As atividades vão em "actions[0].items", NÃO em "content". Não devolva a',
+    'lista com hífen, bullet ou "09:00 · ..." dentro de "content": em "content"',
+    'fica só uma frase curta apresentando a proposta.',
+    '',
+    'Refaça AGORA a mesma resposta, mantendo o mesmo assunto e o mesmo tom, e devolva:',
+    `- uma action "itinerary.add" com ${FULL_DAY_MIN_ITEMS} a ${FULL_DAY_MAX_ITEMS} atividades`,
+    `  (faltam pelo menos ${faltam});`,
+    '- exatamente a MESMA data (AAAA-MM-DD) que você já havia usado ou oferecido,',
+    '  sem trocar de dia e sem sair do período da viagem;',
+    '- "startTime" válido (HH:mm) em cada item, em ordem cronológica, cobrindo',
+    '  manhã, almoço, tarde e noite;',
+    '- nenhuma atividade repetida, nem entre si nem com o que já está no roteiro',
+    '  do contexto.',
+    '',
+    'Continua proibido inventar reserva, preço, disponibilidade, horário de',
+    'funcionamento, telefone ou nota. Se algum lugar não existir no destino, use',
+    'outro que exista.',
+    '',
+    'Se realmente não for possível montar o dia, devolva "actions": [] e explique',
+    'no "content" o que impede — sem prometer proposta nenhuma.',
+  ].join('\n');
+}
+
+/**
+ * Entre a resposta original e a reparada, qual fica.
+ *
+ * A reparada só ganha se de fato completou mais o dia. Um reparo que voltou
+ * pior — ou vazio — não pode apagar o que já servia: seria trocar uma resposta
+ * incompleta por uma ainda mais incompleta, gastando uma chamada para piorar.
+ */
+export function pickBetterItinerary(original: ModelOutput, repaired: ModelOutput): ModelOutput {
+  if (!repaired.content && repaired.actions.length === 0) return original;
+  return itineraryItemCount(repaired.actions) > itineraryItemCount(original.actions)
+    ? repaired
+    : original;
+}
+
+/**
+ * O que se escreve quando o dia continua incompleto depois do reparo.
+ *
+ * Não apaga a proposta parcial — duas paradas boas continuam sendo duas paradas
+ * boas — e não deixa o texto passar por roteiro completo. A frase entra na
+ * frente porque é a ressalva que muda como o resto deve ser lido.
+ */
+export function discloseIncompleteItinerary(
+  content: string,
+  request: ItineraryRequest,
+  actions: readonly unknown[],
+): string {
+  if (!request.expectsFullDay) return content;
+  const count = itineraryItemCount(actions);
+  if (count >= FULL_DAY_MIN_ITEMS) return content;
+
+  /*
+   * O aviso descreve o que REALMENTE veio.
+   *
+   * A frase "o que segue é só o que tenho" era colada mesmo quando não seguia
+   * nada: com `content` vazio, a resposta virava uma promessa sozinha na tela,
+   * apontando para uma lista que não existe. Anunciar conteúdo ausente é a
+   * mesma incoerência que `enforcePromiseCoherence` existe para impedir.
+   */
+  const temTexto = hasRenderableText(content);
+
+  const aviso =
+    count <= 0
+      ? temTexto
+        ? 'Não consegui montar um roteiro completo para este dia agora — o que segue é só o que tenho, sem proposta para aplicar.'
+        : 'Não consegui montar um roteiro completo para este dia agora.'
+      : `Não consegui fechar o dia inteiro: consegui ${count} ${count === 1 ? 'parada' : 'paradas'}, e não um roteiro completo.`;
+
+  return temTexto ? `${aviso}\n\n${content}` : aviso;
 }
 
 /* -------------------------------- rate limit ------------------------------- */
@@ -677,4 +1071,166 @@ export function createRateLimiter(now: () => number = Date.now) {
       return Math.max(1, Math.ceil((RATE_LIMIT.windowMs - (stamp - oldest)) / 1000));
     },
   };
+}
+
+/* ---------------------- diagnóstico do upstream (§2) ---------------------- */
+
+/**
+ * POR QUE ESTE BLOCO EXISTE
+ *
+ * O 502 de 26/08 às 11:48:14 UTC durou 3,2s e chegou ao aparelho como
+ * `HTTP_502 · TRANSPORT` — que só diz "a nossa Function recusou". As quatro
+ * causas possíveis (upstream não-2xx, exceção no fetch, resposta sem
+ * candidato, resultado final inválido) saíam com o MESMO corpo genérico, e
+ * nenhuma delas aparecia em log. Diagnosticar era adivinhar.
+ *
+ * Daqui em diante cada causa tem um código fechado, o log diz qual foi, e o
+ * cliente consegue mostrar `DEV · HTTP 502 · GEMINI_UNAVAILABLE · UPSTREAM`.
+ *
+ * O vocabulário é fechado de propósito: são rótulos nossos, nunca texto do
+ * provedor. Nada do corpo da resposta do Gemini entra em log — ele pode ecoar
+ * o prompt, que é dado privado de viagem.
+ */
+export type UpstreamFailure = { code: string; retryable: boolean };
+
+export function classifyUpstreamStatus(status: number): UpstreamFailure {
+  switch (status) {
+    case 429:
+      return { code: 'GEMINI_RATE_LIMIT', retryable: true };
+    case 500:
+      return { code: 'GEMINI_UPSTREAM_500', retryable: true };
+    case 502:
+      return { code: 'GEMINI_UPSTREAM_502', retryable: true };
+    case 503:
+      return { code: 'GEMINI_UNAVAILABLE', retryable: true };
+    case 504:
+      return { code: 'GEMINI_TIMEOUT', retryable: true };
+    default:
+      // 400, 401, 403 e afins são determinísticos: chave errada ou payload
+      // inválido falham igual na segunda vez, e repetir só faz a pessoa
+      // esperar o dobro pelo mesmo erro. Só 5xx desconhecido ganha o
+      // benefício da dúvida.
+      return { code: `GEMINI_UPSTREAM_${status}`, retryable: status >= 500 };
+  }
+}
+
+/**
+ * Exceção do fetch — quando nunca chegou uma resposta HTTP.
+ *
+ * `AbortSignal.timeout` lança `TimeoutError` e um abort explícito lança
+ * `AbortError`: os dois são estouro de prazo NOSSO, e valem uma segunda
+ * tentativa se ainda houver orçamento. `TypeError` é o que o runtime lança
+ * quando a requisição não sai — DNS, TLS, conexão derrubada.
+ *
+ * Qualquer outra coisa é defeito nosso, não intermitência do provedor, e não
+ * pode ser repetida nem rotulada como problema de rede.
+ */
+export function classifyUpstreamException(error: unknown): UpstreamFailure {
+  const name = error instanceof Error ? error.name : '';
+  if (name === 'TimeoutError' || name === 'AbortError') {
+    return { code: 'GEMINI_TIMEOUT', retryable: true };
+  }
+  if (name === 'TypeError') return { code: 'GEMINI_NETWORK', retryable: true };
+  return { code: 'AI_CHAT_INTERNAL', retryable: false };
+}
+
+/** Quantos candidatos vieram — distingue "veio vazio" de "veio e não deu para ler". */
+/**
+ * TETO DO MINUTO OU COTA DO DIA?
+ *
+ * Os dois chegam como HTTP 429 e, até aqui, saíam com o mesmo
+ * `GEMINI_RATE_LIMIT` — e são situações opostas. Estouro de janela passa
+ * sozinho em segundos; cota esgotada não passa hoje, e insistir só gasta
+ * orçamento e adia o diagnóstico. Foi exatamente essa confusão que fez a
+ * validação de produção parecer instável antes de ficar claro que a cota
+ * diária do projeto tinha acabado.
+ *
+ * O QUE SAI DAQUI, E SÓ ISSO
+ *
+ * Rótulos estruturados do corpo de erro do Google: `error.status`,
+ * `details[].reason` e os `quotaId` de `QuotaFailure`. São identificadores de
+ * vocabulário fechado, do mesmo tipo que um código HTTP.
+ *
+ * O QUE NUNCA SAI
+ *
+ * `error.message` e qualquer texto livre — a mensagem do provedor pode ecoar o
+ * prompt enviado, que carrega o contexto da viagem. O corpo é lido, os rótulos
+ * são extraídos, e o resto é descartado sem nunca ser logado nem devolvido.
+ * O filtro de `rotulo()` é a garantia: o que não tiver forma de identificador
+ * é jogado fora, mesmo que apareça num campo esperado.
+ */
+export interface RateLimitSignals {
+  /** `RESOURCE_EXHAUSTED` e afins. */
+  status: string | null;
+  /** `RATE_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`… */
+  reason: string | null;
+  /** `GenerateRequestsPerDayPerProjectPerModel-FreeTier`, por exemplo. */
+  quotaIds: string[];
+}
+
+/** Só passa o que tem forma de identificador. Frase livre não passa. */
+function rotulo(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 64) return null;
+  return /^[A-Za-z0-9_.-]+$/.test(trimmed) ? trimmed : null;
+}
+
+/** Corpo grande demais não é erro estruturado do Google — é outra coisa. */
+const MAX_ERROR_BODY = 16_384;
+
+export function readRateLimitSignals(rawBody: string): RateLimitSignals {
+  const vazio: RateLimitSignals = { status: null, reason: null, quotaIds: [] };
+  if (typeof rawBody !== 'string' || !rawBody || rawBody.length > MAX_ERROR_BODY) return vazio;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    // Um 429 que não é JSON (HTML de proxy, texto solto) não tem rótulo para
+    // extrair. Continua sendo 429 — só não diz mais do que isso.
+    return vazio;
+  }
+
+  const error = asRecord(asRecord(parsed)?.error);
+  if (!error) return vazio;
+
+  const details = Array.isArray(error.details) ? error.details : [];
+  let reason: string | null = null;
+  const quotaIds: string[] = [];
+
+  for (const entry of details) {
+    const detail = asRecord(entry);
+    if (!detail) continue;
+
+    reason = reason ?? rotulo(detail.reason);
+
+    const violations = Array.isArray(detail.violations) ? detail.violations : [];
+    for (const item of violations) {
+      const violation = asRecord(item);
+      if (!violation) continue;
+      const id = rotulo(violation.quotaId);
+      if (id && !quotaIds.includes(id)) quotaIds.push(id);
+    }
+  }
+
+  return { status: rotulo(error.status), reason, quotaIds: quotaIds.slice(0, 4) };
+}
+
+/**
+ * Cota do dia se reconhece por dizer "por dia" no identificador da cota, ou
+ * por a própria razão falar em cota em vez de taxa. Na dúvida, o rótulo
+ * conservador é o do minuto: ele é o que se resolve esperando.
+ */
+export function classifyRateLimit(signals: RateLimitSignals): UpstreamFailure {
+  const porDia = signals.quotaIds.some((id) => /per_?day/i.test(id));
+  const cota = signals.reason ? /quota/i.test(signals.reason) : false;
+
+  if (porDia || cota) return { code: 'GEMINI_QUOTA_EXCEEDED', retryable: true };
+  return { code: 'GEMINI_RATE_LIMIT', retryable: true };
+}
+
+export function countCandidates(data: unknown): number {
+  const candidates = (data as { candidates?: unknown } | null)?.candidates;
+  return Array.isArray(candidates) ? candidates.length : 0;
 }

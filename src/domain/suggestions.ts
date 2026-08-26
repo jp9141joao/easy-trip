@@ -95,11 +95,55 @@ export const SUGGESTION_FAILURE_CODES = [
 export type SuggestionFailureCode = (typeof SUGGESTION_FAILURE_CODES)[number];
 
 /**
+ * O que se sabe sobre UMA tentativa de completar as sugestões.
+ *
+ * POR QUE ISTO EXISTE
+ *
+ * No Android, a tela de Moscovo dizia "Sugestões indisponíveis / Ainda não
+ * encontramos sugestões suficientes para este destino" — e não havia como
+ * saber, do aparelho, se aquilo era 401, 403, 422, 429, rede, catálogo vazio
+ * ou geração parcial. Todos esses caminhos chegavam ao mesmo texto. Corrigir
+ * por hipótese, nesse estado, é chutar.
+ *
+ * SÓ NÚMEROS E RÓTULOS FECHADOS
+ *
+ * Nada aqui é conteúdo: não há título de sugestão, não há corpo de resposta,
+ * não há cabeçalho, não há token. `httpStatus` é um inteiro, `code` é um dos
+ * códigos declarados acima, e as contagens são contagens. É isto que permite
+ * exibir o diagnóstico na tela em desenvolvimento sem vazar JWT, `service_role`
+ * ou a chave do Gemini (§12 do handoff).
+ */
+export interface SuggestionAttemptDiagnostics {
+  /** Status HTTP da Function, quando houve resposta HTTP. */
+  httpStatus?: number;
+  /** Como a chamada falhou na camada de transporte: offline, timeout, parse… */
+  transport?: 'offline' | 'timeout' | 'http' | 'parse' | 'unsupported' | 'unconfigured';
+  /** O código de negócio que o corpo trouxe (ex.: INSUFFICIENT_SUGGESTIONS). */
+  responseCode?: string;
+  /** Quantas sugestões a chamada precisava produzir. */
+  minimumNeeded?: number;
+  /** Quantas linhas o catálogo (`public.places`) rendeu nesta execução. */
+  catalogCount?: number;
+  /** Quantas linhas a IA rendeu nesta execução, já deduplicadas. */
+  aiCount?: number;
+  /** Quantas sugestões a viagem tem ao final. */
+  totalCount?: number;
+  /** A janela de 6h estava aberta quando a tentativa começou? */
+  refreshWindowOpen?: boolean;
+  /** A tentativa foi um "Atualizar sugestões" explícito? */
+  forced?: boolean;
+}
+
+/**
  * A failed source is not the same thing as an empty destination catalog.
  *
  * `partialSuggestions` lets the UI keep showing valid catalog rows when only
  * the AI complement failed, while still explaining the failure instead of
  * silently pretending that generation merely found nothing.
+ *
+ * `diagnostics` carrega o que a tela precisa para DIZER o que aconteceu — e,
+ * em desenvolvimento, para mostrar o status real em vez de um texto genérico.
+ * É construído sanitizado: ver `SuggestionAttemptDiagnostics`.
  */
 export class SuggestionGenerationError extends Error {
   readonly name = 'SuggestionGenerationError';
@@ -109,10 +153,191 @@ export class SuggestionGenerationError extends Error {
     message: string,
     readonly partialSuggestions: TripSuggestion[] = [],
     readonly cause?: unknown,
+    readonly diagnostics: SuggestionAttemptDiagnostics = {},
   ) {
     super(message);
     Object.setPrototypeOf(this, new.target.prototype);
   }
+}
+
+/* ------------------------------ estados da tela ---------------------------- */
+
+/**
+ * Os estados que a tela de sugestões precisa distinguir (§15 do handoff).
+ *
+ * Antes existiam dois: "tem sugestão" e "Sugestões indisponíveis". Oito
+ * situações muito diferentes caíam na segunda — inclusive a janela de seis
+ * horas, que não é falha nenhuma, e a falta de permissão, que "Tentar
+ * novamente" nunca vai resolver. Um botão que não pode funcionar é pior do que
+ * nenhum botão: ele ensina que o aplicativo está quebrado.
+ */
+export type SuggestionScreenTone = 'info' | 'warning' | 'error';
+
+export interface SuggestionScreenState {
+  /** Chave estável para teste e telemetria — não é texto de tela. */
+  kind:
+    | 'empty'
+    | 'incomplete'
+    | 'refresh_limited'
+    | 'network'
+    | 'permission'
+    | 'unavailable'
+    | 'failed';
+  title: string;
+  message: string;
+  tone: SuggestionScreenTone;
+  /** `false` quando repetir agora não tem como dar certo. */
+  retryable: boolean;
+}
+
+const SCREEN_STATES: Record<SuggestionFailureCode, SuggestionScreenState> = {
+  REFRESH_LIMITED: {
+    kind: 'refresh_limited',
+    title: 'Atualizado recentemente',
+    message:
+      'Gerar sugestões tem custo, então isso acontece no máximo uma vez a cada 6 horas por ' +
+      'viagem. Você poderá atualizar as sugestões novamente mais tarde.',
+    tone: 'info',
+    retryable: false,
+  },
+  INCOMPLETE_GENERATION: {
+    kind: 'incomplete',
+    title: 'Ainda faltam sugestões',
+    message:
+      'Conseguimos apenas parte das sugestões para este destino. O que já veio fica salvo, e ' +
+      'você pode tentar completar de novo mais tarde.',
+    tone: 'warning',
+    retryable: true,
+  },
+  PERMISSION_DENIED: {
+    kind: 'permission',
+    title: 'Sem permissão para gerar',
+    message:
+      'Só quem organiza ou edita esta viagem pode gerar sugestões. Peça a quem organiza para ' +
+      'gerar, ou para mudar o seu papel.',
+    tone: 'info',
+    retryable: false,
+  },
+  AI_UNAVAILABLE: {
+    kind: 'unavailable',
+    title: 'Geração indisponível',
+    message:
+      'O serviço de sugestões não está disponível neste ambiente. As sugestões já salvas ' +
+      'continuam aqui.',
+    tone: 'warning',
+    retryable: false,
+  },
+  EDGE_FUNCTION_UNAVAILABLE: {
+    kind: 'unavailable',
+    title: 'Serviço não publicado',
+    message: 'O serviço de sugestões não respondeu para esta viagem. Tente novamente mais tarde.',
+    tone: 'warning',
+    retryable: true,
+  },
+  AI_PROVIDER_FAILED: {
+    kind: 'failed',
+    title: 'A geração falhou',
+    message: 'O provedor de sugestões não conseguiu responder agora. Tente novamente.',
+    tone: 'error',
+    retryable: true,
+  },
+  INVALID_AI_RESPONSE: {
+    kind: 'failed',
+    title: 'Resposta inesperada',
+    message: 'O serviço respondeu num formato que não reconhecemos. Tente novamente.',
+    tone: 'error',
+    retryable: true,
+  },
+  CATALOG_UNAVAILABLE: {
+    kind: 'failed',
+    title: 'Catálogo indisponível',
+    message: 'Não foi possível consultar o catálogo de lugares. Verifique sua conexão.',
+    tone: 'error',
+    retryable: true,
+  },
+  PERSISTENCE_FAILED: {
+    kind: 'failed',
+    title: 'Não foi possível salvar',
+    message: 'As sugestões chegaram, mas não conseguimos gravá-las. Tente novamente.',
+    tone: 'error',
+    retryable: true,
+  },
+};
+
+/**
+ * "Não deu para alcançar o serviço" não é a mesma coisa que "o serviço recusou".
+ *
+ * Sem conexão, o texto útil fala de conexão — e não de geração, de catálogo ou
+ * de permissão. O código é o mesmo `AI_UNAVAILABLE` porque a origem é a mesma
+ * camada; o que muda é o transporte, e é ele que a pessoa consegue agir.
+ */
+const NETWORK_STATE: SuggestionScreenState = {
+  kind: 'network',
+  title: 'Sem conexão com o serviço',
+  message:
+    'Não conseguimos alcançar o serviço de sugestões. Verifique sua conexão e tente novamente.',
+  tone: 'error',
+  retryable: true,
+};
+
+const EMPTY_STATE: SuggestionScreenState = {
+  kind: 'empty',
+  title: 'Ainda sem sugestões',
+  message: 'O catálogo ainda não tem sugestões para este destino.',
+  tone: 'info',
+  retryable: true,
+};
+
+/**
+ * Um erro que não é da geração — a própria leitura da coleção falhou.
+ *
+ * Não pode virar "Ainda sem sugestões": vazio e falha são coisas diferentes, e
+ * confundi-las diz à pessoa que o destino não tem nada quando o que houve foi
+ * a lista não ter chegado.
+ */
+const UNKNOWN_STATE: SuggestionScreenState = {
+  kind: 'failed',
+  title: 'Não foi possível carregar',
+  message:
+    'Não conseguimos carregar as sugestões desta viagem. Verifique sua conexão e tente novamente.',
+  tone: 'error',
+  retryable: true,
+};
+
+/** O estado de tela correspondente a uma falha — ou o vazio real, sem falha. */
+export function suggestionScreenState(error: unknown): SuggestionScreenState {
+  if (error === null || error === undefined) return EMPTY_STATE;
+  if (!(error instanceof SuggestionGenerationError)) return UNKNOWN_STATE;
+
+  const transport = error.diagnostics.transport;
+  if (transport === 'offline' || transport === 'timeout') return NETWORK_STATE;
+
+  return SCREEN_STATES[error.code] ?? SCREEN_STATES.AI_PROVIDER_FAILED;
+}
+
+/**
+ * O diagnóstico em uma linha, para a tela mostrar em desenvolvimento.
+ *
+ * Só rótulos e números — ver `SuggestionAttemptDiagnostics`. Devolve `null`
+ * quando não há nada de concreto a dizer, para a tela não pintar um rodapé
+ * vazio.
+ */
+export function formatSuggestionDiagnostics(error: unknown): string | null {
+  if (!(error instanceof SuggestionGenerationError)) return null;
+  const d = error.diagnostics;
+
+  const partes: string[] = [error.code];
+  if (d.httpStatus !== undefined) partes.push(`HTTP ${d.httpStatus}`);
+  if (d.transport && d.transport !== 'http') partes.push(d.transport);
+  if (d.responseCode) partes.push(d.responseCode);
+  if (d.minimumNeeded !== undefined) partes.push(`need=${d.minimumNeeded}`);
+  if (d.catalogCount !== undefined) partes.push(`catalog=${d.catalogCount}`);
+  if (d.aiCount !== undefined) partes.push(`ai=${d.aiCount}`);
+  if (d.totalCount !== undefined) partes.push(`total=${d.totalCount}`);
+  if (d.refreshWindowOpen !== undefined) partes.push(`window=${d.refreshWindowOpen ? 'open' : 'closed'}`);
+  if (d.forced !== undefined) partes.push(`forced=${d.forced}`);
+
+  return partes.length > 1 ? partes.join(' · ') : null;
 }
 
 /** Quantas sugestões uma viagem precisa ter para a tela não abrir vazia (§41). */

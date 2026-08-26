@@ -13,6 +13,7 @@ import {
   routeRegion,
   routeStopsLabel,
 } from '@/domain/route';
+import { formatClockTime } from '@/lib/date';
 import { useTheme } from '@/theme';
 
 /**
@@ -124,7 +125,7 @@ export function DayRouteCard({
                 </AppText>
               </View>
               <AppText variant="bodySmall" numberOfLines={1} style={{ flex: 1 }}>
-                {stop.startTime ? `${stop.startTime} · ${stop.title}` : stop.title}
+                {formatClockTime(stop.startTime) ? `${formatClockTime(stop.startTime)} · ${stop.title}` : stop.title}
               </AppText>
             </View>
 

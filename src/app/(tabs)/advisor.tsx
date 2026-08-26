@@ -35,6 +35,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
+import { DockAwareColumn, useDockMetrics } from '@/components/navigation/DockMetrics';
 import { DOCK_CLEARANCE } from '@/constants/layout';
 import { useKeyboardVisible } from '@/hooks/useKeyboard';
 import { buildReviewGroups, reviewToActions } from '@/domain/aiActionReview';
@@ -54,6 +55,7 @@ import { useTrips } from '@/hooks/useTrips';
 import type { AIActionReport } from '@/services/aiActionExecutor';
 import { useAuth } from '@/providers/AuthProvider';
 import { CONSULTATION_STATUS_HINT, CONSULTATION_STATUS_LABEL } from '@/lib/labels';
+import { AIRequestError, formatAIFailure, type AITraceFields } from '@/lib/aiTrace';
 import { markdownToPlainText } from '@/lib/markdown';
 import { AI_SUGGESTIONS } from '@/services/ai';
 import { useTheme } from '@/theme';
@@ -282,8 +284,8 @@ function ExpertsTab() {
 function AITab() {
   const theme = useTheme();
   const toast = useToast();
-  const insets = useSafeAreaInsets();
   const keyboardVisible = useKeyboardVisible();
+  const dock = useDockMetrics();
 
   /*
    * CONTEXTO DA IA É UMA SELEÇÃO PRÓPRIA — E SÓ DELA.
@@ -326,6 +328,8 @@ function AITab() {
   } = useAIConversation(trip);
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<ScrollView>(null);
+  // O diagnóstico do último erro, mostrado só em DEV embaixo da conversa.
+  const [lastFailure, setLastFailure] = useState<AITraceFields | null>(null);
 
   /*
    * Roteiro e checklist da viagem, aqui, por um motivo só: detectar duplicata
@@ -490,6 +494,7 @@ function AITab() {
     }
 
     setDraft('');
+    setLastFailure(null);
     try {
       await send.mutateAsync(prompt);
     } catch (error) {
@@ -506,6 +511,16 @@ function AITab() {
         toast.warning(error.message);
         return;
       }
+      /*
+       * PROD continua com a frase única; DEV ganha a causa (§5 do handoff).
+       *
+       * Sem isto não havia como saber, do aparelho, se aquele erro era 429,
+       * timeout, parser ou action inválida — e "talvez fosse rede" não é
+       * diagnóstico. A linha é só rótulo fechado e status: nenhum segredo, e
+       * nada de conteúdo da conversa.
+       */
+      const info = error instanceof AIRequestError ? error.fields : undefined;
+      setLastFailure(info ?? { code: 'UNKNOWN', stage: 'REQUEST' });
       toast.error('Não foi possível obter uma resposta agora. Tente novamente.');
     }
   };
@@ -722,27 +737,43 @@ function AITab() {
         )}
 
         {send.isPending ? <TypingIndicator /> : null}
+
+        {lastFailure ? <DevFailureLine fields={lastFailure} /> : null}
       </ScrollView>
 
-      {/* Quick suggestions (§50) — só fazem sentido com contexto escolhido. */}
-      {trip ? (
-        <View style={{ paddingLeft: theme.spacing.screen, paddingBottom: theme.spacing.sm }}>
-          <ChipRow>
-            {AI_SUGGESTIONS.map((suggestion) => (
-              <Chip key={suggestion} label={suggestion} onPress={() => void submit(suggestion)} />
-            ))}
-          </ChipRow>
-        </View>
-      ) : null}
+      {/*
+        Sugestões rápidas e composer viajam juntos dentro da `DockAwareColumn`.
+
+        É ela que mede onde esta coluna TERMINA em relação ao dock, e é dessa
+        medida que sai a folga do composer — em vez de somar altura de barra
+        com área segura e torcer para que a tela vá mesmo até o fundo da
+        janela. Ver `DockMetrics.tsx`: as duas tentativas anteriores erraram
+        exatamente nessa suposição (§9, §10 do handoff).
+      */}
+      <DockAwareColumn testID="ai-dock-column">
+        {/* Quick suggestions (§50) — só fazem sentido com contexto escolhido. */}
+        {trip ? (
+          <View style={{ paddingLeft: theme.spacing.screen, paddingBottom: theme.spacing.sm }}>
+            <ChipRow>
+              {AI_SUGGESTIONS.map((suggestion) => (
+                <Chip key={suggestion} label={suggestion} onPress={() => void submit(suggestion)} />
+              ))}
+            </ChipRow>
+          </View>
+        ) : null}
 
       {/*
-        O espaço reservado embaixo existe para o dock flutuante, não para o
-        teclado. Com o teclado aberto o dock sai de cena (`(tabs)/_layout.tsx`
-        devolve `null`), então manter a folga dele deixaria o composer boiando
-        acima do teclado; aí a folga é só a área segura do aparelho.
+        A folga embaixo do composer é a SOBREPOSIÇÃO MEDIDA com o dock.
 
-        Os dois valores são do sistema ou do tema — nenhum número mágico
-        atrelado a tamanho de teclado (§3, §6).
+        `dock.clearance` é `max(0, fundo desta coluna − topo do dock)` mais o
+        respiro. Quando a coluna já termina acima da barra, a sobreposição é
+        zero e não se soma nada — que é o caso que as duas versões anteriores
+        não sabiam distinguir e que produzia o vão de dezenas de pontos no
+        aparelho (§9, §10 do handoff).
+
+        Com o teclado aberto o dock sai de cena e `clearance` vira zero
+        sozinho; sobra só o respiro, e quem levanta o composer é o
+        `KeyboardAvoidingView`, que mede a sobreposição real do teclado (§11).
       */}
       <AIComposer
         value={draft}
@@ -751,12 +782,9 @@ function AITab() {
         disabled={!trip}
         pending={send.isPending}
         disabledHint="Selecione uma viagem para conversar com a IA"
-        paddingBottom={
-          keyboardVisible
-            ? Math.max(insets.bottom, theme.spacing.sm)
-            : DOCK_CLEARANCE - theme.spacing.md
-        }
+        paddingBottom={keyboardVisible ? theme.spacing.sm : dock.clearance}
       />
+      </DockAwareColumn>
 
       {trip && review ? (
         <AIActionReviewSheet
@@ -793,6 +821,30 @@ function AITab() {
         onCancel={() => setConfirmNewChat(false)}
       />
     </KeyboardAvoidingView>
+  );
+}
+
+/**
+ * A causa do último erro, visível só em desenvolvimento (§5 do handoff).
+ *
+ * Formato fixo — `DEV · HTTP 429 · RATE_LIMIT · REQUEST` — porque o objetivo é
+ * ser lido em voz alta de um aparelho na mão de alguém. Só status e rótulos
+ * fechados: nenhum token, nenhuma chave, nenhum trecho da conversa.
+ */
+function DevFailureLine({ fields }: { fields: AITraceFields }) {
+  const theme = useTheme();
+  if (typeof __DEV__ === 'undefined' || !__DEV__) return null;
+
+  return (
+    <AppText
+      testID="ai-dev-failure"
+      variant="caption"
+      color="tertiary"
+      mono
+      style={{ alignSelf: 'flex-start', paddingHorizontal: theme.spacing.xs }}
+    >
+      {formatAIFailure(fields)}
+    </AppText>
   );
 }
 

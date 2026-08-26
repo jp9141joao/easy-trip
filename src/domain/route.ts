@@ -199,6 +199,44 @@ export function routeRegion(route: DayRoute) {
  * paradas intermediárias, e cair para uma rota de dois pontos silenciosamente
  * daria uma rota diferente da que a tela acabou de mostrar.
  */
+/**
+ * "Como chegar" para UM ponto (§21 do handoff).
+ *
+ * Separado de `externalRouteUrl` porque a pergunta é outra: ali é "faça a rota
+ * do meu dia", aqui é "me leve até aqui, de onde eu estiver". O aplicativo de
+ * mapas resolve a origem sozinho, e é justamente por isso que ele existe — nós
+ * não temos provedor de rotas e não vamos fingir que temos.
+ *
+ * O DESTINO É A COORDENADA, E O NOME É SÓ RÓTULO
+ *
+ * `destination` leva "lat,lng" e não o nome do lugar: um nome pode resolver
+ * para o restaurante homônimo do outro lado da cidade, e a coordenada é a que
+ * a pessoa marcou no mapa. `destination_place_id` não existe aqui porque não
+ * temos id do Google — inventar um levaria a pessoa a outro lugar.
+ *
+ * `travelmode` fica de fora de propósito: quem escolhe entre andar, dirigir e
+ * pegar transporte é quem está na rua, e chutar isso do lado de cá trocaria a
+ * escolha da pessoa por um palpite nosso.
+ *
+ * O esquema `https://www.google.com/maps/...` é universal: no Android com o
+ * Google Maps instalado o próprio sistema abre o aplicativo; sem ele, abre o
+ * navegador. Um esquema nativo (`geo:` ou `comgooglemaps:`) falharia no
+ * aparelho que não tivesse aquele app exato instalado.
+ */
+export function directionsUrl(
+  destination: Coordinates,
+  label?: string,
+): string {
+  const params = new URLSearchParams({
+    api: '1',
+    destination: `${destination.latitude},${destination.longitude}`,
+  });
+  // O rótulo é o que o mapa mostra no pino de destino. Vai depois da
+  // coordenada e nunca no lugar dela.
+  if (label?.trim()) params.set('query', label.trim());
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
 export function externalRouteUrl(route: DayRoute): string {
   const point = (stop: RouteStop) => `${stop.latitude},${stop.longitude}`;
   const origin = point(route.stops[0]);

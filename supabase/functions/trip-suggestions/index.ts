@@ -212,6 +212,41 @@ Deno.serve(async (req) => {
    * recebe `claimed=true`. A janela é consumida mesmo se o provider falhar —
    * proteção de custo deliberada, sem RPC de "release" que um cliente
    * modificado pudesse abusar para gerar em loop.
+   *
+   * POR QUE CONTINUA SEM "RELEASE", DEPOIS DO CASO DE MOSCOVO (§13 do handoff)
+   *
+   * O sintoma relatado foi: uma tentativa falha consome a janela, e a viagem
+   * fica seis horas sem sugestões e sem botão que funcione. Devolver a janela
+   * quando a geração não produziu nada resolveria — e não dá para fazer isso
+   * com o schema atual, o que foi verificado e não suposto:
+   *
+   *   1. a 0012 revoga `UPDATE` de `public.trips` para `authenticated` e
+   *      reconcede uma lista de colunas que NÃO inclui
+   *      `suggestions_refreshed_at`. Esta função roda com o JWT do usuário,
+   *      ou seja como `authenticated`: ela não consegue escrever a coluna;
+   *   2. a única função que escreve é `claim_trip_suggestion_refresh`, e ela
+   *      só sabe gravar `now()`. Não devolve o valor anterior, então nem um
+   *      chamador privilegiado teria o que restaurar.
+   *
+   * Uma `release_trip_suggestion_refresh` resolveria o item 2, mas reabre o
+   * buraco que a 0012 fechou: concedida a `authenticated`, um cliente
+   * modificado faria claim → ler a marca (tem SELECT) → release → repetir, e
+   * geraria chamadas ao Gemini sem teto. Fechá-la de verdade exige uma das
+   * duas coisas, e nenhuma é decisão de uma rodada de correção:
+   *
+   *   (a) restringir o release a `service_role`, o que obriga esta função a
+   *       carregar a chave de service role — hoje ela deliberadamente não
+   *       tem nenhuma, e é isso que limita o estrago de um bug aqui a "texto
+   *       ruim"; ou
+   *   (b) um token de claim que o cliente não possa forjar nem ler
+   *       (coluna nova, SELECT revogado, devolvido só a quem fez o claim).
+   *
+   * O que esta rodada faz, em vez disso, é atacar as duas pontas que não
+   * exigem schema: a geração ganha uma tentativa de completar dentro do mesmo
+   * claim (bem abaixo), o que reduz muito a chance de a janela ser gasta sem
+   * resultado; e o cliente passa a relatar a janela fechada como
+   * `REFRESH_LIMITED` — informação com prazo — em vez de
+   * `INCOMPLETE_GENERATION` com um botão morto.
    */
   const { data: claimRows, error: claimError } = await supabase.rpc(
     'claim_trip_suggestion_refresh',
@@ -251,54 +286,114 @@ Deno.serve(async (req) => {
       ? Math.min(MINIMUM_SUGGESTIONS, Math.max(0, Math.trunc(payload.minimumNeeded)))
       : MINIMUM_SUGGESTIONS;
 
-  const userPrompt = [
-    `Destino: ${trip.destination_city}, ${trip.destination_country}.`,
-    `Período da viagem: ${trip.start_date} a ${trip.end_date}.`,
-    existingTitles.length
-      ? `Já sugeridos (não repita): ${existingTitles.join('; ')}.`
-      : 'Nenhuma sugestão anterior.',
-    `Devolva entre 6 e 10 sugestões, variando as categorias. No mínimo ${MINIMUM_SUGGESTIONS}.`,
-  ].join('\n');
+  const buildPrompt = (evitar: string[], pedir: number) =>
+    [
+      `Destino: ${trip.destination_city}, ${trip.destination_country}.`,
+      `Período da viagem: ${trip.start_date} a ${trip.end_date}.`,
+      evitar.length
+        ? `Já sugeridos (não repita): ${evitar.join('; ')}.`
+        : 'Nenhuma sugestão anterior.',
+      `Devolva entre ${pedir} e ${Math.max(pedir + 4, 10)} sugestões, variando as categorias. No mínimo ${pedir}.`,
+    ].join('\n');
 
-  let response: Response;
-  try {
-    response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-          generationConfig: {
-            temperature: 0.8,
-            responseMimeType: 'application/json',
-            responseSchema: RESPONSE_SCHEMA,
-          },
-        }),
-      },
-    );
-  } catch {
+  /**
+   * Uma rodada do Gemini, já sanitizada.
+   *
+   * Devolve `null` quando a chamada não produziu saída utilizável — rede,
+   * status ruim ou corpo que não é o formato acordado. Quem decide o que fazer
+   * com isso é o chamador, porque as duas rodadas reagem de maneira diferente:
+   * a primeira falhar é um erro, a segunda falhar apenas não completou.
+   */
+  async function generate(evitar: string[], pedir: number): Promise<Record<string, unknown>[] | null> {
+    let response: Response;
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            contents: [{ role: 'user', parts: [{ text: buildPrompt(evitar, pedir) }] }],
+            generationConfig: {
+              temperature: 0.8,
+              responseMimeType: 'application/json',
+              responseSchema: RESPONSE_SCHEMA,
+            },
+          }),
+        },
+      );
+    } catch {
+      return null;
+    }
+
+    if (!response.ok) return null;
+
+    let parsed: { suggestions?: unknown[] };
+    try {
+      const body = await response.json();
+      const text: string = (body?.candidates?.[0]?.content?.parts ?? [])
+        .map((part: { text?: string }) => part.text ?? '')
+        .join('');
+      parsed = JSON.parse(text);
+    } catch {
+      return null;
+    }
+
+    return (Array.isArray(parsed.suggestions) ? parsed.suggestions : [])
+      .map(sanitizeSuggestion)
+      .filter((suggestion): suggestion is Record<string, unknown> => suggestion !== null);
+  }
+
+  /** Título normalizado, para não gravar "Praça Vermelha" duas vezes. */
+  const chave = (item: Record<string, unknown>) =>
+    String(item.title ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+
+  const primeira = await generate(existingTitles, MINIMUM_SUGGESTIONS);
+  if (primeira === null) {
+    // A primeira rodada falhar é falha de verdade: não há o que completar.
     return json({ error: 'Não foi possível gerar sugestões agora.' }, 502);
   }
 
-  if (!response.ok) return json({ error: 'Não foi possível gerar sugestões agora.' }, 502);
+  const vistos = new Set(primeira.map(chave));
+  const suggestions = [...primeira];
 
-  let parsed: { suggestions?: unknown[] };
-  try {
-    const body = await response.json();
-    const text: string = (body?.candidates?.[0]?.content?.parts ?? [])
-      .map((part: { text?: string }) => part.text ?? '')
-      .join('');
-    parsed = JSON.parse(text);
-  } catch {
-    return json({ error: 'Resposta do modelo em formato inesperado.' }, 502);
+  /*
+   * UMA tentativa de completar, dentro da mesma execução (§14 do handoff).
+   *
+   * A janela de seis horas já foi consumida pelo compare-and-set lá em cima —
+   * ela é gasta ANTES do provedor, de propósito, para que uma falha não vire
+   * geração em laço. A consequência é que uma volta que devolve 1 de 3 deixa a
+   * viagem incompleta por seis horas, e foi assim que a tela de Moscovo travou.
+   *
+   * Completar aqui é o único momento em que dá para consertar isso sem abrir
+   * mão da proteção: a chamada já está paga, o claim já é desta execução, e o
+   * segundo pedido é menor — só o que falta, com os títulos que já vieram na
+   * lista de "não repita".
+   *
+   * Uma, e não um laço: duas chamadas por claim é o teto, e um modelo que
+   * devolveu pouco duas vezes não passa a devolver mais na terceira.
+   */
+  if (suggestions.length < minimumNeeded) {
+    const faltam = minimumNeeded - suggestions.length;
+    const segunda = await generate(
+      [...existingTitles, ...suggestions.map((item) => String(item.title ?? ''))],
+      faltam,
+    );
+
+    for (const item of segunda ?? []) {
+      const k = chave(item);
+      if (!k || vistos.has(k)) continue;
+      vistos.add(k);
+      suggestions.push(item);
+    }
   }
 
-  const suggestions = (Array.isArray(parsed.suggestions) ? parsed.suggestions : [])
-    .map(sanitizeSuggestion)
-    .filter((suggestion): suggestion is Record<string, unknown> => suggestion !== null)
-    .slice(0, 12);
+  suggestions.splice(12);
 
   /*
    * Geração parcial não é sucesso.
