@@ -157,7 +157,7 @@ describe('classificação da falha do Gemini', () => {
   });
 
   it('só considera repetível o que é intermitência do provedor', () => {
-    for (const status of [429, 500, 502, 503, 504]) {
+    for (const status of [500, 502, 503, 504]) {
       expect(classifyUpstreamStatus(status).retryable).toBe(true);
     }
     // Determinísticos: chave errada, sessão inválida, payload recusado.
@@ -165,6 +165,17 @@ describe('classificação da falha do Gemini', () => {
     for (const status of [400, 401, 403, 404]) {
       expect(classifyUpstreamStatus(status).retryable).toBe(false);
     }
+  });
+
+  it('429 deixou de ser repetível no mesmo modelo', () => {
+    // Era `retryable: true`, e a repetição ia para o MESMO modelo que acabara
+    // de recusar por falta de capacidade — no caso de cota do dia, sem chance
+    // nem em tese. Agora um 429 vale por trocar de modelo, não por insistir.
+    expect(classifyUpstreamStatus(429)).toEqual({
+      code: 'GEMINI_RATE_LIMIT',
+      retryable: false,
+      fallback: true,
+    });
   });
 
   it('separa estouro de prazo, queda de rede e defeito nosso', () => {

@@ -55,7 +55,12 @@ import { useTrips } from '@/hooks/useTrips';
 import type { AIActionReport } from '@/services/aiActionExecutor';
 import { useAuth } from '@/providers/AuthProvider';
 import { CONSULTATION_STATUS_HINT, CONSULTATION_STATUS_LABEL } from '@/lib/labels';
-import { AIRequestError, formatAIFailure, type AITraceFields } from '@/lib/aiTrace';
+import {
+  AIRequestError,
+  describeAIFailure,
+  formatAIFailure,
+  type AITraceFields,
+} from '@/lib/aiTrace';
 import { markdownToPlainText } from '@/lib/markdown';
 import { AI_SUGGESTIONS } from '@/services/ai';
 import { useTheme } from '@/theme';
@@ -521,7 +526,15 @@ function AITab() {
        */
       const info = error instanceof AIRequestError ? error.fields : undefined;
       setLastFailure(info ?? { code: 'UNKNOWN', stage: 'REQUEST' });
-      toast.error('Não foi possível obter uma resposta agora. Tente novamente.');
+      /*
+       * A frase segue o código, quando há um.
+       *
+       * Insistir "tente novamente" com a cota do provedor esgotada é mandar a
+       * pessoa repetir um caminho sem saída. `describeAIFailure` devolve a
+       * genérica para tudo o que não for esgotamento de cadeia — e nunca cita
+       * modelo nenhum: qual deles falhou não é assunto de quem está viajando.
+       */
+      toast.error(describeAIFailure(info));
     }
   };
 

@@ -25,13 +25,14 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 import {
   RESPONSE_SCHEMA,
   SYSTEM_PROMPT,
+  TEXT_MODEL_CHAIN,
   buildRepairInstruction,
   classifyItineraryRequest,
   createRateLimiter,
+  describeUpstreamFailure,
   discloseIncompleteItinerary,
   classifyUpstreamException,
-  classifyRateLimit,
-  classifyUpstreamStatus,
+  classifyUpstreamResponse,
   countCandidates,
   enforcePromiseCoherence,
   hasRenderableText,
@@ -42,14 +43,24 @@ import {
   needsItineraryRepair,
   pickBetterItinerary,
   readModelOutput,
+  runModelChain,
+  type AIModelConfig,
+  type ModelAttemptLog,
+  type ModelCallResult,
   type RateLimitSignals,
-  type UpstreamFailure,
 } from './protocol.ts';
 
 const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
-const MODEL = 'gemini-3.6-flash';
+/*
+ * NÃO existe mais um modelo único.
+ *
+ * `TEXT_MODEL_CHAIN` é a fonte de verdade — ordem de preferência, IDs reais,
+ * TTS já filtrado — e vive em `protocol.ts`, junto da política que decide
+ * quando trocar. Aqui só se usa a lista.
+ */
+const MODELS = TEXT_MODEL_CHAIN;
 
 /**
  * Instrumentação de diagnóstico.
@@ -218,8 +229,8 @@ Deno.serve(async (req) => {
    */
   const requestId = crypto.randomUUID();
 
-  const askGemini = (body: unknown, timeoutMs: number) =>
-    fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+  const askGemini = (modelId: string, body: unknown, timeoutMs: number) =>
+    fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -255,121 +266,117 @@ Deno.serve(async (req) => {
   };
 
   /*
-   * UMA repetição curta, e só para falha transitória.
+   * UMA repetição curta no MESMO modelo, e só para falha transitória.
    *
-   * 429, 5xx e queda de rede são intermitências do provedor: a segunda
-   * tentativa costuma passar. Já 400/401/403 e corpo malformado são
-   * determinísticos — repetir devolve o mesmo erro mais tarde.
+   * 5xx e queda de rede são intermitências do provedor: a segunda tentativa
+   * costuma passar. Já 400/401/403 e corpo malformado são determinísticos —
+   * repetir devolve o mesmo erro mais tarde.
+   *
+   * O QUE MUDOU: 429 SAIU DAQUI.
+   *
+   * Antes um 429 era "repetível", e a repetição ia para o MESMO modelo que
+   * acabara de dizer que não tinha capacidade. Isso nunca podia dar certo — no
+   * caso de cota do dia, nem em tese — e gastava metade do orçamento antes de
+   * mostrar o erro. Agora um 429 vai para o PRÓXIMO modelo da cadeia, que é o
+   * único lugar onde a requisição ainda pode ser atendida.
    *
    * A repetição NÃO é uma geração a mais no orçamento de conteúdo: ela
-   * substitui uma tentativa que não produziu NADA. O teto de gerações
-   * bem-sucedidas continua sendo duas — primeira e reparo —, e o orçamento
-   * total continua soberano: se não couber, não repete.
+   * substitui uma tentativa que não produziu NADA.
    */
   const RETRY_MIN_BUDGET_MS = 15_000;
   const RETRY_BASE_DELAY_MS = 400;
 
-  type GeminiResult =
-    | { ok: true; data: unknown; attempts: number }
-    | {
-        ok: false;
-        attempts: number;
-        failure: UpstreamFailure;
-        upstreamStatus?: number;
-        /** Rótulos estruturados de um 429 — nunca a mensagem do provedor. */
-        rateLimit?: RateLimitSignals;
-      };
+  /*
+   * O PISO PARA COMEÇAR UMA CHAMADA NOVA (§13).
+   *
+   * Uma geração custa segundos. Iniciar uma com três no relógio produz um
+   * timeout garantido — e ainda assim consome uma chamada paga e adia a
+   * mensagem que a pessoa precisa ver.
+   *
+   * O número é derivado dos que já existiam aqui, e não escolhido no vácuo:
+   * `REPAIR_MIN_BUDGET_MS` (20s) é o piso para uma geração de roteiro
+   * completa, e 8s é a metade arredondada do que sobra depois dela — espaço
+   * para uma resposta curta ou para uma recusa rápida, que é o que a cadeia
+   * mais encontra quando está trocando de modelo. Abaixo disso a cadeia para
+   * e responde.
+   *
+   * Note que este número NÃO multiplica o orçamento: ele é um piso para
+   * *começar*, e o prazo de cada chamada continua limitado pelo que sobrou de
+   * `AI_CHAT_BUDGET_MS`. Os modelos da cadeia não ganham 45s cada.
+   */
+  const MIN_MODEL_ATTEMPT_BUDGET_MS = 8_000;
 
-  const callGemini = async (
+  /**
+   * Uma chamada, a um modelo. Sem laço, sem política — isso é da cadeia.
+   */
+  const callModel = async (
+    model: AIModelConfig,
     body: unknown,
     timeoutMs: number,
-    { allowRetry }: { allowRetry: boolean },
-  ): Promise<GeminiResult> => {
-    let attempts = 0;
+  ): Promise<ModelCallResult> => {
+    try {
+      const response = await askGemini(model.id, body, timeoutMs);
 
-    for (;;) {
-      attempts += 1;
-      let failure: UpstreamFailure;
-      let upstreamStatus: number | undefined;
-      let rateLimitSignals: RateLimitSignals | undefined;
+      if (response.ok) {
+        try {
+          return { ok: true, data: await response.json() };
+        } catch {
+          // 200 com corpo que não é JSON. Determinístico: nem repete, nem troca
+          // de modelo — trocar esconderia um defeito nosso de leitura.
+          return {
+            ok: false,
+            failure: { code: 'GEMINI_PARSE_ERROR', retryable: false },
+            upstreamStatus: response.status,
+          };
+        }
+      }
 
-      // O prazo de cada tentativa nunca ultrapassa o que sobrou do orçamento:
-      // é o que garante que quem estoura o relógio primeiro somos nós, que
-      // sabemos dizer o que aconteceu, e não o cliente, que só sabe "abortei".
-      const restante = AI_CHAT_BUDGET_MS - elapsed();
-      const prazo = Math.min(timeoutMs, Math.max(0, restante));
-
+      /*
+       * O TEXTO DO CORPO DA RECUSA NUNCA É LOGADO — e continua não sendo.
+       *
+       * Era aqui que estava `await response.text()` dentro de um
+       * `console.error`: a resposta de erro do provedor pode ecoar o prompt
+       * enviado, que carrega o contexto da viagem.
+       *
+       * O corpo passou a ser lido para TODA recusa, e não só para o 429, e a
+       * regra não afrouxou nem um pouco. Ele vai para uma variável local,
+       * `readRateLimitSignals` extrai dele só rótulos com forma de
+       * identificador — `status`, `reason`, `quotaId` —, e o texto sai de
+       * escopo sem ser guardado, logado nem devolvido. O filtro de `rotulo()`
+       * é a garantia: frase livre não passa, mesmo vindo num campo esperado.
+       *
+       * A leitura agora vale a pena para além do 429 porque `NOT_FOUND` é o
+       * que separa "este ID de modelo não existe mais" — passe para o próximo
+       * — de "o provedor está fora do ar".
+       */
+      let sinais: RateLimitSignals = { status: null, reason: null, quotaIds: [] };
       try {
-        const response = await askGemini(body, prazo);
-
-        if (response.ok) {
-          try {
-            return { ok: true, data: await response.json(), attempts };
-          } catch {
-            // 200 com corpo que não é JSON. Determinístico: não repete.
-            return {
-              ok: false,
-              attempts,
-              failure: { code: 'GEMINI_PARSE_ERROR', retryable: false },
-              upstreamStatus: response.status,
-            };
-          }
-        }
-
-        /*
-         * O corpo da recusa NUNCA é logado.
-         *
-         * Era aqui que estava `await response.text()` dentro de um
-         * `console.error`: a resposta de erro do provedor pode ecoar o prompt
-         * enviado, que carrega o contexto da viagem.
-         *
-         * A ÚNICA exceção à leitura é o 429, e ela não afrouxa a regra: o
-         * corpo é lido para uma variável local, `readRateLimitSignals` extrai
-         * dele só rótulos com forma de identificador — `status`, `reason`,
-         * `quotaId` — e o texto sai de escopo sem ser guardado, logado nem
-         * devolvido. É o que separa "esperei demais neste minuto" de "a cota
-         * do dia acabou", que chegavam iguais e pedem reações opostas.
-         */
-        if (response.status === 429) {
-          let sinais: RateLimitSignals = { status: null, reason: null, quotaIds: [] };
-          try {
-            sinais = readRateLimitSignals(await response.text());
-          } catch {
-            // Corpo ilegível não muda o fato de ter sido 429.
-          }
-          failure = classifyRateLimit(sinais);
-          rateLimitSignals = sinais;
-        } else {
-          try {
-            await response.body?.cancel();
-          } catch {
-            // Corpo já consumido ou conexão caída: não muda o diagnóstico.
-          }
-          failure = classifyUpstreamStatus(response.status);
-        }
-
-        upstreamStatus = response.status;
-      } catch (error) {
-        failure = classifyUpstreamException(error);
+        sinais = readRateLimitSignals(await response.text());
+      } catch {
+        // Corpo ilegível não muda o status que veio.
       }
 
-      const podeRepetir =
-        allowRetry &&
-        attempts === 1 &&
-        failure.retryable &&
-        AI_CHAT_BUDGET_MS - elapsed() >= RETRY_MIN_BUDGET_MS;
-
-      if (!podeRepetir) {
-        return { ok: false, attempts, failure, upstreamStatus, rateLimit: rateLimitSignals };
-      }
-
-      // Jitter para não sincronizar a volta de vários aparelhos no mesmo
-      // instante em que o provedor está se recuperando.
-      await new Promise((resolve) =>
-        setTimeout(resolve, RETRY_BASE_DELAY_MS + Math.random() * RETRY_BASE_DELAY_MS),
-      );
+      return {
+        ok: false,
+        failure: classifyUpstreamResponse(response.status, sinais),
+        upstreamStatus: response.status,
+        signals: sinais,
+      };
+    } catch (error) {
+      return { ok: false, failure: classifyUpstreamException(error) };
     }
   };
+
+  /*
+   * MODELOS QUE ESTA REQUISIÇÃO JÁ PROVOU INEXISTENTES.
+   *
+   * Vive só aqui dentro, e some quando a resposta sai. NÃO há estado global
+   * entre usuários nem tabela lembrando qual modelo funcionou: um balde
+   * compartilhado entre requisições faria a experiência de uma pessoa depender
+   * do azar de outra, e ainda seria mais uma coisa para invalidar quando o
+   * catálogo do provedor mudasse (§16).
+   */
+  const unavailableModels = new Set<string>();
 
   /*
    * O RASTRO DA REQUISIÇÃO.
@@ -385,6 +392,9 @@ Deno.serve(async (req) => {
   let repairAttempted = false;
   let repairSkippedForTime = false;
   let upstreamAttempts = 0;
+  /** O modelo que efetivamente respondeu. Nunca chega à tela do usuário (§33). */
+  let selectedModel: string | null = null;
+  let selectedModelIndex: number | null = null;
 
   const diagnostics = (phase: string, extra: Record<string, unknown> = {}) =>
     JSON.stringify({
@@ -395,47 +405,118 @@ Deno.serve(async (req) => {
       repairAttempted,
       repairMs,
       upstreamAttempts,
+      selectedModel,
       ...extra,
     });
 
+  /*
+   * O RASTRO DA CADEIA, uma linha por tentativa.
+   *
+   * É o que responde "por que a resposta demorou 11 segundos?" com
+   * "3.7 e 3.6 estavam sem cota, o 3.5 respondeu" em vez de um palpite.
+   * `modelId` é configuração nossa; tudo o mais são números e rótulos
+   * fechados. Nenhum prompt, nenhum contexto, nenhuma chave, nenhum trecho da
+   * resposta do modelo.
+   *
+   * Sucesso no primeiro modelo, na primeira tentativa, é o caso normal e não
+   * merece uma linha por requisição — só sai com `AI_CHAT_DEBUG_ACTIONS`.
+   * Todo o resto sai sempre, porque é justamente o que precisa ser visto.
+   */
+  const logAttempt = (entry: ModelAttemptLog) => {
+    const rotina =
+      entry.result === 'SUCCESS' && entry.modelIndex === 0 && entry.modelAttempt === 1;
+    if (rotina && !DEBUG_ACTIONS) return;
+    console.log('ai_chat_model_attempt', JSON.stringify({ requestId, ...entry }));
+  };
+
+  /** O que toda passagem pela cadeia compartilha. */
+  const chainBase = {
+    models: MODELS,
+    minModelBudgetMs: MIN_MODEL_ATTEMPT_BUDGET_MS,
+    retryMinBudgetMs: RETRY_MIN_BUDGET_MS,
+    retryDelayMs: RETRY_BASE_DELAY_MS,
+    // O orçamento é GLOBAL e recalculado a cada volta: nunca 60s por modelo.
+    remainingBudgetMs: () => AI_CHAT_BUDGET_MS - elapsed(),
+    elapsedMs: elapsed,
+    onAttempt: logAttempt,
+    sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    skip: unavailableModels,
+  };
+
   try {
-    const first = await callGemini(
-      {
-        contents,
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        generationConfig,
-      },
-      FIRST_CALL_TIMEOUT_MS,
-      // A primeira geração é a que vale repetir: se ela falha por
-      // intermitência, não sobra resposta nenhuma para devolver.
-      { allowRetry: true },
-    );
+    const generationBody = {
+      contents,
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      generationConfig,
+    };
+
+    /*
+     * A PRIMEIRA GERAÇÃO PERCORRE A CADEIA.
+     *
+     * O modelo preferido primeiro; quando ele responde 429 — teto do minuto ou
+     * cota do dia —, o próximo assume, e a pessoa não fica sabendo. Antes um
+     * único 429 aqui deixava o assistente inútil até a cota renovar.
+     *
+     * `allowSameModelRetry` continua ligado porque 5xx e queda de rede seguem
+     * merecendo uma segunda tentativa no mesmo modelo — e 429 já não é
+     * `retryable`, então isso não vira `A A B B C C`.
+     */
+    const first = await runModelChain({
+      ...chainBase,
+      phase: 'FIRST_GENERATION',
+      timeoutMs: FIRST_CALL_TIMEOUT_MS,
+      allowSameModelRetry: true,
+      call: (model, prazo) => callModel(model, generationBody, prazo),
+    });
 
     firstGenerationMs = elapsed();
     upstreamAttempts = first.attempts;
 
     if (!first.ok) {
+      for (const id of first.unavailable) unavailableModels.add(id);
+
       console.error(
         'ai_chat_upstream_failure',
         diagnostics('FIRST_GENERATION', {
-          upstreamStatus: first.upstreamStatus ?? null,
+          upstreamStatus: first.lastUpstreamStatus,
           upstreamCode: first.failure.code,
           retryable: first.failure.retryable,
+          modelsTried: first.modelsTried,
+          // Cada modelo e o motivo dele. São códigos nossos, não texto do
+          // provedor — é o que permite ver "todos por cota" contra "misto".
+          fallbackReasons: first.reasons,
           // Só rótulos. `error.message` do provedor nunca chega aqui.
-          upstreamStatusLabel: first.rateLimit?.status ?? null,
-          upstreamReason: first.rateLimit?.reason ?? null,
-          quotaIds: first.rateLimit?.quotaIds ?? [],
+          upstreamStatusLabel: first.lastSignals?.status ?? null,
+          upstreamReason: first.lastSignals?.reason ?? null,
+          quotaIds: first.lastSignals?.quotaIds ?? [],
         }),
       );
+
+      /*
+       * O STATUS EXTERNO CONTINUA 502, E ISSO É DELIBERADO (§34).
+       *
+       * 429 já significa outra coisa neste endpoint: é o limitador POR USUÁRIO
+       * daqui de cima, e o cliente o traduz em `AIRateLimitError` — "espere
+       * alguns segundos", com o texto voltando para o campo. Reusar 429 para
+       * "a cota do provedor acabou" faria a tela mostrar a mensagem errada e
+       * convidaria a pessoa a tentar de novo em cinco segundos, sem chance
+       * nenhuma de funcionar.
+       *
+       * Quem carrega a distinção é `code`, que o cliente já sabe ler.
+       */
       return json(
         {
-          error: 'O assistente não conseguiu responder agora.',
+          error: describeUpstreamFailure(first.failure.code),
           code: first.failure.code,
           stage: 'UPSTREAM',
         },
         502,
       );
     }
+
+    selectedModel = first.model.id;
+    selectedModelIndex = first.modelIndex;
+    for (const id of first.unavailable) unavailableModels.add(id);
 
     const candidateCount = countCandidates(first.data);
     const finishReason = readFinishReason(first.data);
@@ -500,30 +581,57 @@ Deno.serve(async (req) => {
       repairAttempted = true;
       const repairStart = Date.now();
 
-      const repaired = await callGemini(
-        {
-          contents: [
-            ...contents,
-            { role: 'model', parts: [{ text: rawText.slice(0, 8000) }] },
-            {
-              role: 'user',
-              parts: [{ text: buildRepairInstruction(itineraryItemCount(output.actions)) }],
-            },
-          ],
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          // Menos temperatura na segunda volta: aqui o pedido é obedecer a um
-          // formato, não variar o conteúdo.
-          generationConfig: { ...generationConfig, temperature: 0.4 },
-        },
-        repairBudget,
-        // O reparo NÃO repete. Ele já é a segunda geração; uma repetição aqui
-        // seria a terceira, e o orçamento total é soberano.
-        { allowRetry: false },
-      );
+      const repairBody = {
+        contents: [
+          ...contents,
+          { role: 'model', parts: [{ text: rawText.slice(0, 8000) }] },
+          {
+            role: 'user',
+            parts: [{ text: buildRepairInstruction(itineraryItemCount(output.actions)) }],
+          },
+        ],
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        // Menos temperatura na segunda volta: aqui o pedido é obedecer a um
+        // formato, não variar o conteúdo.
+        generationConfig: { ...generationConfig, temperature: 0.4 },
+      };
+
+      /*
+       * O REPARO NÃO REFAZ A CADEIA INTEIRA (§14, §15).
+       *
+       * Se ele recomeçasse do topo, uma requisição em que 3.7 e 3.6 estão sem
+       * cota gastaria os dois 429 DE NOVO antes de chegar ao modelo que já
+       * tinha respondido — dobrando chamadas e latência para melhorar um
+       * roteiro que já está na mão.
+       *
+       * Por isso ele começa em `selectedModelIndex`: o modelo que acabou de
+       * funcionar é o mais provável de funcionar outra vez, e é também o que
+       * escreveu o texto que o reparo está corrigindo — a continuidade de
+       * estilo sai de graça.
+       *
+       * `maxModels: 2` é o fallback controlado: se o modelo escolhido perder a
+       * cota entre uma chamada e outra, o seguinte pode assumir, e para por
+       * aí. `allowSameModelRetry: false` porque o reparo JÁ é a segunda
+       * geração; repetir aqui seria a terceira.
+       */
+      const repaired = await runModelChain({
+        ...chainBase,
+        phase: 'REPAIR',
+        timeoutMs: repairBudget,
+        startIndex: selectedModelIndex ?? 0,
+        maxModels: 2,
+        allowSameModelRetry: false,
+        call: (model, prazo) => callModel(model, repairBody, prazo),
+      });
 
       repairMs = Date.now() - repairStart;
 
       if (repaired.ok) {
+        // O reparo pode ter saído de outro modelo. Ele ainda passa pelo mesmo
+        // parser, pela mesma validação e pela mesma regra de 3 a 6 itens: um
+        // modelo mais barato não ganha licença para devolver saída inválida.
+        selectedModel = repaired.model.id;
+        selectedModelIndex = repaired.modelIndex;
         const repairedText = joinCandidateText(repaired.data);
         if (repairedText) {
           output = pickBetterItinerary(
@@ -532,13 +640,16 @@ Deno.serve(async (req) => {
           );
         }
       } else {
+        for (const id of repaired.unavailable) unavailableModels.add(id);
         // O reparo é um extra: falhar aqui devolve a primeira resposta, que
         // continua válida, em vez de derrubar a conversa inteira.
         console.error(
           'ai_chat_repair_failure',
           diagnostics('REPAIR', {
-            upstreamStatus: repaired.upstreamStatus ?? null,
+            upstreamStatus: repaired.lastUpstreamStatus,
             upstreamCode: repaired.failure.code,
+            modelsTried: repaired.modelsTried,
+            fallbackReasons: repaired.reasons,
           }),
         );
       }
@@ -634,6 +745,7 @@ Deno.serve(async (req) => {
           fullDayRequest: itineraryRequest.expectsFullDay,
           acceptsPriorOffer: itineraryRequest.acceptsPriorOffer,
           repairSkippedForTime,
+          selectedModelIndex,
           itineraryItems: itineraryItemCount(actions),
         }),
       );
@@ -643,7 +755,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     /*
      * Rede de segurança. Uma exceção que chega aqui não passou pela
-     * classificação do `callGemini` — é defeito nosso, não intermitência do
+     * classificação de `callModel` — é defeito nosso, não intermitência do
      * provedor —, e o log precisa dizer isso sem carregar a mensagem, que pode
      * conter trechos do payload.
      */

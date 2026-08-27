@@ -225,6 +225,121 @@ Regras absolutas sobre actions:
     e devolva a action 'itinerary.add' na MESMA resposta. Uma aceitação que
     volta como conversa sem proposta é a pessoa dizendo "sim" para o vazio.`;
 
+/* --------------------------- cadeia de modelos ---------------------------- */
+
+/**
+ * A ÚNICA fonte de verdade sobre QUAL modelo o assistente usa.
+ *
+ * POR QUE ISTO DEIXOU DE SER UMA CONSTANTE
+ *
+ * Era `const MODEL = 'gemini-3.6-flash'` em `index.ts`. Um único 429 daquele
+ * modelo — teto do minuto ou cota do dia — deixava o aplicativo inteiro sem
+ * assistente até a cota renovar, porque não havia para onde ir. A cadeia
+ * abaixo é a resposta: quando um modelo diz que não tem capacidade agora, a
+ * requisição segue para o próximo, e a pessoa não vê erro nenhum.
+ *
+ * O QUE ISTO NÃO É
+ *
+ * Não é rotação de chave para burlar limite: a `GEMINI_API_KEY` continua sendo
+ * uma só. E não é garantia de disponibilidade — a Gemini aplica cota por
+ * projeto, por modelo, por tier e por janela, e quando o teto esgotado é o do
+ * PROJETO todos os modelos respondem 429. A cadeia é degradação controlada,
+ * não imunidade a limite.
+ *
+ * IDs, E NÃO NOMES DE EXIBIÇÃO
+ *
+ * `label` existe para relatório e diagnóstico; quem vai para a URL é `id`, e
+ * ele foi conferido contra a documentação oficial (ai.google.dev, agosto de
+ * 2026). "Gemini 3 Flash" é `gemini-3-flash-preview`, não `gemini-3-flash`:
+ * era exatamente esse tipo de suposição que produziria um 404 em produção.
+ *
+ * Um ID que o projeto não tiver — modelo retirado, preview fora da região —
+ * não derruba nada: `classifyUpstreamResponse` marca o modelo como
+ * indisponível PARA ESTA REQUISIÇÃO e a cadeia segue (§11).
+ */
+export interface AIModelConfig {
+  /** O ID aceito pela Gemini API, tal como vai em `models/{id}:generateContent`. */
+  id: string;
+  /** Nome de exibição. Só para log e relatório — nunca chega à tela do usuário. */
+  label: string;
+  enabled: boolean;
+}
+
+/**
+ * Ordem de preferência: o mais capaz primeiro, e os mais baratos como rede.
+ *
+ * A ordem é a do pedido do produto, e ela também é defensável tecnicamente: a
+ * primeira geração é a que decide a qualidade do roteiro, e um modelo Lite só
+ * entra quando os melhores já disseram que não podem responder agora.
+ *
+ * O CRITÉRIO DE ENTRADA: PROVA REAL, NÃO CATÁLOGO
+ *
+ * Estar no ListModels NÃO basta para entrar aqui. Cada um destes cinco
+ * respondeu HTTP 200 a um probe com o payload REAL desta função —
+ * `systemInstruction` + `responseSchema` + `maxOutputTokens: 4096` — e
+ * devolveu `{ content, actions }` com `finishReason: STOP`.
+ *
+ * A exigência é essa porque 400 NÃO troca de modelo (`classifyUpstreamResponse`
+ * abaixo, e é deliberado: 400 é defeito nosso e tem de aparecer). Um modelo que
+ * recusasse o `responseSchema` na posição 3 encerraria a cadeia ali e os dois
+ * abaixo dele nunca seriam alcançados. Um intermediário não comprovado não é
+ * uma rede a menos: é a rede inteira cortada no meio.
+ *
+ * QUEM SAIU, E POR QUÊ
+ *
+ * `gemini-3.7-flash` — existe no ListModels, mas o probe não produziu
+ * resultado (um TypeError, depois uma execução sem linha de saída). Não é
+ * incompatibilidade comprovada; é ausência de prova, e ausência de prova não
+ * entra na posição de primary.
+ *
+ * `gemini-2.5-flash-lite` — aparece no ListModels, mas o probe com o payload
+ * real devolveu 404 NOT_FOUND. Não está servível para este projeto.
+ *
+ * Os dois voltam quando um probe os aprovar — não antes.
+ */
+export const AI_MODEL_CHAIN: readonly AIModelConfig[] = [
+  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', enabled: true },
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', enabled: true },
+  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', enabled: true },
+  { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', enabled: true },
+  { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash', enabled: true },
+];
+
+/**
+ * O que NUNCA pode entrar na cadeia textual, mesmo que alguém acrescente.
+ *
+ * TTS, Live e áudio nativo não são "modelos piores": são outro produto. Eles
+ * geram fala, respondem por outro endpoint e não devolvem
+ * `{ content, actions }` sob `responseSchema`. Um deles na cadeia não
+ * degradaria a resposta — produziria uma falha de parse que pareceria defeito
+ * do nosso protocolo. Imagem, vídeo e embedding entram na mesma regra.
+ *
+ * O filtro é aqui, e não só na revisão do array, porque a lista vai mudar
+ * quando os modelos mudarem, e a garantia precisa sobreviver à próxima edição.
+ */
+const NON_TEXT_MODEL_ID = /(?:^|-)(?:tts|live|audio|image|imagen|veo|embedding)(?:-|$)/i;
+
+/** A cadeia efetiva: habilitados, textuais e sem repetição. */
+export function textModelChain(chain: readonly AIModelConfig[] = AI_MODEL_CHAIN): AIModelConfig[] {
+  const vistos = new Set<string>();
+  const efetiva: AIModelConfig[] = [];
+
+  for (const model of chain) {
+    if (!model.enabled) continue;
+    if (NON_TEXT_MODEL_ID.test(model.id)) continue;
+    if (vistos.has(model.id)) continue;
+    vistos.add(model.id);
+    efetiva.push(model);
+  }
+
+  return efetiva;
+}
+
+export const TEXT_MODEL_CHAIN: readonly AIModelConfig[] = textModelChain();
+
+/** Por onde a requisição começa. Derivado da cadeia: não é outra constante. */
+export const PRIMARY_MODEL: string = TEXT_MODEL_CHAIN[0].id;
+
 /* ------------------------- saída estruturada (§12) ------------------------- */
 
 /**
@@ -1091,12 +1206,41 @@ export function createRateLimiter(now: () => number = Date.now) {
  * provedor. Nada do corpo da resposta do Gemini entra em log — ele pode ecoar
  * o prompt, que é dado privado de viagem.
  */
-export type UpstreamFailure = { code: string; retryable: boolean };
+export type UpstreamFailure = {
+  code: string;
+  /**
+   * Vale repetir a MESMA chamada, no MESMO modelo?
+   *
+   * Só para intermitência que passa sozinha: 5xx, queda de rede, estouro de
+   * prazo. 429 NÃO entra mais aqui. Um modelo que acabou de dizer "não tenho
+   * capacidade agora" dirá o mesmo 400 ms depois, e a repetição só gastava
+   * orçamento para receber o mesmo erro — o lugar de um 429 é o PRÓXIMO
+   * modelo da cadeia.
+   */
+  retryable: boolean;
+  /**
+   * Vale tentar o PRÓXIMO modelo da cadeia? Ausente é não.
+   *
+   * Separado de `retryable` de propósito: são duas decisões diferentes, e
+   * confundi-las era o defeito. Cota esgotada não se resolve insistindo no
+   * mesmo modelo, mas pode se resolver em outro. Já um 400 causado pelo nosso
+   * payload, um 401 ou um 403 não se resolvem em lugar nenhum — e trocar de
+   * modelo esconderia o defeito atrás de uma resposta que parece boa.
+   */
+  fallback?: boolean;
+};
 
 export function classifyUpstreamStatus(status: number): UpstreamFailure {
   switch (status) {
     case 429:
-      return { code: 'GEMINI_RATE_LIMIT', retryable: true };
+      // Sem repetição no mesmo modelo; com passagem para o próximo.
+      return { code: 'GEMINI_RATE_LIMIT', retryable: false, fallback: true };
+    case 404:
+      // O ID do modelo está na URL, então um 404 aqui é sobre ESTE modelo, e
+      // não sobre o endpoint. Modelos entram e saem de catálogo com o tempo:
+      // o que não pode acontecer é uma troca no provedor derrubar o
+      // assistente inteiro (§11).
+      return { code: 'GEMINI_MODEL_UNAVAILABLE', retryable: false, fallback: true };
     case 500:
       return { code: 'GEMINI_UPSTREAM_500', retryable: true };
     case 502:
@@ -1108,10 +1252,43 @@ export function classifyUpstreamStatus(status: number): UpstreamFailure {
     default:
       // 400, 401, 403 e afins são determinísticos: chave errada ou payload
       // inválido falham igual na segunda vez, e repetir só faz a pessoa
-      // esperar o dobro pelo mesmo erro. Só 5xx desconhecido ganha o
-      // benefício da dúvida.
+      // esperar o dobro pelo mesmo erro. Trocar de modelo seria pior ainda —
+      // esconderia um defeito nosso. Só 5xx desconhecido ganha o benefício da
+      // dúvida, e ainda assim só no mesmo modelo.
       return { code: `GEMINI_UPSTREAM_${status}`, retryable: status >= 500 };
   }
+}
+
+/** Um provedor que diz `NOT_FOUND` está falando do ID que mandamos na URL. */
+const MODEL_UNAVAILABLE_STATUS = ['NOT_FOUND', 'UNIMPLEMENTED'];
+
+/**
+ * A classificação COM os rótulos estruturados do corpo — a que o servidor usa.
+ *
+ * `classifyUpstreamStatus` continua valendo para quem só tem o número. Esta
+ * aqui existe porque dois status precisam do corpo para serem lidos direito:
+ * 429, que pode ser teto do minuto ou cota do dia, e a família de "este modelo
+ * não existe", que é o que permite a cadeia sobreviver a um ID retirado do
+ * catálogo sem que ninguém precise fazer deploy.
+ *
+ * O que NÃO acontece aqui, e é deliberado: nenhum rótulo do provedor
+ * transforma 400, 401 ou 403 em "tente outro modelo". Esses são nossos —
+ * payload inválido, chave errada, autorização — e a cadeia tem de parar neles
+ * para que o defeito apareça (§10).
+ */
+export function classifyUpstreamResponse(
+  status: number,
+  signals: RateLimitSignals,
+): UpstreamFailure {
+  if (status === 429) return classifyRateLimit(signals);
+  if (status === 400 || status === 401 || status === 403) return classifyUpstreamStatus(status);
+
+  const rotulo = signals.status;
+  if (status === 404 || (rotulo !== null && MODEL_UNAVAILABLE_STATUS.includes(rotulo))) {
+    return { code: 'GEMINI_MODEL_UNAVAILABLE', retryable: false, fallback: true };
+  }
+
+  return classifyUpstreamStatus(status);
 }
 
 /**
@@ -1223,14 +1400,447 @@ export function readRateLimitSignals(rawBody: string): RateLimitSignals {
  * conservador é o do minuto: ele é o que se resolve esperando.
  */
 export function classifyRateLimit(signals: RateLimitSignals): UpstreamFailure {
-  const porDia = signals.quotaIds.some((id) => /per_?day/i.test(id));
   const cota = signals.reason ? /quota/i.test(signals.reason) : false;
 
-  if (porDia || cota) return { code: 'GEMINI_QUOTA_EXCEEDED', retryable: true };
-  return { code: 'GEMINI_RATE_LIMIT', retryable: true };
+  /*
+   * OS DOIS SAEM COM `retryable: false` E `fallback: true`, E ISSO É A
+   * CORREÇÃO.
+   *
+   * Antes os dois eram `retryable: true`, o que mandava repetir a chamada no
+   * MESMO modelo que acabara de recusar por falta de capacidade. Para cota
+   * esgotada isso é absurdo — não passa hoje —, e para teto do minuto é caro:
+   * gasta metade do orçamento da requisição para ouvir o mesmo 429. O que
+   * resolve os dois é o próximo modelo da cadeia, não a insistência.
+   */
+  if (hasDailyQuotaEvidence(signals) || cota) {
+    return { code: 'GEMINI_QUOTA_EXCEEDED', retryable: false, fallback: true };
+  }
+  return { code: 'GEMINI_RATE_LIMIT', retryable: false, fallback: true };
+}
+
+/**
+ * Há prova de que o teto estourado é o do DIA?
+ *
+ * Só o `quotaId` prova. `reason: QUOTA_EXCEEDED` diz que é cota, não que ela
+ * renova amanhã — e a diferença decide se a tela pode dizer "limite diário" ou
+ * precisa ficar no neutro "tente mais tarde" (§21). Prometer uma renovação que
+ * não se conhece é o mesmo tipo de invenção que o resto deste arquivo existe
+ * para impedir.
+ */
+export function hasDailyQuotaEvidence(signals: RateLimitSignals): boolean {
+  return signals.quotaIds.some((id) => /per_?day/i.test(id));
+}
+
+/**
+ * A evidência estruturada prova que trocar de modelo não adianta? (§37)
+ *
+ * `GenerateRequestsPerDayPerProject` é um teto do PROJETO: ele já está
+ * esgotado para todo modelo da cadeia, e percorrer os sete só acrescenta sete
+ * chamadas e alguns segundos de espera antes da mesma resposta.
+ * `...PerProjectPerModel...` é o oposto — aquele teto é DAQUELE modelo, e a
+ * cadeia é exatamente o que resolve.
+ *
+ * O corte é conservador de propósito: `every`, e não `some`, e só com
+ * `quotaId` presente. Um 429 sem rótulo NUNCA autoriza esta conclusão — a
+ * regra é não inferir cota global a partir do número do HTTP.
+ */
+export function isProjectWideQuota(signals: RateLimitSignals): boolean {
+  if (signals.quotaIds.length === 0) return false;
+  return signals.quotaIds.every((id) => /project/i.test(id) && !/per_?model/i.test(id));
 }
 
 export function countCandidates(data: unknown): number {
   const candidates = (data as { candidates?: unknown } | null)?.candidates;
   return Array.isArray(candidates) ? candidates.length : 0;
+}
+
+/* ------------------- a cadeia em execução: política pura ------------------ */
+
+/**
+ * POR QUE A CADEIA MORA AQUI, E NÃO NO `index.ts`
+ *
+ * Porque é política, e política precisa de teste. `index.ts` depende de `Deno`
+ * e do `fetch` real: o Jest do aplicativo não consegue importá-lo, e foi assim
+ * que a rodada anterior conseguiu declarar pronta uma função que os testes não
+ * tocavam. Aqui a decisão — repetir, trocar de modelo, desistir — é uma função
+ * pura de entradas injetadas, e cada caso do fallback é exercitável com mock.
+ *
+ * O que `index.ts` mantém é o que é servidor de verdade: montar a URL, mandar
+ * o corpo, ler a resposta HTTP.
+ */
+
+/** O que UMA chamada a UM modelo produziu. */
+export type ModelCallResult =
+  | { ok: true; data: unknown }
+  | {
+      ok: false;
+      failure: UpstreamFailure;
+      upstreamStatus?: number;
+      /** Rótulos estruturados do corpo de erro — nunca o texto do provedor. */
+      signals?: RateLimitSignals;
+    };
+
+export type ModelAttemptResult =
+  | 'SUCCESS'
+  /** Uma repetição curta no mesmo modelo, por intermitência. */
+  | 'RETRY'
+  /** Este modelo não pode responder agora; a cadeia segue. */
+  | 'FALLBACK'
+  /** Erro determinístico: a cadeia PARA, para o defeito aparecer. */
+  | 'FAILED'
+  /** Já provado indisponível nesta requisição. */
+  | 'SKIPPED_UNAVAILABLE'
+  /** O que sobrou do orçamento não dá para uma chamada honesta. */
+  | 'SKIPPED_BUDGET'
+  /** A cota provou ser do projeto: percorrer o resto seria desperdício. */
+  | 'SHORT_CIRCUIT';
+
+/**
+ * Uma linha do rastro da cadeia. Números e rótulos fechados, e nada mais.
+ *
+ * O limite é o mesmo do resto do arquivo: nenhum prompt, nenhum histórico,
+ * nenhum contexto de viagem, nenhuma chave, nenhum texto de resposta do
+ * Gemini. `modelId` é configuração nossa, não dado de ninguém.
+ */
+export interface ModelAttemptLog {
+  phase: string;
+  modelId: string;
+  modelIndex: number;
+  modelAttempt: number;
+  result: ModelAttemptResult;
+  reason: string | null;
+  elapsedMs: number;
+  remainingBudgetMs: number;
+  upstreamStatus: number | null;
+  upstreamStatusLabel: string | null;
+  upstreamReason: string | null;
+  quotaIds: string[];
+}
+
+export interface ModelChainOptions {
+  models: readonly AIModelConfig[];
+  phase: string;
+  /** Prazo máximo de UMA chamada. O orçamento global ainda pode encurtá-lo. */
+  timeoutMs: number;
+  /**
+   * Abaixo disto não se começa uma chamada nova (§13).
+   *
+   * Uma geração custa segundos; iniciar uma com dois no relógio produz um
+   * timeout garantido — que ainda gasta uma chamada paga e adia a mensagem que
+   * a pessoa precisa ver.
+   */
+  minModelBudgetMs: number;
+  /** O piso, mais alto, para gastar uma repetição no mesmo modelo. */
+  retryMinBudgetMs: number;
+  remainingBudgetMs: () => number;
+  elapsedMs: () => number;
+  call: (model: AIModelConfig, timeoutMs: number) => Promise<ModelCallResult>;
+  onAttempt: (entry: ModelAttemptLog) => void;
+  sleep: (ms: number) => Promise<void>;
+  /** Onde a cadeia começa. O reparo começa no modelo que funcionou (§15). */
+  startIndex?: number;
+  /** Teto de modelos DISTINTOS nesta passagem. O reparo usa 2 (§14). */
+  maxModels?: number;
+  allowSameModelRetry?: boolean;
+  /** IDs já provados indisponíveis nesta requisição. */
+  skip?: ReadonlySet<string>;
+  retryDelayMs?: number;
+  /** Injetável só para o teste tirar o jitter do caminho. */
+  jitter?: () => number;
+}
+
+export type ModelChainResult =
+  | {
+      ok: true;
+      data: unknown;
+      model: AIModelConfig;
+      modelIndex: number;
+      /** Chamadas HTTP feitas, contando repetições. */
+      attempts: number;
+      /** Modelos distintos chamados. */
+      modelsTried: number;
+      /**
+       * IDs que se provaram inexistentes ANTES do que respondeu.
+       *
+       * Existe no caso de sucesso, e não só no de falha, porque o reparo da
+       * mesma requisição não deve gastar uma chamada para redescobrir que um
+       * ID saiu do catálogo (§11).
+       */
+      unavailable: string[];
+    }
+  | {
+      ok: false;
+      /** O código GLOBAL da cadeia, não o do último modelo. */
+      failure: UpstreamFailure;
+      attempts: number;
+      modelsTried: number;
+      /** A causa final de cada modelo, na ordem. */
+      reasons: string[];
+      /** IDs que se provaram inexistentes — o chamador não os tenta de novo. */
+      unavailable: string[];
+      lastUpstreamStatus: number | null;
+      lastSignals: RateLimitSignals | null;
+    };
+
+const NO_SIGNALS: RateLimitSignals = { status: null, reason: null, quotaIds: [] };
+
+/**
+ * Percorre a cadeia até alguém responder — ou até não haver mais para onde ir.
+ *
+ * AS QUATRO REGRAS QUE ESTA FUNÇÃO EXISTE PARA GARANTIR
+ *
+ * 1. Cada modelo é chamado no máximo duas vezes, e a segunda só existe para
+ *    intermitência de verdade (5xx, rede, prazo). Nunca `A A B B C C`.
+ * 2. O orçamento é GLOBAL. Cada volta recalcula o que sobrou, e uma chamada
+ *    que não cabe não é iniciada.
+ * 3. Erro determinístico para a cadeia na hora. Trocar de modelo por um 400
+ *    nosso esconderia o defeito atrás de uma resposta plausível.
+ * 4. Não há laço infinito possível: o índice só anda para a frente, e a
+ *    repetição é limitada por `modelAttempt === 1`.
+ */
+export async function runModelChain(options: ModelChainOptions): Promise<ModelChainResult> {
+  const {
+    models,
+    phase,
+    timeoutMs,
+    minModelBudgetMs,
+    retryMinBudgetMs,
+    remainingBudgetMs,
+    elapsedMs,
+    call,
+    onAttempt,
+    sleep,
+    startIndex = 0,
+    maxModels = models.length,
+    allowSameModelRetry = false,
+    skip,
+    retryDelayMs = 400,
+    jitter = Math.random,
+  } = options;
+
+  const reasons: string[] = [];
+  const unavailable: string[] = [];
+  let attempts = 0;
+  let modelsTried = 0;
+  let lastUpstreamStatus: number | null = null;
+  let lastSignals: RateLimitSignals | null = null;
+  let dailyQuota = false;
+  /** A conclusão vale para a cadeia inteira? Falso quando ela foi interrompida. */
+  let completa = true;
+  let deterministica: UpstreamFailure | null = null;
+  let cotaDoProjeto = false;
+
+  const registrar = (
+    model: AIModelConfig,
+    modelIndex: number,
+    modelAttempt: number,
+    result: ModelAttemptResult,
+    reason: string | null,
+    falha?: Extract<ModelCallResult, { ok: false }>,
+  ) => {
+    const signals = falha?.signals ?? NO_SIGNALS;
+    onAttempt({
+      phase,
+      modelId: model.id,
+      modelIndex,
+      modelAttempt,
+      result,
+      reason,
+      elapsedMs: elapsedMs(),
+      remainingBudgetMs: remainingBudgetMs(),
+      upstreamStatus: falha?.upstreamStatus ?? null,
+      upstreamStatusLabel: signals.status,
+      upstreamReason: signals.reason,
+      quotaIds: signals.quotaIds,
+    });
+  };
+
+  for (let index = startIndex; index < models.length; index += 1) {
+    if (modelsTried >= maxModels) {
+      completa = false;
+      break;
+    }
+
+    const model = models[index];
+
+    if (skip?.has(model.id)) {
+      registrar(model, index, 0, 'SKIPPED_UNAVAILABLE', 'GEMINI_MODEL_UNAVAILABLE');
+      continue;
+    }
+
+    if (remainingBudgetMs() < minModelBudgetMs) {
+      registrar(model, index, 0, 'SKIPPED_BUDGET', 'AI_CHAT_BUDGET_EXHAUSTED');
+      completa = false;
+      break;
+    }
+
+    modelsTried += 1;
+    let modelAttempt = 0;
+
+    for (;;) {
+      modelAttempt += 1;
+      attempts += 1;
+
+      // O prazo de cada chamada nunca ultrapassa o que sobrou: quem estoura o
+      // relógio primeiro somos nós, que sabemos dizer o que aconteceu.
+      const prazo = Math.max(0, Math.min(timeoutMs, remainingBudgetMs()));
+      const resultado = await call(model, prazo);
+
+      if (resultado.ok) {
+        registrar(model, index, modelAttempt, 'SUCCESS', null);
+        return {
+          ok: true,
+          data: resultado.data,
+          model,
+          modelIndex: index,
+          attempts,
+          modelsTried,
+          unavailable,
+        };
+      }
+
+      lastUpstreamStatus = resultado.upstreamStatus ?? null;
+      lastSignals = resultado.signals ?? null;
+      if (resultado.signals && hasDailyQuotaEvidence(resultado.signals)) dailyQuota = true;
+
+      const podeRepetir =
+        allowSameModelRetry &&
+        modelAttempt === 1 &&
+        resultado.failure.retryable &&
+        remainingBudgetMs() >= retryMinBudgetMs;
+
+      if (podeRepetir) {
+        registrar(model, index, modelAttempt, 'RETRY', resultado.failure.code, resultado);
+        // Jitter para não sincronizar a volta de vários aparelhos no mesmo
+        // instante em que o provedor está se recuperando.
+        await sleep(retryDelayMs + jitter() * retryDelayMs);
+        continue;
+      }
+
+      reasons.push(resultado.failure.code);
+      if (resultado.failure.code === 'GEMINI_MODEL_UNAVAILABLE') unavailable.push(model.id);
+
+      if (!resultado.failure.fallback) {
+        registrar(model, index, modelAttempt, 'FAILED', resultado.failure.code, resultado);
+        deterministica = resultado.failure;
+        completa = false;
+        break;
+      }
+
+      if (resultado.signals && isProjectWideQuota(resultado.signals)) {
+        registrar(model, index, modelAttempt, 'SHORT_CIRCUIT', resultado.failure.code, resultado);
+        cotaDoProjeto = true;
+        break;
+      }
+
+      registrar(model, index, modelAttempt, 'FALLBACK', resultado.failure.code, resultado);
+      break;
+    }
+
+    if (deterministica || cotaDoProjeto) break;
+  }
+
+  return {
+    ok: false,
+    // Um erro determinístico sai com o código DELE. Só o esgotamento da cadeia
+    // vira código global — é o que separa "o Gemini está sem cota" de "o nosso
+    // payload está errado", que antes chegavam iguais à tela.
+    failure:
+      deterministica ??
+      classifyChainOutcome(reasons, {
+        // A cota do projeto autoriza a conclusão global mesmo sem percorrer o
+        // resto: a evidência estruturada já cobre todos os modelos.
+        complete: completa || cotaDoProjeto,
+        dailyQuota,
+      }),
+    attempts,
+    modelsTried,
+    reasons,
+    unavailable,
+    lastUpstreamStatus,
+    lastSignals,
+  };
+}
+
+/**
+ * O QUE ACONTECEU COM A CADEIA INTEIRA — e não com o último modelo.
+ *
+ * `GEMINI_RATE_LIMIT` sozinho não serve como resposta final: ele não diz se o
+ * sistema tentou os fallbacks ou desistiu no primeiro 429. Os códigos daqui
+ * dizem, e é o que permite à tela escolher entre "espere alguns instantes" e
+ * "o limite do dia acabou" sem inventar nenhuma das duas.
+ *
+ * A REGRA CONSERVADORA
+ *
+ * Só um resultado UNÂNIME de uma cadeia COMPLETA vira código específico.
+ * Resultado misto — um modelo com cota, outro com teto de minuto — e cadeia
+ * interrompida por orçamento saem no neutro `AI_MODELS_EXHAUSTED`, porque
+ * afirmar "a cota do dia acabou" sem prova manda a pessoa embora por engano.
+ */
+export function classifyChainOutcome(
+  reasons: readonly string[],
+  { complete, dailyQuota = false }: { complete: boolean; dailyQuota?: boolean },
+): UpstreamFailure {
+  const neutro: UpstreamFailure = { code: 'AI_MODELS_EXHAUSTED', retryable: false };
+  if (reasons.length === 0 || !complete) return neutro;
+
+  const unicos = new Set(reasons);
+  if (unicos.size !== 1) return neutro;
+
+  switch (reasons[0]) {
+    case 'GEMINI_QUOTA_EXCEEDED':
+      // "Diário" só com `quotaId` que diga "por dia". `reason: QUOTA_EXCEEDED`
+      // prova que é cota, não que ela renova amanhã.
+      return {
+        code: dailyQuota ? 'GEMINI_ALL_MODELS_DAILY_QUOTA' : 'GEMINI_ALL_MODELS_QUOTA_EXCEEDED',
+        retryable: false,
+      };
+    case 'GEMINI_RATE_LIMIT':
+      return { code: 'GEMINI_ALL_MODELS_RATE_LIMITED', retryable: false };
+    case 'GEMINI_MODEL_UNAVAILABLE':
+      // Todos os IDs recusados: é catálogo desatualizado do nosso lado, não
+      // falta de cota. A distinção é o que faz a correção ser a certa.
+      return { code: 'GEMINI_MODELS_UNAVAILABLE', retryable: false };
+    default:
+      return neutro;
+  }
+}
+
+/**
+ * A frase que a pessoa lê quando a cadeia inteira ficou sem capacidade (§21).
+ *
+ * O cliente tem a sua própria cópia deste mapa, em `src/lib/aiTrace.ts`, e a
+ * duplicação é deliberada — a mesma razão de `LIMITS`: Deno e o bundle do Expo
+ * não compartilham módulo. A daqui serve o corpo da recusa; a de lá serve a
+ * tela. As duas precisam dizer a mesma coisa, e o teste compara as duas.
+ *
+ * NENHUMA DELAS PROMETE "VOLTE AMANHÃ" SEM PROVA. Só
+ * `GEMINI_ALL_MODELS_DAILY_QUOTA` — que exige `quotaId` com "por dia" — fala
+ * em limite diário.
+ */
+export const AI_FAILURE_MESSAGE: Readonly<Record<string, string>> = {
+  GEMINI_ALL_MODELS_DAILY_QUOTA:
+    'O limite diário da inteligência artificial foi atingido. ' +
+    'Tente novamente após a renovação da cota.',
+  GEMINI_ALL_MODELS_QUOTA_EXCEEDED:
+    'Os limites de uso da inteligência artificial foram atingidos no momento. ' +
+    'Tente novamente mais tarde. Se a cota diária tiver sido esgotada, o acesso ' +
+    'será restabelecido após a renovação dos limites do provedor.',
+  GEMINI_ALL_MODELS_RATE_LIMITED:
+    'Muitas solicitações foram realizadas em pouco tempo. ' +
+    'Tente novamente em alguns instantes.',
+  AI_MODELS_EXHAUSTED:
+    'Os limites de uso da inteligência artificial foram atingidos no momento. ' +
+    'Tente novamente mais tarde. Se a cota diária tiver sido esgotada, o acesso ' +
+    'será restabelecido após a renovação dos limites do provedor.',
+  GEMINI_MODELS_UNAVAILABLE:
+    'O assistente está temporariamente indisponível. Tente novamente mais tarde.',
+};
+
+export const AI_GENERIC_FAILURE_MESSAGE =
+  'Não foi possível obter uma resposta agora. Tente novamente.';
+
+/** Nunca devolve o nome de um modelo: isso é detalhe interno (§33). */
+export function describeUpstreamFailure(code: string | undefined): string {
+  return (code && AI_FAILURE_MESSAGE[code]) || AI_GENERIC_FAILURE_MESSAGE;
 }
