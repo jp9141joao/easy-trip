@@ -4,6 +4,7 @@ import { View } from 'react-native';
 import { AppImage, AppText, Badge, GlassCard } from '@/components/ui';
 import { TripStatusChip } from '@/components/trip';
 import { getCountdownLabel, getTripTimingLabel } from '@/domain/selectors';
+import { tripCoverUri } from '@/domain/tripCover';
 import type { Trip } from '@/domain/types';
 import { formatMoney } from '@/lib/currency';
 import { formatDateRange } from '@/lib/date';
@@ -45,7 +46,7 @@ export function TripCard({
       accessibilityHint="Abre os detalhes da viagem"
     >
       <AppImage
-        uri={trip.coverImageUrl}
+        uri={tripCoverUri(trip)}
         style={{ height: 148, width: '100%' }}
         fallbackLabel={trip.destinationCity}
         overlay

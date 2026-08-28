@@ -6,7 +6,7 @@ import { getTripStatus } from '@/domain/selectors';
 import { todayISO } from '@/lib/date';
 import { useAuth } from '@/providers/AuthProvider';
 import { useTripSelection } from '@/providers/TripSelectionProvider';
-import { dataSource } from '@/repositories';
+import { dataSource, type UploadableFile } from '@/repositories';
 import { queryKeys } from './queryKeys';
 
 export function useTrips() {
@@ -110,6 +110,42 @@ export function useUpdateTrip() {
       ]);
     },
   });
+}
+
+/**
+ * Trocar e remover a capa da viagem (§3–§6).
+ *
+ * Uma operação só do lado do repositório: validar, subir, apontar a viagem e
+ * limpar o arquivo anterior acontecem juntos, porque é lá que dá para desfazer o
+ * upload se o meio do caminho falhar. A tela recebe sucesso ou erro, não um
+ * estado intermediário.
+ *
+ * As duas invalidações são as mesmas de `useUpdateTrip`: a lista da Home e a
+ * viagem aberta desenham a capa, e uma sem a outra deixaria o cartão com a
+ * imagem velha ao lado do hero com a nova.
+ */
+export function useTripCover(tripId: string) {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  const invalidate = async () => {
+    await Promise.all([
+      user ? queryClient.invalidateQueries({ queryKey: queryKeys.trips(user.id) }) : undefined,
+      queryClient.invalidateQueries({ queryKey: queryKeys.trip(tripId) }),
+    ]);
+  };
+
+  const replace = useMutation({
+    mutationFn: (file: UploadableFile) => dataSource.trips.replaceCover(tripId, file),
+    onSuccess: invalidate,
+  });
+
+  const remove = useMutation({
+    mutationFn: () => dataSource.trips.removeCover(tripId),
+    onSuccess: invalidate,
+  });
+
+  return { replace, remove };
 }
 
 export function useDeleteTrip() {

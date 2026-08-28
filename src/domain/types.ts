@@ -186,9 +186,45 @@ export interface Trip {
   timezone: string;
   startDate: ISODate;
   endDate: ISODate;
+  /**
+   * A capa que veio do catálogo ou de terceiro — a URL sugerida na criação
+   * (`suggestCoverImage`) ou colada à mão. Continua sendo uma URL comum, e é
+   * ela que aparece quando a viagem não tem capa própria.
+   */
   coverImageUrl?: string;
+  /**
+   * Caminho do arquivo dentro do bucket `trip-covers` (`{tripId}/…`), quando a
+   * pessoa enviou uma capa própria. É isto que fica gravado em
+   * `trips.cover_image_path`.
+   */
+  coverImagePath?: string;
+  /**
+   * URL assinada derivada de `coverImagePath`, válida por uma hora. **Nunca é
+   * gravada.**
+   *
+   * Os dois campos são separados pelo mesmo motivo que `avatarPath` e
+   * `avatarUrl`: quando eram um só, a leitura devolvia a URL assinada, a tela
+   * devolvia o mesmo objeto ao salvar, e a URL — com token e prazo — acabava
+   * gravada na coluna do caminho. Na leitura seguinte não havia arquivo naquele
+   * "caminho" e a imagem sumia. Aqui a barreira é dupla: o campo é derivado E
+   * `fromTrip` não o traduz para coluna nenhuma.
+   *
+   * Quem monta a URI para exibir é `tripCoverUri`, nunca a tela direto.
+   */
+  coverImageSignedUrl?: string;
   budgetTotal: number;
   budgetCurrency: CurrencyCode;
+  /**
+   * Meta de gasto por DIA, na mesma moeda de `budgetTotal` (§28, §29).
+   *
+   * É da viagem, não da conta: Tóquio a 500/dia e São Paulo a 250/dia são a
+   * mesma pessoa com dois orçamentos diários diferentes, e uma configuração
+   * global não saberia disso.
+   *
+   * `undefined` significa "sem meta" — e é diferente de `0`, que é uma meta de
+   * não gastar nada e faz o primeiro café estourá-la. Removê-la grava `null`.
+   */
+  dailySpendingGoal?: number;
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
   /** Marca d'água do último refresh de sugestões (§43). */

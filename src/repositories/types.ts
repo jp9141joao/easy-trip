@@ -73,6 +73,24 @@ export interface TripRepository {
   update(tripId: string, patch: Partial<Trip>): Promise<Trip>;
   /** Removes the trip and every record that hangs off its `tripId`. */
   remove(tripId: string): Promise<void>;
+  /**
+   * Troca a capa da viagem, nesta ordem: sobe a nova, aponta a viagem para ela
+   * e só então remove a anterior.
+   *
+   * A ORDEM É O PONTO (§5). Apagar antes deixaria a viagem sem capa se o upload
+   * falhasse; e se a linha não puder ser atualizada depois do upload, o arquivo
+   * novo é removido — ninguém fica com lixo no bucket por causa de uma falha no
+   * meio. É a mesma sequência de `replaceAvatar`, pelo mesmo motivo.
+   */
+  replaceCover(tripId: string, file: UploadableFile): Promise<Trip>;
+  /**
+   * Remove a capa enviada e devolve a viagem à imagem sugerida na criação.
+   *
+   * `cover_image_url` não é tocada: ela nunca deixou de existir, só estava
+   * embaixo. Por isso "remover" devolve o padrão em vez de deixar a viagem sem
+   * imagem nenhuma (§3).
+   */
+  removeCover(tripId: string): Promise<Trip>;
 }
 
 export interface ItineraryRepository {

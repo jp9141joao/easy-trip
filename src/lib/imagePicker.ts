@@ -15,7 +15,8 @@
 
 import * as ImagePicker from 'expo-image-picker';
 
-import { CONTENT_IMAGE_POLICY, validateUpload } from '@/domain/upload';
+import { TRIP_COVER_POLICY } from '@/domain/tripCover';
+import { CONTENT_IMAGE_POLICY, validateUpload, type UploadPolicy } from '@/domain/upload';
 import type { UploadableFile } from '@/repositories/types';
 import { guessMimeType } from './files';
 
@@ -34,13 +35,30 @@ export type PickedImage =
  * inteiro subir, e sem motivo legível. Esta recusa chega antes e explica.
  */
 export async function pickEditorialImage(): Promise<PickedImage> {
+  return pickImage(CONTENT_IMAGE_POLICY);
+}
+
+/**
+ * A capa de uma viagem, contra `TRIP_COVER_POLICY`.
+ *
+ * Mesma mecânica, política diferente: a capa vai para um bucket PRIVADO, com
+ * leitura presa à participação na viagem, enquanto a imagem editorial vai para o
+ * único bucket público do projeto. Compartilhar a função e separar a política é
+ * o que mantém as duas decisões visíveis — se um dia a capa aceitar outro
+ * formato, muda a política e não este arquivo.
+ */
+export async function pickTripCoverImage(): Promise<PickedImage> {
+  return pickImage(TRIP_COVER_POLICY);
+}
+
+async function pickImage(policy: UploadPolicy): Promise<PickedImage> {
   const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!permission.granted) return { status: 'denied' };
 
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
-    // Sem `allowsEditing`: a proporção de uma capa de artigo não é a de um
-    // avatar, e o recorte quadrado do seletor cortaria a foto no lugar errado.
+    // Sem `allowsEditing`: nem a capa de artigo nem a de viagem têm proporção
+    // quadrada, e o recorte do seletor cortaria a foto no lugar errado.
     quality: 0.85,
   });
   if (result.canceled || !result.assets?.[0]) return { status: 'cancelled' };
@@ -54,7 +72,7 @@ export async function pickEditorialImage(): Promise<PickedImage> {
     size: asset.fileSize,
   };
 
-  const validation = validateUpload(file, CONTENT_IMAGE_POLICY);
+  const validation = validateUpload(file, policy);
   if (!validation.ok) return { status: 'rejected', message: validation.message };
 
   // O tipo normalizado é o que vai no `Content-Type` do upload: `image/jpeg`,

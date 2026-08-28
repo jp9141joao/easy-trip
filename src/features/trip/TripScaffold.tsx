@@ -21,6 +21,7 @@ import {
   type SegmentedTabItem,
 } from '@/components/ui';
 import { TripStatusChip, TripTimingChip } from '@/components/trip';
+import { tripCoverUri } from '@/domain/tripCover';
 import type { Trip } from '@/domain/types';
 import { useTripPermissions } from '@/hooks/useCollaboration';
 import { formatDateRange } from '@/lib/date';
@@ -28,7 +29,7 @@ import { formatMoney } from '@/lib/currency';
 import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { useTheme } from '@/theme';
 
-export type TripSection = 'itinerary' | 'finance' | 'reservations' | 'suggestions';
+export type TripSection = 'itinerary' | 'finance' | 'reservations';
 export type RoteiroSection = 'itinerary' | 'checklist' | 'journal';
 
 /**
@@ -53,13 +54,13 @@ export function TripHero({
   return (
     <View>
       <AppImage
-        uri={trip.coverImageUrl}
+        uri={tripCoverUri(trip)}
         style={{ height: 240 + insets.top, width: '100%' }}
         fallbackLabel={trip.destinationCity}
         overlay
-        // As quatro seções da viagem desenham este mesmo hero. Sem zerar o
-        // fade, a foto reaparece animada a cada troca de aba e a tela lê como
-        // três telas batendo uma na outra em vez de uma só (§2).
+        // As seções da viagem desenham este mesmo hero. Sem zerar o fade, a
+        // foto reaparece animada a cada troca de aba e a tela lê como três
+        // telas batendo uma na outra em vez de uma só (§2).
         transition={0}
       />
 
@@ -175,15 +176,23 @@ export function TripHero({
 }
 
 /**
- * As seções da viagem: Roteiro · Carteira · Reservas · Sugestões (§39).
+ * As seções da viagem: Roteiro · Carteira · Reservas (§15 do handoff).
  *
  * "Tickets" virou "Reservas" — mudança de produto, não de rótulo: a área
  * deixou de guardar um documento com título e passou a guardar uma reserva com
  * modalidade, localizador e horários (§22–§24).
  *
- * A quarta entrada obrigou a barra a rolar. `scrollable` em vez de espremer:
- * com quatro pastilhas de largura igual, "Sugestões" ficaria truncado em
- * aparelho de 320 pt, e um rótulo cortado é pior do que um gesto a mais.
+ * SUGESTÕES SAIU DAQUI — e a funcionalidade não foi tocada.
+ *
+ * As três que ficaram são onde a pessoa GUARDA o que já decidiu. Sugestões é
+ * onde ela DESCOBRE o que ainda não decidiu, e isso pertence a quem está
+ * montando o roteiro: passou a ser um degrau abaixo, em Roteiro → Jornada →
+ * Sugestões (§16). A rota `/trip/:id/suggestions` continua existindo e
+ * navegável (§18); o que mudou foi por onde se chega a ela.
+ *
+ * Com a saída da quarta pastilha a barra deixou de precisar rolar: três
+ * rótulos de largura igual cabem sem truncar em aparelho de 320 pt, que era
+ * exatamente o motivo do `scrollable`.
  */
 export function TripTabs({ tripId, active }: { tripId: string; active: TripSection }) {
   const theme = useTheme();
@@ -194,7 +203,6 @@ export function TripTabs({ tripId, active }: { tripId: string; active: TripSecti
     { value: 'itinerary', label: 'Roteiro' },
     { value: 'finance', label: 'Carteira' },
     { value: 'reservations', label: 'Reservas' },
-    { value: 'suggestions', label: 'Sugestões' },
   ];
 
   return (
@@ -202,7 +210,6 @@ export function TripTabs({ tripId, active }: { tripId: string; active: TripSecti
       <SegmentedTabs<TripSection>
         items={items}
         value={active}
-        scrollable
         onChange={(value) => {
           if (value === active) return;
           router.replace(`/trip/${tripId}/${value}`);

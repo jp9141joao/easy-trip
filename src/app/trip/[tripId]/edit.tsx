@@ -19,6 +19,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
+import { TripCoverField } from '@/components/trip';
 import { CURRENCIES, type CurrencyCode, type Trip } from '@/domain/types';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useTripPermissions } from '@/hooks/useCollaboration';
@@ -234,6 +235,19 @@ function EditTripForm({ trip }: { trip: Trip }) {
             gap: theme.spacing.lg,
           }}
         >
+          {/*
+            A capa vem primeiro: é o que a pessoa reconhece da viagem antes de
+            ler qualquer campo, e é a alteração que ela veio fazer quando abre
+            esta tela por causa dela.
+
+            A tela inteira já é exclusiva do proprietário — o guarda de papel
+            acima recusa editor e viewer antes de `EditTripForm` montar (§4).
+            Por isso o cartão não repete a verificação: a autorização de trocar a
+            capa é a MESMA de editar destino, datas e orçamento, e duplicá-la
+            criaria duas regras para divergirem.
+          */}
+          <TripCoverField trip={trip} />
+
           <TextField label="Cidade" value={city} onChangeText={setCity} required />
           <TextField label="País" value={country} onChangeText={setCountry} required />
 

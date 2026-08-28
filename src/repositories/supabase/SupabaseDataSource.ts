@@ -34,6 +34,11 @@ import type {
   Trip,
 } from '@/domain/types';
 import { avatarStoragePath, validateAvatar } from '@/domain/avatar';
+import {
+  coverPathBelongsTo,
+  tripCoverStoragePath,
+  validateTripCover,
+} from '@/domain/tripCover';
 import { DEFAULT_VISIBILITY, parseVisibility } from '@/domain/visibility';
 import { parseUserRole } from '@/domain/roles';
 import { formatClockTime, nowISO, todayISO } from '@/lib/date';
@@ -86,6 +91,12 @@ const BUCKET = {
   avatars: 'avatars',
   /** Único bucket público do projeto: imagem editorial. Ver `0007` (P-04). */
   content: 'content',
+  /**
+   * Capas de viagem. Privado e namespaced por `tripId` — não por `auth.uid()`
+   * como os demais —, porque quem pode ver a capa é quem participa da viagem,
+   * e não só quem a enviou. Ver a `0013`.
+   */
+  tripCovers: 'trip-covers',
 } as const;
 
 function db(): SupabaseClient {
@@ -223,6 +234,48 @@ function toProfileRow(patch: ProfilePatch): Row {
 
 type Row = Record<string, any>;
 
+/**
+ * Acrescenta a URL assinada da capa à viagem lida.
+ *
+ * A URL vive só na resposta, exatamente como a do avatar: `coverImagePath` é o
+ * que está gravado, `coverImageSignedUrl` é derivado e expira em uma hora.
+ * Enquanto os dois foram o mesmo campo no perfil, o valor derivado voltava para
+ * o banco no "Salvar" seguinte e a foto sumia — aqui eles nasceram separados.
+ *
+ * Viagem sem capa própria não gera chamada nenhuma ao Storage: `signUrl`
+ * devolve `undefined` de imediato para caminho ausente, e a lista da Home não
+ * paga uma assinatura por viagem que usa a imagem sugerida.
+ */
+async function withCoverUrl(trip: Trip): Promise<Trip> {
+  if (!trip.coverImagePath) return trip;
+  return { ...trip, coverImageSignedUrl: await signUrl(BUCKET.tripCovers, trip.coverImagePath) };
+}
+
+/**
+ * Apaga a capa anterior — e só ela.
+ *
+ * As duas conferências não são zelo excessivo. `coverPathBelongsTo` recusa
+ * apagar um caminho que não pertence a esta viagem, que é o que impede um valor
+ * estranho na coluna de virar "apagar o arquivo de outra viagem"; e a comparação
+ * com o caminho novo evita o caso em que os dois coincidem, apagando justamente
+ * o que acabou de subir.
+ *
+ * A falha é registrada, não propagada: a troca já foi persistida, e derrubá-la
+ * por causa de um arquivo órfão trocaria um incômodo invisível por um erro na
+ * cara de quem trocou a capa.
+ */
+async function discardCover(
+  previous: string | undefined,
+  tripId: string,
+  keep?: string,
+): Promise<void> {
+  if (!previous || previous === keep) return;
+  if (!coverPathBelongsTo(previous, tripId)) return;
+
+  const { error } = await db().storage.from(BUCKET.tripCovers).remove([previous]);
+  if (error) console.warn('capa_anterior_nao_removida', { path: previous });
+}
+
 const toTrip = (row: Row): Trip => ({
   id: row.id,
   userId: row.user_id,
@@ -235,13 +288,35 @@ const toTrip = (row: Row): Trip => ({
   startDate: row.start_date,
   endDate: row.end_date,
   coverImageUrl: row.cover_image_url ?? undefined,
+  coverImagePath: row.cover_image_path ?? undefined,
   budgetTotal: Number(row.budget_total),
   budgetCurrency: row.budget_currency,
+  // `numeric` chega como string no PostgREST. `Number(null)` é 0, que aqui
+  // significaria "meta de não gastar nada" — por isso a ausência é testada
+  // antes da conversão, e não depois.
+  dailySpendingGoal:
+    row.daily_spending_goal === null || row.daily_spending_goal === undefined
+      ? undefined
+      : Number(row.daily_spending_goal),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   suggestionsRefreshedAt: row.suggestions_refreshed_at ?? undefined,
 });
 
+/**
+ * A allowlist de colunas de viagem.
+ *
+ * `coverImageSignedUrl` NÃO aparece aqui, e é a segunda barreira contra o
+ * defeito que já custou a foto de perfil: o campo é derivado, e mesmo que uma
+ * tela devolva o objeto lido inteiro num `update`, não existe coluna para onde
+ * ele possa escorrer. `coverImagePath` também fica de fora — a capa muda pelo
+ * fluxo de `replaceCover`, que mexe no Storage junto.
+ *
+ * `daily_spending_goal` é a exceção ao `prune`: remover a meta significa gravar
+ * `null`, e `prune` descarta `undefined`. Sem o `in`, "remover" viraria "não
+ * mexer" e o campo nunca seria limpo. O `in` distingue as duas intenções —
+ * "não veio no patch" de "veio vazio de propósito".
+ */
 const fromTrip = (trip: Partial<Trip>): Row => prune({
   user_id: trip.userId,
   destination_city: trip.destinationCity,
@@ -255,6 +330,8 @@ const fromTrip = (trip: Partial<Trip>): Row => prune({
   cover_image_url: trip.coverImageUrl,
   budget_total: trip.budgetTotal,
   budget_currency: trip.budgetCurrency,
+  daily_spending_goal:
+    'dailySpendingGoal' in trip ? (trip.dailySpendingGoal ?? null) : undefined,
   updated_at: nowISO(),
 });
 
@@ -626,14 +703,18 @@ export const supabaseDataSource: DataSource = {
     async list(userId) {
       const result = await db().from('trips').select('*').order('start_date', { ascending: false });
       const trips = unwrapList<Row>(result).map(toTrip);
-      return decorateWithMembership(trips, userId);
+      const decorated = await decorateWithMembership(trips, userId);
+      // As assinaturas saem em paralelo, e só para as viagens que têm capa
+      // própria. Em série seriam N idas ao Storage encadeadas na abertura da
+      // Home; `withCoverUrl` já devolve de imediato quem não tem caminho.
+      return Promise.all(decorated.map(withCoverUrl));
     },
     async get(tripId) {
       const result = await db().from('trips').select('*').eq('id', tripId).maybeSingle();
       if (result.error) throw new Error(result.error.message);
       if (!result.data) return null;
       const [trip] = await decorateWithMembership([toTrip(result.data)], null);
-      return trip;
+      return withCoverUrl(trip);
     },
     async create(input) {
       const result = await db().from('trips').insert(fromTrip(input)).select().single();
@@ -646,12 +727,100 @@ export const supabaseDataSource: DataSource = {
         .eq('id', tripId)
         .select()
         .single();
-      return toTrip(unwrap<Row>(result));
+      return withCoverUrl(toTrip(unwrap<Row>(result)));
     },
     async remove(tripId) {
+      // O caminho é lido ANTES: depois do delete a linha não existe mais e o
+      // arquivo ficaria no bucket sem nada que apontasse para ele (§5).
+      const cover = (await db()
+        .from('trips')
+        .select('cover_image_path')
+        .eq('id', tripId)
+        .maybeSingle()).data?.cover_image_path as string | undefined;
+
       // Child rows go with it via ON DELETE CASCADE in the schema.
       const { error } = await db().from('trips').delete().eq('id', tripId);
       if (error) throw new Error(error.message);
+
+      // Só depois de a exclusão ter dado certo. Na ordem inversa, um delete que
+      // falhasse deixaria a viagem viva com a capa apagada.
+      await discardCover(cover, tripId);
+    },
+
+    /**
+     * Troca a capa: sobe, aponta, e só então apaga a anterior (§5).
+     *
+     * Quem autoriza é a policy de Storage da `0013` (`is_trip_owner`) e a RLS de
+     * `trips`. A conferência de tipo e tamanho aqui é a que dá resposta útil —
+     * o bucket recusaria também, mas depois do arquivo inteiro subir e sem
+     * dizer por quê.
+     */
+    async replaceCover(tripId, file) {
+      const validation = validateTripCover(file);
+      if (!validation.ok) throw new Error(validation.message);
+
+      // Montado a partir do `tripId` da rota. O nome vindo da galeria não
+      // participa: é o primeiro segmento que a policy compara.
+      const path = tripCoverStoragePath(tripId, validation.extension, createId());
+
+      const anterior = (await db()
+        .from('trips')
+        .select('cover_image_path')
+        .eq('id', tripId)
+        .maybeSingle()).data?.cover_image_path as string | undefined;
+
+      await uploadFile(BUCKET.tripCovers, path, { ...file, mimeType: validation.mimeType });
+
+      let saved: Trip;
+      try {
+        const result = await db()
+          .from('trips')
+          .update({ cover_image_path: path, updated_at: nowISO() })
+          .eq('id', tripId)
+          .select()
+          .single();
+        saved = toTrip(unwrap<Row>(result));
+      } catch (error) {
+        // A viagem continua apontando para a capa antiga, então o arquivo que
+        // acabou de subir não é de ninguém. Removê-lo evita acumular lixo a
+        // cada tentativa fracassada.
+        await db().storage.from(BUCKET.tripCovers).remove([path]);
+        throw error;
+      }
+
+      // Daqui em diante a troca já deu certo. Se a remoção da anterior falhar
+      // sobra um arquivo órfão — chato, e não é motivo para desfazer uma troca
+      // bem-sucedida nem para mostrar erro a quem trocou a capa.
+      await discardCover(anterior, tripId, path);
+
+      return withCoverUrl(saved);
+    },
+
+    /**
+     * Remove a capa própria. `cover_image_url` fica intacta, e é ela que volta
+     * a aparecer — a imagem sugerida na criação nunca deixou de existir (§3).
+     */
+    async removeCover(tripId) {
+      const anterior = (await db()
+        .from('trips')
+        .select('cover_image_path')
+        .eq('id', tripId)
+        .maybeSingle()).data?.cover_image_path as string | undefined;
+
+      // A linha primeiro. Apagar o arquivo antes deixaria a viagem apontando
+      // para um objeto que já não existe — e a capa viraria um quadro quebrado
+      // em vez de voltar à sugerida.
+      const result = await db()
+        .from('trips')
+        .update({ cover_image_path: null, updated_at: nowISO() })
+        .eq('id', tripId)
+        .select()
+        .single();
+      const saved = toTrip(unwrap<Row>(result));
+
+      await discardCover(anterior, tripId);
+
+      return saved;
     },
   },
 

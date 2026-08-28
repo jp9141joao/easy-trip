@@ -29,6 +29,7 @@ import type {
   Trip,
 } from '@/domain/types';
 import { validateAvatar } from '@/domain/avatar';
+import { validateTripCover } from '@/domain/tripCover';
 import { DEFAULT_VISIBILITY } from '@/domain/visibility';
 import { byEditorialOrder, isOfferLive } from '@/domain/offerWindow';
 import { parseUserRole } from '@/domain/roles';
@@ -128,6 +129,50 @@ const tripRepository: TripRepository = {
     return trips.insert({ ...input, id: createId(), createdAt: timestamp, updatedAt: timestamp });
   },
   update: (tripId, patch) => trips.update(tripId, { ...patch, updatedAt: nowISO() }),
+
+  /**
+   * Mesma ordem do adaptador remoto: copia, aponta, e só então apaga a
+   * anterior. Aqui não há rede, mas a ordem continua importando — uma cópia que
+   * falhe não pode deixar a viagem sem capa.
+   *
+   * No modo local o arquivo JÁ É local: `persistFile` copia o que a pessoa
+   * escolheu para o diretório do aplicativo, e é essa URI que fica gravada. Por
+   * isso `coverImagePath` e `coverImageSignedUrl` recebem o mesmo valor — não há
+   * o que assinar quando não há Storage remoto.
+   */
+  async replaceCover(tripId, file) {
+    const validation = validateTripCover(file);
+    if (!validation.ok) throw new Error(validation.message);
+
+    const anterior = (await trips.byId(tripId))?.coverImagePath;
+
+    const stored = await persistFile(['trip-covers', tripId], file);
+    const saved = await trips.update(tripId, {
+      coverImagePath: stored.url,
+      coverImageSignedUrl: stored.url,
+      updatedAt: nowISO(),
+    });
+
+    if (anterior && anterior !== stored.url) deleteStoredFile(anterior);
+
+    return saved;
+  },
+
+  async removeCover(tripId) {
+    const anterior = (await trips.byId(tripId))?.coverImagePath;
+
+    // O registro primeiro, como no lado remoto: apagar o arquivo antes deixaria
+    // a viagem apontando para o que já não existe.
+    const saved = await trips.update(tripId, {
+      coverImagePath: undefined,
+      coverImageSignedUrl: undefined,
+      updatedAt: nowISO(),
+    });
+
+    if (anterior) deleteStoredFile(anterior);
+
+    return saved;
+  },
   async remove(tripId) {
     // Cascade: nothing may outlive its trip (§12).
     const entries = await journal.find((j) => j.tripId === tripId);
@@ -148,6 +193,10 @@ const tripRepository: TripRepository = {
     await travelReservationCollection.removeWhere((r) => r.tripId === tripId);
     await reminderCollection.removeWhere((r) => r.tripId === tripId);
     await suggestionCollection.removeWhere((s) => s.tripId === tripId);
+
+    // A capa enviada é arquivo da viagem: sem a viagem, ninguém mais a alcança.
+    const capa = (await trips.byId(tripId))?.coverImagePath;
+    if (capa) deleteStoredFile(capa);
 
     const tripConversations = await conversations.find((c) => c.tripId === tripId);
     const convIds = new Set(tripConversations.map((c) => c.id));

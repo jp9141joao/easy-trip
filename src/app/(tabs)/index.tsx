@@ -43,6 +43,7 @@ import {
   getTripTotalSpent,
   isOverBudget,
 } from '@/domain/selectors';
+import { tripCoverUri } from '@/domain/tripCover';
 import type { Trip } from '@/domain/types';
 import { useAlerts } from '@/hooks/useAlerts';
 import { useUnreadNotificationCount } from '@/hooks/useNotifications';
@@ -83,10 +84,15 @@ export default function DashboardScreen() {
    * que ela pode ler e zerar — um convite, um lembrete vencido.
    *
    * O PONTO, sem número, aparece quando não há nada não lido mas existe algo
-   * na viagem que vale olhar: orçamento no limite, checklist pendente. Esses
-   * são derivados do estado atual e não têm como ser "lidos" — contá-los no
-   * número faria o badge nunca chegar a zero enquanto o orçamento estivesse em
-   * 85%, e um badge que não zera deixa de ser lido em uma semana.
+   * em ALGUMA das viagens que vale olhar: orçamento no limite, meta do dia
+   * estourada, checklist pendente. Esses são derivados do estado atual e não
+   * têm como ser "lidos" — contá-los no número faria o badge nunca chegar a
+   * zero enquanto o orçamento estivesse em 85%, e um badge que não zera deixa
+   * de ser lido em uma semana.
+   *
+   * Desde §20 o ponto não depende mais da viagem selecionada: ele acende para
+   * qualquer viagem da conta. Era esse o defeito — trocar o cartão da Home
+   * apagava o sinal de que existia um check-in amanhã em outra viagem.
    */
   const showDot = badgeCount === 0 && alerts.length > 0;
 
@@ -125,7 +131,7 @@ export default function DashboardScreen() {
                   badgeCount > 0
                     ? `Central de notificações, ${badgeCount} não ${badgeCount === 1 ? 'lida' : 'lidas'}`
                     : showDot
-                      ? `Central de notificações, ${alerts.length} ${alerts.length === 1 ? 'aviso' : 'avisos'} da viagem`
+                      ? `Central de notificações, ${alerts.length} ${alerts.length === 1 ? 'aviso' : 'avisos'} das suas viagens`
                       : 'Central de notificações'
                 }
                 onPress={() => router.push('/alerts')}
@@ -493,7 +499,7 @@ function TripHero({ trip, expensesTotal }: { trip: Trip; expensesTotal: number }
       >
         <View style={{ borderRadius: theme.radius.heroCard, overflow: 'hidden' }}>
           <AppImage
-            uri={trip.coverImageUrl}
+            uri={tripCoverUri(trip)}
             style={{ height: 280, width: '100%' }}
             fallbackLabel={trip.destinationCity}
             overlay

@@ -3,6 +3,7 @@ import { Pressable, View } from 'react-native';
 
 import { AppImage, AppText } from '@/components/ui';
 import { getCountdownLabel } from '@/domain/selectors';
+import { tripCoverUri } from '@/domain/tripCover';
 import type { Trip } from '@/domain/types';
 import { useCurrentTrip } from '@/hooks/useTrips';
 import { useTheme } from '@/theme';
@@ -56,7 +57,7 @@ export function TripChip({ trip, active }: { trip: Trip; active: boolean }) {
       })}
     >
       <AppImage
-        uri={trip.coverImageUrl}
+        uri={tripCoverUri(trip)}
         style={{ height: 84, width: '100%' }}
         fallbackLabel={trip.destinationCity}
         overlay

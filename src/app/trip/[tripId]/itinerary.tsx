@@ -11,6 +11,8 @@ import {
   ActivityWeather,
   DayRouteCard,
   LocationPicker,
+  SuggestionsEntryCard,
+  TripLanguageCard,
   type PickedLocation,
 } from '@/components/trip';
 import { MembersSummary } from '@/components/collaboration/MemberRow';
@@ -150,20 +152,41 @@ export default function ItineraryScreen() {
         <TripTabs tripId={tripId} active="itinerary" />
         <RoteiroModules tripId={tripId} active="itinerary" />
 
-        <View style={{ paddingHorizontal: theme.spacing.screen, paddingBottom: theme.spacing.md }}>
+        <View
+          style={{
+            paddingHorizontal: theme.spacing.screen,
+            paddingBottom: theme.spacing.md,
+            gap: theme.spacing.md,
+          }}
+        >
           <MembersSummary
             count={permissions.memberCount}
             pendingInvites={invites.length}
             onPress={() => router.push(`/trip/${tripId}/members`)}
           />
           {invitesQuery.isError ? (
-            <View style={{ marginTop: theme.spacing.sm }}>
-              <InlineNotice icon={TriangleAlert} tone="error">
-                {describeBackendCapability(invitesQuery.error) ??
-                  'Não foi possível carregar os convites desta viagem.'}
-              </InlineNotice>
-            </View>
+            <InlineNotice icon={TriangleAlert} tone="error">
+              {describeBackendCapability(invitesQuery.error) ??
+                'Não foi possível carregar os convites desta viagem.'}
+            </InlineNotice>
           ) : null}
+
+          {/*
+            As utilidades da Jornada, ACIMA da lista de dias e abaixo do que
+            identifica a viagem.
+
+            Sugestões vive aqui desde que saiu do nível primário (§15, §16):
+            é onde se descobre o que ainda não está no roteiro, e o roteiro está
+            logo abaixo. `viewer` também a vê — a tela de Sugestões já distingue
+            quem pode adicionar de quem só olha (§48 do handoff anterior), e
+            esconder a entrada tiraria dele a leitura sem proteger nada.
+
+            O idioma só aparece quando difere do da pessoa; nos demais casos
+            `TripLanguageCard` não renderiza nada e o `gap` não abre buraco
+            (§11).
+          */}
+          <SuggestionsEntryCard tripId={tripId} city={trip.destinationCity} />
+          <TripLanguageCard trip={trip} />
         </View>
 
         <FadeIn style={{ paddingHorizontal: theme.spacing.screen }}>

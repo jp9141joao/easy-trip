@@ -14,6 +14,7 @@ import type {
   ChecklistItem,
   Expense,
   Goal,
+  ISODate,
   ItineraryItem,
   Trip,
   TripStatus,
@@ -145,6 +146,120 @@ export function getBudgetUsageRatio(expenses: Expense[], trip: Trip): number {
 /** Usage percent for progress bars, clamped to 0–100 for *display only*. */
 export function getBudgetUsagePercent(expenses: Expense[], trip: Trip): number {
   return clampPercent(getBudgetUsageRatio(expenses, trip) * 100);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Meta de gasto diário (§27–§33)                                              */
+/* -------------------------------------------------------------------------- */
+
+export interface DailySpend {
+  /** A data das despesas, `YYYY-MM-DD`. */
+  date: ISODate;
+  /** Somatório do dia, na moeda do orçamento da viagem. */
+  spent: number;
+}
+
+export interface DailyGoalStatus {
+  date: ISODate;
+  spent: number;
+  /** A meta vigente. `undefined` quando a viagem não tem meta definida. */
+  goal?: number;
+  /** `goal - spent`. Negativo quando estourou — nunca é achatado em zero. */
+  remaining?: number;
+  /** Quanto passou da meta. `0` quando está dentro dela. */
+  over: number;
+  /** `true` só quando existe meta E ela foi ultrapassada. */
+  exceeded: boolean;
+}
+
+/**
+ * QUAIS DESPESAS ENTRAM NA CONTA (§31)
+ *
+ * Exatamente as mesmas que já formam os totais da Carteira — nem uma a mais.
+ *
+ * A lista que chega aqui é a que `useExpenses(tripId)` devolveu, e o que ela
+ * contém é decidido pela RLS: as despesas `shared` da viagem mais as `private`
+ * de quem está lendo. Não há rateio, não há filtro por `paid_by` e não há uma
+ * segunda semântica financeira: se a meta somasse um conjunto diferente do que
+ * o cartão de saldo logo acima soma, os dois números da mesma tela discordariam
+ * e nenhum dos dois seria explicável.
+ *
+ * A conversão é a mesma de `getTripTotalSpent`: cada despesa vale o que valia na
+ * moeda do orçamento no dia em que foi registrada (§41). Uma despesa em iene
+ * numa viagem orçada em real conta pelo valor convertido e gravado, não por uma
+ * cotação de hoje.
+ */
+export function getDailySpend(expenses: Expense[], trip: Trip): DailySpend[] {
+  const totals = new Map<ISODate, number>();
+
+  for (const expense of expenses) {
+    const value = getExpenseValueInBudgetCurrency(expense, trip);
+    totals.set(expense.transactionDate, (totals.get(expense.transactionDate) ?? 0) + value);
+  }
+
+  return [...totals.entries()]
+    .map(([date, spent]) => ({ date, spent: round2(spent) }))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+/** O total gasto num dia específico. Zero quando não houve despesa nele. */
+export function getSpendOnDate(expenses: Expense[], trip: Trip, date: ISODate): number {
+  return round2(
+    expenses
+      .filter((expense) => expense.transactionDate === date)
+      .reduce((sum, expense) => sum + getExpenseValueInBudgetCurrency(expense, trip), 0),
+  );
+}
+
+/**
+ * O estado de um dia diante da meta.
+ *
+ * Sem meta na viagem, devolve o gasto e `exceeded: false` — a tela ainda quer
+ * mostrar quanto se gastou no dia, só não tem contra o que comparar.
+ *
+ * `goal <= 0` é tratado como ausência de meta, e não como "meta de zero": um
+ * campo esvaziado que virasse `0` faria o primeiro café do dia estourar a meta,
+ * e o alerta apareceria para quem tinha acabado de desistir de usar o recurso.
+ * Remover a meta grava `undefined`, e este guarda protege contra o resto.
+ */
+export function getDailyGoalStatus(
+  expenses: Expense[],
+  trip: Trip,
+  date: ISODate,
+): DailyGoalStatus {
+  const spent = getSpendOnDate(expenses, trip, date);
+  const goal = trip.dailySpendingGoal;
+
+  if (goal === undefined || goal <= 0) {
+    return { date, spent, over: 0, exceeded: false };
+  }
+
+  const remaining = round2(goal - spent);
+  return {
+    date,
+    spent,
+    goal,
+    remaining,
+    over: remaining < 0 ? round2(-remaining) : 0,
+    exceeded: remaining < 0,
+  };
+}
+
+/**
+ * Os dias que estouraram a meta, do mais recente para o mais antigo.
+ *
+ * Cada dia é independente (§63): gastar demais na terça não empurra nada para a
+ * quarta, e a quarta não "compensa" a terça. É uma meta diária, não um
+ * orçamento acumulado — quem quer o acumulado já tem o cartão de saldo.
+ */
+export function getExceededGoalDays(expenses: Expense[], trip: Trip): DailyGoalStatus[] {
+  const goal = trip.dailySpendingGoal;
+  if (goal === undefined || goal <= 0) return [];
+
+  return getDailySpend(expenses, trip)
+    .filter((day) => day.spent > goal)
+    .map((day) => getDailyGoalStatus(expenses, trip, day.date))
+    .sort((a, b) => (a.date > b.date ? -1 : 1));
 }
 
 export function getExpensesByCategory(

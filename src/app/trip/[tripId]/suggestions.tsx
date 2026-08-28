@@ -36,7 +36,7 @@ import {
   type TripSuggestion,
 } from '@/domain/suggestions';
 import { DEFAULT_VISIBILITY, type Visibility } from '@/domain/visibility';
-import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
+import { TripHero, TripScreenShell } from '@/features/trip/TripScaffold';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useTripPermissions } from '@/hooks/useCollaboration';
 import {
@@ -146,8 +146,14 @@ export default function SuggestionsScreen() {
   return (
     <TripScreenShell>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
+        {/*
+          Sem `TripTabs`: Sugestões deixou de ser seção de primeiro nível e
+          passou a ser um degrau abaixo da Jornada (§15, §16). Desenhar a barra
+          primária aqui obrigaria a marcar uma das três como ativa — e nenhuma
+          está. O caminho de volta é o da própria sub-tela: a seta do hero, que
+          devolve a pessoa à Jornada de onde ela veio (§17).
+        */}
         <TripHero trip={trip} />
-        <TripTabs tripId={tripId} active="suggestions" />
 
         <FadeIn style={{ paddingHorizontal: theme.spacing.screen, gap: theme.spacing.lg }}>
           <View style={{ gap: 4 }}>

@@ -40,9 +40,25 @@ import { useTheme } from '@/theme';
  * por abertura (e de novo só quando a moeda muda — nunca a cada tecla), e a
  * tela diz de quando ela é. Sem provedor e sem cache, o card diz que não tem
  * cotação em vez de mostrar uma conta inventada.
+ *
+ * A MOEDA BASE É A DO ORÇAMENTO — E ISSO MUDOU
+ *
+ * Ela era `'BRL'` fixo. O aplicativo não tem moeda de conta configurável, mas a
+ * VIAGEM tem: `trip.budgetCurrency` é escolhida na criação, é a moeda em que a
+ * Carteira soma tudo e é a unidade em que "saldo restante" está escrito na
+ * mesma tela, dois cartões acima. Converter a partir de real numa viagem
+ * orçada em euro respondia uma pergunta que ninguém tinha feito.
+ *
+ * É também o que torna a regra de §39 exprimível: com base fixa em BRL, uma
+ * viagem em euro para a França não teria como "usar a mesma moeda".
+ *
+ * QUANDO O CARD NÃO APARECE (§39)
+ *
+ * Quando as duas moedas são a mesma. Um conversor de euro para euro é um campo
+ * que copia o outro — ocupa a altura de um cartão para não responder nada. A
+ * decisão é local e acontece ANTES da consulta: não se gasta rede para
+ * descobrir que 1 EUR = 1 EUR (§48).
  */
-
-const BASE_CURRENCY = 'BRL';
 
 /**
  * Qual campo a pessoa está editando.
@@ -60,10 +76,22 @@ export function CurrencyConverterCard({ trip }: { trip: Trip }) {
   const [texto, setTexto] = useState('1.000,00');
   const [active, setActive] = useState<ActiveInput>('base');
 
+  const base = trip.budgetCurrency;
+
   const destino = useMemo(
     () => currencyForCountry(trip.countryCode, trip.destinationCountry),
     [trip.countryCode, trip.destinationCountry],
   );
+
+  /*
+   * A comparação é entre CÓDIGOS ISO 4217, nunca entre nomes de país (§40).
+   *
+   * `currencyForCountry` resolve o país por alpha-2 no registro central; um
+   * `destinationCountry.includes('Brasil')` acertaria "Brasil" e erraria
+   * "Brazil", e não teria resposta nenhuma para Porto Rico, que é território
+   * dos Estados Unidos e usa dólar.
+   */
+  const mesmaMoeda = Boolean(destino) && destino === base;
 
   /*
    * A chave é o par, e o `staleTime` é longo de propósito.
@@ -73,9 +101,12 @@ export function CurrencyConverterCard({ trip }: { trip: Trip }) {
    * aritmética local sobre a taxa que já está em mãos (§26, §31).
    */
   const cotacao = useQuery({
-    queryKey: ['fx-reference', BASE_CURRENCY, destino ?? 'none'],
-    queryFn: () => getReferenceRate(BASE_CURRENCY, destino!),
-    enabled: Boolean(destino),
+    queryKey: ['fx-reference', base, destino ?? 'none'],
+    queryFn: () => getReferenceRate(base, destino!),
+    // Não se consulta cotação de uma moeda para ela mesma. O `enabled` é o que
+    // garante §48 na prática: a decisão de esconder é local e chega antes de
+    // qualquer rede, mesmo com o hook obrigado a ser chamado sempre.
+    enabled: Boolean(destino) && !mesmaMoeda,
     staleTime: 6 * 60 * 60 * 1000,
     retry: false,
   });
@@ -83,10 +114,13 @@ export function CurrencyConverterCard({ trip }: { trip: Trip }) {
   // Uma moeda que não conhecemos não vira um card quebrado: ele não aparece.
   if (!destino) return null;
 
+  // Origem e destino na mesma moeda: não há o que converter (§39).
+  if (mesmaMoeda) return null;
+
   const rate = cotacao.data?.rate ?? null;
   const falha = cotacao.data?.failure;
   const digitosDestino = fractionDigitsFor(destino);
-  const digitosBase = fractionDigitsFor(BASE_CURRENCY);
+  const digitosBase = fractionDigitsFor(base);
 
   const digitado = parseMoneyInput(texto);
   const valido = digitado !== null && digitado >= 0;
@@ -112,7 +146,7 @@ export function CurrencyConverterCard({ trip }: { trip: Trip }) {
   /** Troca qual lado está sendo editado, levando junto o valor já convertido. */
   const inverter = () => {
     const proximo: ActiveInput = active === 'base' ? 'destination' : 'base';
-    setTexto(formatNumber(convertido, fractionDigitsFor(proximo === 'base' ? BASE_CURRENCY : destino)));
+    setTexto(formatNumber(convertido, fractionDigitsFor(proximo === 'base' ? base : destino)));
     setActive(proximo);
   };
 
@@ -124,7 +158,7 @@ export function CurrencyConverterCard({ trip }: { trip: Trip }) {
         : undefined;
 
   const campo = (lado: ActiveInput) => {
-    const moeda = lado === 'base' ? BASE_CURRENCY : destino;
+    const moeda = lado === 'base' ? base : destino;
     const ativo = active === lado;
     return (
       <TextField
@@ -166,8 +200,8 @@ export function CurrencyConverterCard({ trip }: { trip: Trip }) {
             accessibilityRole="button"
             accessibilityLabel={
               active === 'base'
-                ? `Digitar em ${destino} em vez de ${BASE_CURRENCY}`
-                : `Digitar em ${BASE_CURRENCY} em vez de ${destino}`
+                ? `Digitar em ${destino} em vez de ${base}`
+                : `Digitar em ${base} em vez de ${destino}`
             }
             hitSlop={theme.hitSlop}
             style={({ pressed }) => ({
@@ -197,7 +231,7 @@ export function CurrencyConverterCard({ trip }: { trip: Trip }) {
         {rate ? (
           <View style={{ gap: 2 }}>
             <AppText variant="bodySmall" weight="semibold" testID="fx-rate">
-              {formatRate(rate.rate, BASE_CURRENCY, destino)}
+              {formatRate(rate.rate, base, destino)}
             </AppText>
             {/*
               "Cotação de referência", e não "cotação em tempo real": o provedor

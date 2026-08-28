@@ -45,7 +45,7 @@ import {
   type Expense,
   type ExpenseCategory,
 } from '@/domain/types';
-import { CurrencyConverterCard } from '@/components/trip';
+import { CurrencyConverterCard, DailyGoalCard } from '@/components/trip';
 import { TripHero, TripScreenShell, TripTabs } from '@/features/trip/TripScaffold';
 import { useTripRoute } from '@/features/trip/useTripRoute';
 import { useExpenseMutations, useExpenses } from '@/hooks/useTripData';
@@ -219,6 +219,23 @@ export default function FinanceScreen() {
             e sem seletor pedindo à pessoa um dado que o sistema deveria ter.
           */}
           <CurrencyConverterCard trip={trip} />
+
+          {/*
+            A meta diária entra DEPOIS do saldo total e ANTES da lista: as duas
+            primeiras perguntas de quem abre a Carteira no meio da viagem são
+            "quanto sobrou no total" e "quanto posso gastar hoje", nessa ordem
+            (§32).
+
+            Definir e remover é do proprietário, a mesma autorização de
+            `budgetTotal` — meta e orçamento são a mesma decisão vista de dois
+            ângulos. Todo membro continua VENDO: o cartão só troca os botões por
+            nada quando `canEdit` é falso.
+          */}
+          <DailyGoalCard
+            trip={trip}
+            expenses={expenses}
+            canEdit={permissions.role === 'owner'}
+          />
 
           {unconverted ? (
             <InlineNotice icon={TriangleAlert} tone="warning">

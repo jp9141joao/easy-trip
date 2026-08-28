@@ -38,13 +38,21 @@ import { useTheme } from '@/theme';
  * não podem ser recalculados porque o que os originou pode não existir mais.
  * É só esta lista que conta para o badge.
  *
- * Embaixo, o que ESTÁ ACONTECENDO: orçamento perto do limite, checklist
- * pendente, próxima atividade. São derivados do estado atual da viagem, sempre
- * verdadeiros agora, e somem sozinhos quando deixam de ser verdade. Marcar um
- * desses como "lido" não faria sentido: o orçamento continuaria em 85%.
+ * Embaixo, o que ESTÁ ACONTECENDO: orçamento perto do limite, meta diária
+ * estourada, checklist pendente, próxima atividade. São derivados do estado
+ * atual, sempre verdadeiros agora, e somem sozinhos quando deixam de ser
+ * verdade. Marcar um desses como "lido" não faria sentido: o orçamento
+ * continuaria em 85%.
  *
  * Juntá-los numa lista só, com o mesmo tratamento, foi a tentação óbvia — e
  * teria produzido um badge que nunca chega a zero.
+ *
+ * A LISTA DE BAIXO É DE TODAS AS VIAGENS (§20–§22)
+ *
+ * Ela lia só a viagem selecionada na Home. Um check-in de amanhã em Tóquio
+ * ficava invisível enquanto São Paulo estivesse aberta — e nada na tela dizia
+ * que havia algo escondido. Agora `useAlerts` varre as viagens de que a pessoa é
+ * membro, e cada aviso diz de qual veio.
  */
 export default function AlertsScreen() {
   const theme = useTheme();
@@ -154,7 +162,7 @@ export default function AlertsScreen() {
             <EmptyState
               icon={BellOff}
               title="Tudo em ordem"
-              message="Convites, lembretes e avisos da sua viagem aparecem aqui."
+              message="Convites, lembretes e avisos das suas viagens aparecem aqui."
               compact
             />
           </GlassCard>
@@ -286,15 +294,22 @@ export default function AlertsScreen() {
 
         {alerts.length > 0 ? (
           <>
+            {/*
+              "Suas viagens", no plural: a lista deixou de ser da viagem
+              selecionada e passou a ser de todas (§20). O rótulo antigo — "Da
+              sua viagem agora" — prometeria um recorte que já não existe.
+            */}
             <AppText variant="label" color="secondary" style={{ marginTop: theme.spacing.md }}>
-              Da sua viagem agora
+              Acontecendo nas suas viagens
             </AppText>
 
             {alerts.map((alert) => (
               <GlassCard
                 key={alert.id}
                 onPress={alert.href ? () => router.replace(alert.href as never) : undefined}
-                accessibilityLabel={`${alert.title}. ${alert.message}`}
+                accessibilityLabel={[alert.title, alert.tripLabel, alert.message]
+                  .filter(Boolean)
+                  .join('. ')}
                 accessibilityHint={alert.href ? 'Abre a tela relacionada' : undefined}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.lg }}>
@@ -311,10 +326,24 @@ export default function AlertsScreen() {
                     <alert.icon size={19} color={toneColor(alert.tone)} />
                   </View>
 
-                  <View style={{ flex: 1, gap: 2 }}>
+                  {/* `minWidth: 0` para "Meta diária ultrapassada" quebrar dentro
+                      do cartão em vez de empurrar a seta para fora (§46). */}
+                  <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                     <AppText variant="body" weight="semibold">
                       {alert.title}
                     </AppText>
+                    {/*
+                      De qual viagem veio (§22). Entra ENTRE o título e o texto,
+                      e não depois: com a lista global, saber de onde é a linha
+                      passou a fazer parte de lê-la. Um aviso de conta (§23) não
+                      tem viagem para citar e simplesmente não desenha esta
+                      linha — nenhum rótulo é inventado para preencher.
+                    */}
+                    {alert.tripLabel ? (
+                      <AppText variant="caption" color="brand" numberOfLines={1}>
+                        {alert.tripLabel}
+                      </AppText>
+                    ) : null}
                     <AppText variant="caption" color="secondary">
                       {alert.message}
                     </AppText>
