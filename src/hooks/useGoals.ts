@@ -4,6 +4,7 @@ import type { Goal } from '@/domain/types';
 import { getGoalProgress } from '@/domain/selectors';
 import { useAuth } from '@/providers/AuthProvider';
 import { dataSource } from '@/repositories';
+import { newRowId, useOfflineFallback } from './useOfflineFallback';
 import { queryKeys } from './queryKeys';
 
 export function useGoals() {
@@ -20,20 +21,45 @@ export function useGoalMutations() {
   const { user } = useAuth();
   const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.goals(user!.id) });
 
+  // Metas não pertencem a uma viagem — daí o `tripId` ausente (§33).
+  const offline = useOfflineFallback('goal');
+
   const create = useMutation({
-    mutationFn: (input: Omit<Goal, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'status'>) =>
-      dataSource.goals.create({ ...input, userId: user!.id, status: 'active' }),
+    mutationFn: (input: Omit<Goal, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'status'>) => {
+      const id = newRowId();
+      const row = { ...input, id, userId: user!.id, status: 'active' as const };
+      return offline({
+        operation: 'create',
+        targetId: id,
+        payload: { ...input, userId: user!.id, status: 'active' },
+        direct: () => dataSource.goals.create(row),
+        optimistic: row as Goal,
+      });
+    },
     onSuccess: invalidate,
   });
 
   const update = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Partial<Goal> }) =>
-      dataSource.goals.update(id, patch),
+      offline({
+        operation: 'update',
+        targetId: id,
+        payload: patch as Record<string, unknown>,
+        direct: () => dataSource.goals.update(id, patch),
+        optimistic: { id, ...patch } as Goal,
+      }),
     onSuccess: invalidate,
   });
 
   const remove = useMutation({
-    mutationFn: (id: string) => dataSource.goals.remove(id),
+    mutationFn: (id: string) =>
+      offline({
+        operation: 'remove',
+        targetId: id,
+        payload: {},
+        direct: () => dataSource.goals.remove(id),
+        optimistic: undefined,
+      }),
     onSuccess: invalidate,
   });
 

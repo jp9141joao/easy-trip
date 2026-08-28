@@ -452,6 +452,25 @@ const toExpense = (row: Row): Expense => ({
   paidBy: row.paid_by ?? undefined,
 });
 
+/**
+ * Deixa o cliente escolher o id da linha, quando ele já escolheu.
+ *
+ * Existe por causa da fila offline (§33). Uma criação enfileirada carrega o id
+ * que a linha terá, e é isso que torna o reenvio idempotente: se a resposta se
+ * perdeu e o item for mandado de novo, o segundo INSERT esbarra na chave
+ * primária e volta como 23505 — que a fila lê como "já está feito". Sem o id
+ * vindo do aparelho, cada reenvio criaria uma linha nova, e o jeito de
+ * descobrir seria a soma do orçamento não fechar.
+ *
+ * Só na criação. Um `update` continua sem tocar em `id`: trocar a chave
+ * primária de uma linha existente não é uma operação que este produto tenha.
+ *
+ * Ausente o id, nada muda — o Postgres gera um, como sempre fez.
+ */
+function withClientId(input: { id?: string }, row: Row): Row {
+  return input.id ? { ...row, id: input.id } : row;
+}
+
 const fromExpense = (expense: Partial<Expense>): Row => prune({
   trip_id: expense.tripId,
   user_id: expense.userId,
@@ -838,7 +857,7 @@ export const supabaseDataSource: DataSource = {
     async create(input) {
       const result = await db()
         .from('itinerary_items')
-        .insert(fromItinerary(input))
+        .insert(withClientId(input, fromItinerary(input)))
         .select()
         .single();
       return toItinerary(
@@ -875,7 +894,7 @@ export const supabaseDataSource: DataSource = {
     async create(input) {
       const result = await db()
         .from('checklist_items')
-        .insert(fromChecklist(input))
+        .insert(withClientId(input, fromChecklist(input)))
         .select()
         .single();
       return toChecklist(
@@ -910,7 +929,11 @@ export const supabaseDataSource: DataSource = {
       return unwrapList<Row>(result).map(toExpense);
     },
     async create(input) {
-      const result = await db().from('expenses').insert(fromExpense(input)).select().single();
+      const result = await db()
+        .from('expenses')
+        .insert(withClientId(input, fromExpense(input)))
+        .select()
+        .single();
       return toExpense(
         unwrapWithCapability<Row>(result, 'MISSING_VISIBILITY', {
           operation: 'insert',
@@ -946,16 +969,19 @@ export const supabaseDataSource: DataSource = {
       const result = await db()
         .from('journal_entries')
         .insert(
-          prune({
-            trip_id: input.tripId,
-            user_id: input.userId,
-            entry_date: input.entryDate,
-            content: input.content,
-            latitude: input.latitude,
-            longitude: input.longitude,
-            place_name: input.placeName,
-            visibility: input.visibility ?? DEFAULT_VISIBILITY.journal,
-          }),
+          withClientId(
+            input,
+            prune({
+              trip_id: input.tripId,
+              user_id: input.userId,
+              entry_date: input.entryDate,
+              content: input.content,
+              latitude: input.latitude,
+              longitude: input.longitude,
+              place_name: input.placeName,
+              visibility: input.visibility ?? DEFAULT_VISIBILITY.journal,
+            }),
+          ),
         )
         .select()
         .single();
@@ -1071,7 +1097,11 @@ export const supabaseDataSource: DataSource = {
       return unwrapList<Row>(result).map(toGoal);
     },
     async create(input) {
-      const result = await db().from('goals').insert(fromGoal(input)).select().single();
+      const result = await db()
+        .from('goals')
+        .insert(withClientId(input, fromGoal(input)))
+        .select()
+        .single();
       return toGoal(unwrap<Row>(result));
     },
     async update(id, patch) {

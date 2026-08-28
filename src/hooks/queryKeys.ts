@@ -7,6 +7,8 @@
 export const queryKeys = {
   trips: (userId: string) => ['trips', userId] as const,
   trip: (tripId: string) => ['trip', tripId] as const,
+  /** A fila de mutações offline desta conta (§33). Uma por conta, nunca global. */
+  offlineQueue: (userId: string) => ['offline-queue', userId] as const,
 
   itinerary: (tripId: string) => ['itinerary', tripId] as const,
   checklist: (tripId: string) => ['checklist', tripId] as const,

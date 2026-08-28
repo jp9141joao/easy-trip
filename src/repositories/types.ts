@@ -52,6 +52,16 @@ import type { ContentImageKind } from '@/domain/upload';
 export type WithOptionalVisibility<T extends { visibility: Visibility }> =
   Omit<T, 'visibility'> & { visibility?: Visibility };
 
+/**
+ * A criação aceita um id vindo do aparelho.
+ *
+ * É o que a fila offline (§33) precisa para ser idempotente: o item enfileirado
+ * já carrega o id que a linha terá, e um reenvio esbarra na chave primária em
+ * vez de criar uma segunda linha. Opcional — quem cria com rede continua
+ * deixando o Postgres gerar.
+ */
+export type WithClientId<T> = T & { id?: string };
+
 /** A local file selected by the user, ready to be uploaded. */
 export interface UploadableFile {
   uri: string;
@@ -95,28 +105,28 @@ export interface TripRepository {
 
 export interface ItineraryRepository {
   listByTrip(tripId: string): Promise<ItineraryItem[]>;
-  create(input: WithOptionalVisibility<Omit<ItineraryItem, 'id'>>): Promise<ItineraryItem>;
+  create(input: WithClientId<WithOptionalVisibility<Omit<ItineraryItem, 'id'>>>): Promise<ItineraryItem>;
   update(id: string, patch: Partial<ItineraryItem>): Promise<ItineraryItem>;
   remove(id: string): Promise<void>;
 }
 
 export interface ChecklistRepository {
   listByTrip(tripId: string): Promise<ChecklistItem[]>;
-  create(input: WithOptionalVisibility<Omit<ChecklistItem, 'id' | 'createdAt'>>): Promise<ChecklistItem>;
+  create(input: WithClientId<WithOptionalVisibility<Omit<ChecklistItem, 'id' | 'createdAt'>>>): Promise<ChecklistItem>;
   update(id: string, patch: Partial<ChecklistItem>): Promise<ChecklistItem>;
   remove(id: string): Promise<void>;
 }
 
 export interface ExpenseRepository {
   listByTrip(tripId: string): Promise<Expense[]>;
-  create(input: WithOptionalVisibility<Omit<Expense, 'id' | 'createdAt'>>): Promise<Expense>;
+  create(input: WithClientId<WithOptionalVisibility<Omit<Expense, 'id' | 'createdAt'>>>): Promise<Expense>;
   update(id: string, patch: Partial<Expense>): Promise<Expense>;
   remove(id: string): Promise<void>;
 }
 
 export interface JournalRepository {
   listByTrip(tripId: string): Promise<JournalEntry[]>;
-  create(input: WithOptionalVisibility<Omit<JournalEntry, 'id' | 'createdAt' | 'updatedAt'>>): Promise<JournalEntry>;
+  create(input: WithClientId<WithOptionalVisibility<Omit<JournalEntry, 'id' | 'createdAt' | 'updatedAt'>>>): Promise<JournalEntry>;
   update(id: string, patch: Partial<JournalEntry>): Promise<JournalEntry>;
   remove(id: string): Promise<void>;
   listMedia(entryIds: string[]): Promise<JournalMedia[]>;
@@ -126,7 +136,7 @@ export interface JournalRepository {
 
 export interface GoalRepository {
   list(userId: string): Promise<Goal[]>;
-  create(input: Omit<Goal, 'id' | 'createdAt' | 'updatedAt'>): Promise<Goal>;
+  create(input: WithClientId<Omit<Goal, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Goal>;
   update(id: string, patch: Partial<Goal>): Promise<Goal>;
   remove(id: string): Promise<void>;
 }

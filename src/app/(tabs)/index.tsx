@@ -33,6 +33,7 @@ import {
   SectionHeader,
   SkeletonCard,
 } from '@/components/ui';
+import { SyncStatus } from '@/components/SyncStatus';
 import { AuroraBackground } from '@/components/ui/Surface';
 import { DOCK_CLEARANCE } from '@/constants/layout';
 import {
@@ -174,6 +175,18 @@ export default function DashboardScreen() {
             <OfflineBanner />
           </View>
         ) : null}
+
+        {/*
+          O que foi escrito e ainda não subiu (§33).
+
+          Fora do `isOffline` de propósito: a conexão pode ter voltado e a fila
+          ainda ter algo — uma alteração recusada por permissão, por exemplo,
+          continua pendente com quatro barras de sinal. Amarrar o indicador ao
+          estado da rede o esconderia exatamente no caso em que ele importa.
+        */}
+        <View style={{ paddingHorizontal: theme.spacing.screen }}>
+          <SyncStatus />
+        </View>
 
         {/* -------------------------- Hero / trip carousel --------------------- */}
         {isLoading ? (

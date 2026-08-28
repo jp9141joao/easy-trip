@@ -11,6 +11,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { dataSource, type UploadableFile, type WithOptionalVisibility } from '@/repositories';
 import { currencyService } from '@/services/currency';
 import { buildExpenseRecord, type ExpenseDraft } from '@/services/expenseWrite';
+import { newRowId, useOfflineFallback } from './useOfflineFallback';
 import { queryKeys } from './queryKeys';
 
 /* -------------------------------- itinerary ------------------------------- */
@@ -28,20 +29,48 @@ export function useItineraryMutations(tripId: string) {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: queryKeys.itinerary(tripId) });
 
+  // A escrita vai direto ao servidor; a fila é o desvio quando ela falha por
+  // falta de rede. Ver `useOfflineFallback` (§33).
+  const offline = useOfflineFallback('itinerary', tripId);
+
   const create = useMutation({
-    mutationFn: (input: WithOptionalVisibility<Omit<ItineraryItem, 'id' | 'tripId'>>) =>
-      dataSource.itinerary.create({ ...input, tripId }),
+    mutationFn: (input: WithOptionalVisibility<Omit<ItineraryItem, 'id' | 'tripId'>>) => {
+      // O id é escolhido AQUI, antes da tentativa: é o mesmo que vai no insert
+      // e o mesmo que a fila reenviaria, e é o que torna o reenvio idempotente.
+      const id = newRowId();
+      const row = { ...input, id, tripId };
+      return offline({
+        operation: 'create',
+        targetId: id,
+        payload: { ...input, tripId },
+        direct: () => dataSource.itinerary.create(row),
+        optimistic: row as ItineraryItem,
+      });
+    },
     onSuccess: invalidate,
   });
 
   const update = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Partial<ItineraryItem> }) =>
-      dataSource.itinerary.update(id, patch),
+      offline({
+        operation: 'update',
+        targetId: id,
+        payload: patch as Record<string, unknown>,
+        direct: () => dataSource.itinerary.update(id, patch),
+        optimistic: { id, ...patch } as ItineraryItem,
+      }),
     onSuccess: invalidate,
   });
 
   const remove = useMutation({
-    mutationFn: (id: string) => dataSource.itinerary.remove(id),
+    mutationFn: (id: string) =>
+      offline({
+        operation: 'remove',
+        targetId: id,
+        payload: {},
+        direct: () => dataSource.itinerary.remove(id),
+        optimistic: undefined,
+      }),
     onSuccess: invalidate,
   });
 
@@ -63,15 +92,32 @@ export function useChecklistMutations(tripId: string) {
   const key = queryKeys.checklist(tripId);
   const invalidate = () => queryClient.invalidateQueries({ queryKey: key });
 
+  const offline = useOfflineFallback('checklist', tripId);
+
   const create = useMutation({
-    mutationFn: (input: WithOptionalVisibility<Omit<ChecklistItem, 'id' | 'tripId' | 'createdAt'>>) =>
-      dataSource.checklist.create({ ...input, tripId }),
+    mutationFn: (input: WithOptionalVisibility<Omit<ChecklistItem, 'id' | 'tripId' | 'createdAt'>>) => {
+      const id = newRowId();
+      const row = { ...input, id, tripId };
+      return offline({
+        operation: 'create',
+        targetId: id,
+        payload: { ...input, tripId },
+        direct: () => dataSource.checklist.create(row),
+        optimistic: row as ChecklistItem,
+      });
+    },
     onSuccess: invalidate,
   });
 
   const update = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Partial<ChecklistItem> }) =>
-      dataSource.checklist.update(id, patch),
+      offline({
+        operation: 'update',
+        targetId: id,
+        payload: patch as Record<string, unknown>,
+        direct: () => dataSource.checklist.update(id, patch),
+        optimistic: { id, ...patch } as ChecklistItem,
+      }),
     // Toggling a checkbox must feel instant, so the cache flips before the
     // write completes and rolls back if it fails.
     onMutate: async ({ id, patch }) => {
@@ -89,7 +135,14 @@ export function useChecklistMutations(tripId: string) {
   });
 
   const remove = useMutation({
-    mutationFn: (id: string) => dataSource.checklist.remove(id),
+    mutationFn: (id: string) =>
+      offline({
+        operation: 'remove',
+        targetId: id,
+        payload: {},
+        direct: () => dataSource.checklist.remove(id),
+        optimistic: undefined,
+      }),
     onSuccess: invalidate,
   });
 
@@ -125,9 +178,24 @@ export function useExpenseMutations(trip: Trip) {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: queryKeys.expenses(trip.id) });
 
+  const offline = useOfflineFallback('expense', trip.id);
+
   const create = useMutation({
-    mutationFn: async (draft: ExpenseDraft) =>
-      dataSource.expenses.create(await buildExpenseRecord(trip, user!.id, draft)),
+    mutationFn: async (draft: ExpenseDraft) => {
+      // `buildExpenseRecord` resolve o câmbio ANTES da tentativa, e por isso a
+      // despesa adiada guarda a taxa do momento em que foi lançada — e não a de
+      // quando a rede voltou, que seria a de outro dia.
+      const record = await buildExpenseRecord(trip, user!.id, draft);
+      const id = newRowId();
+      const row = { ...record, id };
+      return offline({
+        operation: 'create',
+        targetId: id,
+        payload: record as unknown as Record<string, unknown>,
+        direct: () => dataSource.expenses.create(row),
+        optimistic: row as Expense,
+      });
+    },
     onSuccess: invalidate,
   });
 
@@ -159,7 +227,14 @@ export function useExpenseMutations(trip: Trip) {
   });
 
   const remove = useMutation({
-    mutationFn: (id: string) => dataSource.expenses.remove(id),
+    mutationFn: (id: string) =>
+      offline({
+        operation: 'remove',
+        targetId: id,
+        payload: {},
+        direct: () => dataSource.expenses.remove(id),
+        optimistic: undefined,
+      }),
     onSuccess: invalidate,
   });
 
