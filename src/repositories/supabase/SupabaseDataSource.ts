@@ -69,6 +69,7 @@ import {
   createSuggestionRepository,
   createTravelReservationRepository,
   type CollaborationDeps,
+  createPushTokenRepository,
 } from './collaboration';
 import { getSupabaseClient } from './client';
 import type { DataSource, StoredFile, UploadableFile } from '../types';
@@ -1556,6 +1557,7 @@ export const supabaseDataSource: DataSource = {
 
   members: createMembershipRepository(collaborationDeps),
   notifications: createNotificationRepository(collaborationDeps),
+  pushTokens: createPushTokenRepository(collaborationDeps),
   reminders: createReminderRepository(collaborationDeps),
   travelReservations: createTravelReservationRepository(collaborationDeps),
   suggestions: createSuggestionRepository(

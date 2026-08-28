@@ -39,6 +39,7 @@ import type {
   ReminderRepository,
   SuggestionRepository,
   TravelReservationRepository,
+  PushTokenRepository,
 } from '../types';
 import { LocalCollection } from './collection';
 
@@ -297,3 +298,18 @@ function categoryForPlace(type: 'hotel' | 'restaurant' | 'attraction'): Suggesti
   if (type === 'attraction') return 'atracoes';
   return 'lugares';
 }
+
+
+/* ------------------------------- push tokens ------------------------------ */
+
+/**
+ * No modo demonstração não há servidor para onde mandar o aviso, e por isso não
+ * há token a registrar. As duas operações são silenciosas em vez de recusarem:
+ * ligar avisos é uma preferência, e falhar ao expressá-la não é um erro que a
+ * pessoa possa resolver — diferente de convidar alguém, que precisa dizer que
+ * exige conexão.
+ */
+export const localPushTokenRepository: PushTokenRepository = {
+  async register() {},
+  async unregister() {},
+};

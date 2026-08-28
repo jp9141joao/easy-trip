@@ -55,6 +55,7 @@ import {
 import type {
   MembershipRepository,
   NotificationRepository,
+  PushTokenRepository,
   ReminderRepository,
   SuggestionRepository,
   TravelReservationRepository,
@@ -315,6 +316,54 @@ export function createMembershipRepository(deps: CollaborationDeps): MembershipR
         );
       }
       return (result.data?.role as TripRole | undefined) ?? null;
+    },
+  };
+}
+
+/* ------------------------------- push tokens ------------------------------ */
+
+/**
+ * O endereço de entrega deste aparelho (§33, migration 0016).
+ *
+ * Por RPC nos dois casos, e não `insert`/`delete` diretos, porque as duas
+ * operações têm pré-condição que uma `with check` não expressa:
+ *
+ *   registrar   o token pode já existir sob OUTRO dono — reinstalação,
+ *               restauração de backup, aparelho passado adiante. O
+ *               `on conflict do update` da 0016 move a linha para quem está
+ *               usando agora; um `insert` daqui esbarraria na unicidade e o
+ *               aparelho continuaria recebendo os avisos de quem saiu.
+ *   desregistrar apagar por token, e não por conta: a mesma pessoa pode ter
+ *               telefone e tablet, e sair de um não desliga o outro.
+ */
+export function createPushTokenRepository(deps: CollaborationDeps): PushTokenRepository {
+  const { db } = deps;
+
+  return {
+    async register(token, platform, deviceName) {
+      const { error } = await db().rpc('register_push_token', {
+        device_token: token,
+        device_platform: platform,
+        device_label: deviceName ?? null,
+      });
+      if (error) {
+        throwBackendError(
+          error,
+          'MISSING_PUSH_TOKENS',
+          'Não foi possível ativar os avisos neste aparelho.',
+        );
+      }
+    },
+
+    async unregister(token) {
+      const { error } = await db().rpc('unregister_push_token', { device_token: token });
+      if (error) {
+        throwBackendError(
+          error,
+          'MISSING_PUSH_TOKENS',
+          'Não foi possível desativar os avisos neste aparelho.',
+        );
+      }
     },
   };
 }

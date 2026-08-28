@@ -11,6 +11,7 @@ export const BACKEND_CAPABILITY_CODES = [
   'MISSING_NOTIFICATIONS',
   'MISSING_RESERVATIONS_SCHEMA',
   'MISSING_SUGGESTIONS_SCHEMA',
+  'MISSING_PUSH_TOKENS',
 ] as const;
 
 export type BackendCapabilityCode = (typeof BACKEND_CAPABILITY_CODES)[number];
@@ -37,6 +38,11 @@ const EXPECTED_IDENTIFIERS: Record<BackendCapabilityCode, readonly string[]> = {
     'leave_trip',
   ],
   MISSING_VISIBILITY: ['visibility', 'created_by', 'paid_by'],
+  MISSING_PUSH_TOKENS: [
+    'push_tokens',
+    'register_push_token',
+    'unregister_push_token',
+  ],
   MISSING_NOTIFICATIONS: ['notifications', 'reminders', 'deliver_due_reminders'],
   MISSING_RESERVATIONS_SCHEMA: [
     'tickets',
@@ -170,5 +176,10 @@ export function describeBackendCapability(error: unknown): string | undefined {
       return 'Reservas ainda não estão disponíveis neste servidor. A equipe precisa atualizar o backend.';
     case 'MISSING_SUGGESTIONS_SCHEMA':
       return 'Sugestões ainda não estão disponíveis neste servidor. A equipe precisa atualizar o backend.';
+    case 'MISSING_PUSH_TOKENS':
+      // Sem 0016, os avisos continuam existindo na Central — o que falta é a
+      // entrega pelo sistema operacional. A mensagem diz isso, e não "as
+      // notificações não funcionam".
+      return 'Os avisos fora do aplicativo ainda não estão disponíveis neste servidor. As notificações continuam aparecendo na Central.';
   }
 }

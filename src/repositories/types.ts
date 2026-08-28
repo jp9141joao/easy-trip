@@ -358,6 +358,18 @@ export interface MembershipRepository {
   myRole(tripId: string, userId: string): Promise<TripRole | null>;
 }
 
+/**
+ * Os aparelhos que recebem notificação desta conta (§33, migration 0016).
+ *
+ * Não há `list`: o cliente não precisa da lista dos próprios tokens, e a RLS
+ * não daria a de mais ninguém. O que ele faz é registrar o aparelho em que
+ * está e desregistrá-lo ao sair — duas operações, nada além.
+ */
+export interface PushTokenRepository {
+  register(token: string, platform: 'ios' | 'android' | 'web', deviceName?: string): Promise<void>;
+  unregister(token: string): Promise<void>;
+}
+
 export interface NotificationRepository {
   list(userId: string): Promise<AppNotification[]>;
   markRead(id: string): Promise<void>;
@@ -426,6 +438,7 @@ export interface DataSource {
   insurance: InsuranceRepository;
   members: MembershipRepository;
   notifications: NotificationRepository;
+  pushTokens: PushTokenRepository;
   reminders: ReminderRepository;
   travelReservations: TravelReservationRepository;
   suggestions: SuggestionRepository;

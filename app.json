@@ -28,7 +28,8 @@
       "edgeToEdgeEnabled": true,
       "permissions": [
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
+        "ACCESS_COARSE_LOCATION",
+        "POST_NOTIFICATIONS"
       ]
     },
 
@@ -61,6 +62,13 @@
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "O Easy Trip usa sua localização para mostrar o mapa do destino."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#0EA5E9",
+          "defaultChannel": "default"
         }
       ],
       "expo-secure-store",

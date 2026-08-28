@@ -107,7 +107,7 @@ fi
 
 if [ "$ONLY" = all ]; then
   echo "→ suítes de RLS (banco novo por suíte, 0001–$LAST)"
-  for t in rls_articles rls_content rls_collaboration ownership_transfer; do
+  for t in rls_articles rls_content rls_collaboration ownership_transfer push_tokens; do
     make_db "t_$t" 0001 "$LAST" || { FAILED=1; continue; }
     run_suite "$t.test.sql" "t_$t" "$ROOT/supabase/tests/$t.test.sql"
   done

@@ -7,6 +7,7 @@ import {
   FileText,
   Info,
   LayoutDashboard,
+  Bell,
   LogOut,
   Moon,
   ShieldCheck,
@@ -36,6 +37,7 @@ import {
 import { AuroraBackground } from '@/components/ui/Surface';
 import { traceAuth } from '@/lib/authTrace';
 import { config, configIssues } from '@/lib/config';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
 import { AccountDeletionBlockedError } from '@/repositories/auth';
 import { useAuth } from '@/providers/AuthProvider';
 import { useConnectivity } from '@/providers/ConnectivityProvider';
@@ -212,6 +214,21 @@ export default function SettingsScreen() {
           </GlassCard>
         </View>
 
+        {/* ---------------------------- Notificações ------------------------- */}
+        {/*
+          O pedido de permissão mora AQUI, e não na abertura do aplicativo.
+
+          Um diálogo do sistema na primeira tela, antes de a pessoa saber o que
+          o Easy Trip faz, é recusado por reflexo — e o sistema operacional não
+          pergunta de novo. Perguntar no lugar errado gasta a única chance.
+        */}
+        <View>
+          <SectionHeader title="Avisos" />
+          <GlassCard>
+            <PushRow />
+          </GlassCard>
+        </View>
+
         {/* --------------------------- Administration ------------------------ */}
         {/*
           Só existe para quem é admin (§17, §18). Para conta comum a seção não é
@@ -344,6 +361,94 @@ export default function SettingsScreen() {
         onConfirm={() => void handleDelete()}
         onCancel={() => setConfirmDelete(false)}
       />
+    </View>
+  );
+}
+
+/* ----------------------------- Notificações ------------------------------- */
+
+/**
+ * Ligar ou desligar os avisos fora do aplicativo (§33).
+ *
+ * Quatro estados, e cada um diz uma coisa diferente:
+ *
+ *   indisponível  não há como receber neste ambiente (emulador, navegador).
+ *                 A linha explica em vez de oferecer um controle inerte.
+ *   bloqueado     a pessoa recusou, e o sistema não pergunta de novo. O texto
+ *                 aponta os ajustes do aparelho — que é onde a decisão vive.
+ *   ligado        recebendo. O botão desliga.
+ *   desligado     o botão pede a permissão e registra o aparelho.
+ *
+ * O que a linha NÃO faz é prometer: enquanto o aparelho não estiver registrado,
+ * ela não diz que os avisos chegam.
+ */
+function PushRow() {
+  const theme = useTheme();
+  const toast = useToast();
+  const { permission, enabled, blocked, unavailable, enable, disable } = usePushNotifications();
+  const [pending, setPending] = useState(false);
+
+  const handle = async () => {
+    setPending(true);
+    try {
+      if (enabled) {
+        await disable();
+        toast.success('Avisos desligados neste aparelho');
+      } else {
+        const ok = await enable();
+        if (ok) toast.success('Avisos ligados neste aparelho');
+        else if (permission === 'denied') {
+          toast.error('Permissão recusada. Ative nos ajustes do aparelho.');
+        } else {
+          // Falha silenciosa do registro: backend sem a 0016, ou sem rede. Os
+          // avisos continuam existindo na Central — a mensagem diz isso.
+          toast.error('Não foi possível ligar os avisos agora. Eles continuam na Central.');
+        }
+      }
+    } finally {
+      setPending(false);
+    }
+  };
+
+  if (unavailable) {
+    return (
+      <View style={{ gap: theme.spacing.xs, paddingVertical: theme.spacing.sm }}>
+        <AppText variant="body" weight="semibold">
+          Avisos fora do aplicativo
+        </AppText>
+        <AppText variant="caption" color="secondary">
+          Este ambiente não recebe notificações do sistema. Os avisos da viagem continuam
+          na Central, dentro do aplicativo.
+        </AppText>
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ gap: theme.spacing.md, paddingVertical: theme.spacing.sm }}>
+      <View style={{ gap: theme.spacing.xs }}>
+        <AppText variant="body" weight="semibold">
+          Avisos fora do aplicativo
+        </AppText>
+        <AppText variant="caption" color="secondary">
+          {blocked
+            ? 'Você recusou as notificações. Para receber, ative o Easy Trip nos ajustes de notificação do aparelho.'
+            : enabled
+              ? 'Este aparelho recebe avisos de convites, lembretes e do resumo diário da viagem.'
+              : 'Receba convites, lembretes e o resumo diário sem precisar abrir o aplicativo. Nenhum valor em dinheiro nem trecho de diário aparece na tela de bloqueio.'}
+        </AppText>
+      </View>
+
+      {blocked ? null : (
+        <Button
+          label={enabled ? 'Desligar avisos' : 'Ligar avisos'}
+          icon={Bell}
+          variant={enabled ? 'ghost' : 'secondary'}
+          size="sm"
+          loading={pending}
+          onPress={() => void handle()}
+        />
+      )}
     </View>
   );
 }

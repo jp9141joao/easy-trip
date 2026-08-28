@@ -71,6 +71,7 @@ import {
   reminders as reminderCollection,
   suggestions as suggestionCollection,
   travelReservations as travelReservationCollection,
+  localPushTokenRepository,
 } from './collaboration';
 
 /* --------------------------- persistent collections ----------------------- */
@@ -646,6 +647,7 @@ export const localDataSource: DataSource = {
   insurance: insuranceRepository,
   members: createLocalMembership(async (tripId) => (await trips.byId(tripId))?.userId ?? null),
   notifications: localNotificationRepository,
+  pushTokens: localPushTokenRepository,
   reminders: localReminderRepository,
   travelReservations: localTravelReservationRepository,
   suggestions: createLocalSuggestions(
