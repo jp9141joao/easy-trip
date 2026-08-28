@@ -75,6 +75,112 @@ describe('card de ação', () => {
     expect(onReview).toHaveBeenCalledTimes(1);
   });
 
+  it('a action que o servidor devolveu chega à tela como card (caso do Android)', () => {
+    /*
+     * O ELO QUE NINGUÉM MEDIA.
+     *
+     * Havia teste para `parseAIActions` e teste para o `AIActionCard`, cada um
+     * com seu fixture. Entre os dois ficava a pergunta que o aparelho fez:
+     * "o servidor mandou 1 action e a tela mostrou zero card — onde ela
+     * sumiu?". Este teste parte do CORPO da resposta HTTP, exatamente como ele
+     * chega pela rede, e termina no texto renderizado.
+     *
+     * O `content` é a frase real que apareceu no Android prometendo proposta:
+     * com action existindo ela é legítima, e o card tem de estar lá embaixo.
+     */
+    const corpoHttp = {
+      content: 'A proposta está pronta para revisão e aplicação.',
+      actions: [
+        {
+          type: 'itinerary.add',
+          label: 'Adicionar 3 itens ao roteiro',
+          items: [
+            { title: 'Senso-ji', date: '2026-08-23', startTime: '09:00' },
+            { title: 'Almoço em Asakusa', date: '2026-08-23', startTime: '12:30' },
+            { title: 'Shibuya Crossing', date: '2026-08-23', startTime: '16:00' },
+          ],
+        },
+      ],
+    };
+
+    // 1. o cliente valida o que veio pela rede
+    const acoes = parseAIActions(corpoHttp.actions, paris);
+    expect(acoes).toHaveLength(1);
+
+    // 2. o que o estado da mensagem guardaria é o mesmo array
+    const doEstado = acoes;
+    expect(doEstado).toHaveLength(1);
+
+    // 3. e a tela mostra o card — 1 no estado NUNCA pode virar 0 renderizado
+    const view = render(
+      <AIActionCard
+        actions={doEstado}
+        applied={false}
+        pending={false}
+        onReview={jest.fn()}
+        onImplement={jest.fn()}
+      />,
+    );
+
+    expect(view.getByText('Adicionar 3 itens ao roteiro')).toBeTruthy();
+    expect(view.getByText('Implementar')).toBeTruthy();
+  });
+
+  it('o roteiro de São Paulo — data preenchida pelo servidor — chega à tela como card', () => {
+    /*
+     * NÍVEL 3 do caso 2026-08-28T02:24:35Z.
+     *
+     * O corpo HTTP aqui é o que a v13 devolve para a MESMA resposta do Gemini
+     * que a v12 descartou: cinco atividades com título e sem `date`, com a
+     * data-alvo (28/08) preenchida pelo servidor antes da validação. O que se
+     * mede é o fim da linha — 1 action no corpo, 1 no estado, 1 card na tela.
+     */
+    const saoPaulo: Trip = {
+      ...paris,
+      id: 'trip-sp',
+      destinationCity: 'São Paulo',
+      destinationCountry: 'Brasil',
+      countryCode: 'BR',
+      timezone: 'America/Sao_Paulo',
+      startDate: '2026-08-27',
+      endDate: '2026-08-28',
+    };
+
+    const corpoHttp = {
+      content: 'A proposta está pronta para revisão e aplicação.',
+      actions: [
+        {
+          type: 'itinerary.add',
+          label: 'Adicionar 5 itens ao roteiro',
+          items: [
+            { title: 'Café no Mercado Municipal', date: '2026-08-28', startTime: '09:00' },
+            { title: 'MASP', date: '2026-08-28', startTime: '11:00' },
+            { title: 'Almoço na Bela Vista', date: '2026-08-28', startTime: '13:00' },
+            { title: 'Parque Ibirapuera', date: '2026-08-28', startTime: '16:00' },
+            { title: 'Jantar na Vila Madalena', date: '2026-08-28', startTime: '20:00' },
+          ],
+        },
+      ],
+    };
+
+    const acoes = parseAIActions(corpoHttp.actions, saoPaulo);
+    expect(acoes).toHaveLength(1);
+    expect(acoes[0].type === 'itinerary.add' && acoes[0].items).toHaveLength(5);
+
+    const view = render(
+      <AIActionCard
+        actions={acoes}
+        applied={false}
+        pending={false}
+        onReview={jest.fn()}
+        onImplement={jest.fn()}
+      />,
+    );
+
+    expect(view.getByText('Adicionar 5 itens ao roteiro')).toBeTruthy();
+    expect(view.getByText('Implementar')).toBeTruthy();
+  });
+
   it('não existe card quando a resposta não trouxe proposta (§17)', () => {
     const view = render(
       <AIActionCard

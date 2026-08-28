@@ -32,6 +32,7 @@ import {
   describeUpstreamFailure,
   discloseIncompleteItinerary,
   classifyUpstreamException,
+  FULL_DAY_MIN_ITEMS,
   classifyUpstreamResponse,
   countCandidates,
   enforcePromiseCoherence,
@@ -43,8 +44,10 @@ import {
   needsItineraryRepair,
   pickBetterItinerary,
   readModelOutput,
+  resolveFullDayDate,
   runModelChain,
   type AIModelConfig,
+  type TripWindow,
   type ModelAttemptLog,
   type ModelCallResult,
   type RateLimitSignals,
@@ -109,6 +112,26 @@ function sanitizeContext(context: unknown): unknown {
     // contexto (§15). Esta função não consulta o banco e não teria como
     // acrescentá-lo nem se quisesse.
     collaboration: c.collaboration ?? null,
+  };
+}
+
+/**
+ * Os três campos de calendário que o contexto já traz.
+ *
+ * `trip.today` vem do aplicativo no fuso do DESTINO — é o que permite resolver
+ * "amanhã" sem supor o fuso de quem pergunta. Nada aqui é opcional por
+ * conveniência: sem o período, `resolveFullDayDate` devolve `null` e nenhuma
+ * data é preenchida.
+ */
+function readTripWindow(context: unknown): TripWindow | null {
+  const trip = (context as { trip?: unknown } | null)?.trip;
+  if (!trip || typeof trip !== 'object') return null;
+  const t = trip as Record<string, unknown>;
+  const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
+  return {
+    today: text(t.today),
+    startDate: text(t.startDate),
+    endDate: text(t.endDate),
   };
 }
 
@@ -193,6 +216,24 @@ Deno.serve(async (req) => {
    * errada.
    */
   const itineraryRequest = classifyItineraryRequest(prompt, history);
+
+  /**
+   * A DATA QUE ESTE PEDIDO TEM — quando ela é uma só.
+   *
+   * O caso real: "Monte um roteiro para amanhã", viagem de 27 a 28/08, e o
+   * modelo devolveu cinco atividades com título e sem `date`. A proposta
+   * inteira foi descartada em `validateActions` por falta de um campo cujo
+   * valor o servidor já conhecia — `trip.today` mais o período da viagem dão
+   * "amanhã" sem ambiguidade nenhuma.
+   *
+   * Resolvida aqui, e não dentro do parser, porque depende do CONTEXTO da
+   * requisição. `null` quando a leitura não é única — e `null` significa que
+   * nada será preenchido.
+   */
+  const tripWindow = readTripWindow(context);
+  const fullDayDate = itineraryRequest.expectsFullDay
+    ? resolveFullDayDate(prompt, history, tripWindow)
+    : null;
 
   /*
    * O ORÇAMENTO DE TEMPO DESTA REQUISIÇÃO.
@@ -554,7 +595,7 @@ Deno.serve(async (req) => {
      * decidiria em cima de um texto já editado. A coerência é aplicada uma vez
      * só, no fim, com a contagem final de actions.
      */
-    let output = readModelOutput(rawText, { enforceCoherence: false });
+    let output = readModelOutput(rawText, { enforceCoherence: false, fullDayDate });
 
     /*
      * UMA tentativa de completar, na mesma requisição (§5 do handoff).
@@ -636,7 +677,7 @@ Deno.serve(async (req) => {
         if (repairedText) {
           output = pickBetterItinerary(
             output,
-            readModelOutput(repairedText, { enforceCoherence: false }),
+            readModelOutput(repairedText, { enforceCoherence: false, fullDayDate }),
           );
         }
       } else {
@@ -728,11 +769,65 @@ Deno.serve(async (req) => {
       );
     }
 
+    /*
+     * O CONTRATO FALHOU MAS A RESPOSTA É 200 — E ISSO PRECISA APARECER SEMPRE.
+     *
+     * Esta linha nasceu de uma investigação que não pôde ser feita pelos logs.
+     * No aparelho, um pedido de dia inteiro voltou 200 sem action nenhuma; as
+     * contagens que explicariam onde o número virou zero existiam, mas viviam
+     * atrás de `DEBUG_ACTIONS`, desligado em produção. Sobrou ler código.
+     *
+     * Um dia inteiro que termina abaixo do piso é exatamente o caso que
+     * ninguém quer descobrir depois. Ele sai sem depender de flag — e continua
+     * sendo só número: nenhum prompt, nenhum texto, nenhum dado da viagem.
+     */
+    const finalActionCount = actions.length;
+    const itensFinais = itineraryItemCount(actions);
+    if (itineraryRequest.expectsFullDay && itensFinais < FULL_DAY_MIN_ITEMS) {
+      console.warn(
+        'ai_chat_contract_unmet',
+        diagnostics('FULL_DAY_UNMET', {
+          fullDayRequest: true,
+          acceptsPriorOffer: itineraryRequest.acceptsPriorOffer,
+          rawActionCount: output.stats.rawActions,
+          validActionCount: output.stats.validActions,
+          finalActionCount,
+          itineraryItems: itensFinais,
+          strippedPromises: coherent.stripped,
+          /*
+           * O CAMPO QUE FECHA A PERGUNTA.
+           *
+           * `rawActionCount: 1, validActionCount: 0` disse que a proposta
+           * morreu na validação, e não conseguiu dizer em qual campo. Estes
+           * rótulos dizem — sem carregar nenhum valor de campo.
+           */
+          dropReasons: output.stats.drops.reasons,
+          itemsNoTitle: output.stats.drops.itemsNoTitle,
+          itemsNoDate: output.stats.drops.itemsNoDate,
+          /*
+           * `itemsNoDate: 5` provou o campo e não a causa. Estes três separam
+           * as três histórias possíveis: o modelo não mandou data nenhuma, ele
+           * mandou algo que não é data, ou o servidor preencheu a data que
+           * resolveu. Continuam sendo só números.
+           */
+          itemsDateMissing: output.stats.drops.itemsDateMissing,
+          itemsDateInvalid: output.stats.drops.itemsDateInvalid,
+          itemsDateFilled: output.stats.drops.itemsDateFilled,
+          /* Booleano, e não a data: o dia da viagem é dado privado. */
+          fullDayDateResolved: fullDayDate !== null,
+          parsed: output.stats.parsed,
+          repairSkippedForTime,
+          selectedModelIndex,
+        }),
+      );
+    }
+
     if (DEBUG_ACTIONS) {
       // Só contagens. Ver a nota em `DEBUG_ACTIONS`.
       console.log(
         'ai_chat_actions',
         diagnostics('SUCCESS', {
+          finalActionCount,
           upstreamStatus: 200,
           upstreamCode: null,
           candidateCount,
@@ -742,6 +837,13 @@ Deno.serve(async (req) => {
           rawActionCount: output.stats.rawActions,
           validActionCount: output.stats.validActions,
           strippedPromises: coherent.stripped,
+          dropReasons: output.stats.drops.reasons,
+          itemsNoTitle: output.stats.drops.itemsNoTitle,
+          itemsNoDate: output.stats.drops.itemsNoDate,
+          itemsDateMissing: output.stats.drops.itemsDateMissing,
+          itemsDateInvalid: output.stats.drops.itemsDateInvalid,
+          itemsDateFilled: output.stats.drops.itemsDateFilled,
+          fullDayDateResolved: fullDayDate !== null,
           fullDayRequest: itineraryRequest.expectsFullDay,
           acceptsPriorOffer: itineraryRequest.acceptsPriorOffer,
           repairSkippedForTime,

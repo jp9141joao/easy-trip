@@ -141,9 +141,12 @@ Regras absolutas sobre actions:
    de quem pergunta. Se a pessoa pedir algo fora do período da viagem, diga
    isso em vez de ajustar em silêncio.
 
-7. Itens de roteiro exigem 'title' e 'date' (formato AAAA-MM-DD). Item sem os
-   dois é descartado pelo sistema — e uma proposta que fica vazia depois do
-   descarte vira uma promessa quebrada na tela. Preencha os dois sempre.
+7. TODO item de 'items' exige 'title' e 'date' (formato AAAA-MM-DD) — o
+   schema não aceita item sem os dois. Em roteiro, 'date' é o dia da atividade.
+   Em checklist e despesa, repita em 'date' a mesma data que você colocou em
+   'dueDate' ou 'transactionDate'. Item sem os dois é descartado pelo sistema —
+   e uma proposta que fica vazia depois do descarte vira uma promessa quebrada
+   na tela.
 
 8. Despesas: use estimated=false SOMENTE quando a pessoa informou o valor na
    conversa ("minha passagem custou R$ 3.200"). Em todo o resto use
@@ -380,11 +383,34 @@ const PRIORITIES = ['low', 'medium', 'high'];
 /**
  * O schema declarado à API do Gemini.
  *
- * Um único formato de item, com todos os campos opcionais, em vez de uma união
- * por tipo de ação: `responseSchema` não expressa união discriminada, e tentar
- * simulá-la produz um schema que o modelo interpreta mal. Quem separa item de
- * roteiro de item de despesa é `validateActions`, logo abaixo — que é onde a
- * separação precisa mesmo estar, já que é ela que decide o que vale.
+ * UM ÚNICO FORMATO DE ITEM, E POR QUÊ
+ *
+ * `responseSchema` é o subconjunto OpenAPI que a Gemini aceita: não há união
+ * discriminada nem campo condicional por valor de `type`. Declarar quatro
+ * formatos de item exigiria um `anyOf` cuja aceitação não dá para verificar
+ * sem gastar uma chamada real — e um schema recusado devolve 400 para TODA
+ * requisição, não só para a que se queria melhorar. Então o formato é um só, e
+ * quem separa item de roteiro de item de despesa continua sendo
+ * `validateActions`, logo abaixo.
+ *
+ * O QUE MUDOU: `required` NO ITEM.
+ *
+ * O item vinha com TODOS os campos opcionais enquanto `validateActions` exigia
+ * `title` e `date` em `itinerary.add`. Os dois lados do contrato discordavam, e
+ * em produção o modelo cumpriu o schema e falhou o validador: a requisição de
+ * 2026-08-28T02:24:35Z registrou `dropReasons: ["ITEMS_INVALID"]`,
+ * `itemsNoTitle: 0`, `itemsNoDate: 5` — cinco atividades com título, nenhuma
+ * com data, e a proposta inteira descartada em silêncio.
+ *
+ * `required: ['title', 'date']` fecha essa divergência no lugar certo: o
+ * modelo não tem mais como omitir os dois campos e continuar dentro do
+ * contrato. É o denominador comum mais estrito que serve aos quatro tipos —
+ * `checklist.add` lê `label ?? title`, `expenses.add` lê
+ * `description ?? title ?? label` e `transactionDate ?? date`, então exigir
+ * `title` e `date` de todo item não tira nada de ninguém e devolve à
+ * `itinerary.add` a exigência que ela sempre teve no validador. As regras que
+ * NÃO cabem no denominador comum (`amount` de despesa, por exemplo) seguem em
+ * `validateActions`, que é onde um schema sem discriminação não alcança.
  *
  * `actions` é **required** de propósito. Com o campo opcional, o modelo tinha
  * a saída de menor esforço de simplesmente não emiti-lo — e uma resposta que
@@ -411,10 +437,17 @@ export const RESPONSE_SCHEMA = {
             items: {
               type: 'OBJECT',
               properties: {
-                title: { type: 'STRING' },
+                title: {
+                  type: 'STRING',
+                  description: 'Nome curto e não vazio do item. Obrigatório.',
+                },
                 label: { type: 'STRING' },
                 description: { type: 'STRING' },
-                date: { type: 'STRING' },
+                date: {
+                  type: 'STRING',
+                  description:
+                    'Data do item no formato AAAA-MM-DD, dentro do período da viagem. Obrigatório.',
+                },
                 startTime: { type: 'STRING' },
                 endTime: { type: 'STRING' },
                 placeName: { type: 'STRING' },
@@ -427,6 +460,9 @@ export const RESPONSE_SCHEMA = {
                 transactionDate: { type: 'STRING' },
                 estimated: { type: 'BOOLEAN' },
               },
+              // O par que `validateActions` sempre exigiu de `itinerary.add` e
+              // que o schema deixava opcional. Ver a nota acima.
+              required: ['title', 'date'],
             },
           },
           budgetTotal: { type: 'NUMBER' },
@@ -487,6 +523,21 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value.slice(0, LIMITS.maxItems) : [];
 }
 
+/**
+ * O item trouxe ALGUM campo de data preenchido?
+ *
+ * Não pergunta se a data é válida — pergunta se o modelo escreveu alguma
+ * coisa ali. É a diferença entre uma omissão, que o servidor pode preencher
+ * com a data que resolveu, e um valor ilegível, que ele não pode sobrescrever
+ * sem trocar a escolha do modelo pela dele.
+ */
+function hasDateValue(item: Record<string, unknown> | undefined): boolean {
+  if (!item) return false;
+  return [item.date, item.dueDate, item.transactionDate].some(
+    (value) => typeof value === 'string' && value.trim().length > 0,
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -505,19 +556,84 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  * viagem e não tem como propor um. Quem carimba o vínculo é o cliente, com a
  * viagem em que a conversa está.
  */
-export function validateActions(raw: unknown): unknown[] {
+/**
+ * POR QUE UMA ACTION FOI DESCARTADA — em rótulo fechado, nunca em conteúdo.
+ *
+ * `rawActionCount: 1, validActionCount: 0` foi o que os logs de produção
+ * mostraram: o Gemini devolveu a proposta e ESTA função a recusou. O número
+ * provou ONDE, e não conseguiu dizer POR QUÊ — e o payload não pode ser
+ * logado, porque carrega o roteiro e o contexto da viagem.
+ *
+ * Estes rótulos são a saída: dizem qual campo faltou sem transportar o valor
+ * de campo nenhum. É a diferença entre "a action sumiu na validação" e "todos
+ * os itens vieram sem `date`".
+ */
+export type ActionDropReason =
+  | 'NOT_OBJECT'
+  | 'BAD_TYPE'
+  | 'DUPLICATE_TYPE'
+  | 'NO_ITEMS'
+  | 'ITEMS_INVALID'
+  | 'NO_PAYLOAD';
+
+export interface ActionDropLog {
+  /** Motivo por action recusada, na ordem em que aconteceram. */
+  reasons: ActionDropReason[];
+  /** Entre os itens de roteiro recusados, quantos falharam em cada campo. */
+  itemsNoTitle: number;
+  itemsNoDate: number;
+  /**
+   * `itemsNoDate` PROVOU O CAMPO, E NÃO A CAUSA.
+   *
+   * "Cinco itens sem data" tem duas leituras opostas, e elas pedem correções
+   * opostas: o modelo NÃO MANDOU campo de data nenhum (o contrato permitia, e
+   * é isso que o servidor pode preencher com a data que ele mesmo resolveu),
+   * ou mandou um valor que não é `AAAA-MM-DD` (e aí preencher seria trocar a
+   * data que o modelo escolheu por outra — invenção, não normalização).
+   *
+   * Os dois contadores separam as duas. Continuam sendo só números.
+   */
+  itemsDateMissing: number;
+  itemsDateInvalid: number;
+  /** Quantos tiveram a data-alvo do servidor preenchida antes da validação. */
+  itemsDateFilled: number;
+}
+
+export function newActionDropLog(): ActionDropLog {
+  return {
+    reasons: [],
+    itemsNoTitle: 0,
+    itemsNoDate: 0,
+    itemsDateMissing: 0,
+    itemsDateInvalid: 0,
+    itemsDateFilled: 0,
+  };
+}
+
+export function validateActions(raw: unknown, drops?: ActionDropLog): unknown[] {
   if (!Array.isArray(raw)) return [];
 
   const out: unknown[] = [];
   const seen = new Set<string>();
+  const nota = (reason: ActionDropReason) => drops?.reasons.push(reason);
 
   for (const entry of raw) {
     if (out.length >= LIMITS.maxActions) break;
     const action = asRecord(entry);
-    if (!action) continue;
+    if (!action) {
+      nota('NOT_OBJECT');
+      continue;
+    }
 
     const type = oneOf(action.type, ACTION_TYPES);
-    if (!type || seen.has(type)) continue;
+    if (!type) {
+      nota('BAD_TYPE');
+      continue;
+    }
+    if (seen.has(type)) {
+      nota('DUPLICATE_TYPE');
+      continue;
+    }
 
     // Rótulo ausente já custou uma proposta inteira em produção: o modelo
     // devolvia roteiro válido sem `label` e a ação era descartada aqui, calada.
@@ -526,9 +642,12 @@ export function validateActions(raw: unknown): unknown[] {
     const label = str(action.label, LIMITS.maxLabel) ?? DEFAULT_LABEL[type];
 
     if (type === 'itinerary.add') {
-      const items = asArray(action.items)
+      // O bruto fica à mão: sem ele não dá para distinguir "não veio campo de
+      // data" de "veio um valor que não é data", e são causas diferentes.
+      const brutos = asArray(action.items)
         .map(asRecord)
-        .filter((item): item is Record<string, unknown> => item !== null)
+        .filter((item): item is Record<string, unknown> => item !== null);
+      const items = brutos
         .map((item) => ({
           title: str(item.title ?? item.label, LIMITS.maxTitle),
           date: isoDate(item.date ?? item.dueDate ?? item.transactionDate),
@@ -538,8 +657,21 @@ export function validateActions(raw: unknown): unknown[] {
           description: str(item.description, LIMITS.maxText),
           placeName: str(item.placeName, 200),
         }))
-        .filter((item) => item.title && item.date);
-      if (!items.length) continue;
+        .filter((item, index) => {
+          // Contado ANTES do descarte: é o que separa "veio sem título" de
+          // "veio sem data" quando a proposta inteira se perde.
+          if (!item.title) drops && (drops.itemsNoTitle += 1);
+          if (!item.date && drops) {
+            drops.itemsNoDate += 1;
+            if (hasDateValue(brutos[index])) drops.itemsDateInvalid += 1;
+            else drops.itemsDateMissing += 1;
+          }
+          return item.title && item.date;
+        });
+      if (!items.length) {
+        nota(asArray(action.items).length === 0 ? 'NO_ITEMS' : 'ITEMS_INVALID');
+        continue;
+      }
       out.push({ type, label, items });
       seen.add(type);
       continue;
@@ -556,7 +688,10 @@ export function validateActions(raw: unknown): unknown[] {
           dueDate: isoDate(item.dueDate),
         }))
         .filter((item) => item.label);
-      if (!items.length) continue;
+      if (!items.length) {
+        nota(asArray(action.items).length === 0 ? 'NO_ITEMS' : 'ITEMS_INVALID');
+        continue;
+      }
       out.push({ type, label, items });
       seen.add(type);
       continue;
@@ -577,7 +712,10 @@ export function validateActions(raw: unknown): unknown[] {
           estimated: item.estimated === false ? false : true,
         }))
         .filter((item) => item.description && item.amount !== undefined && item.transactionDate);
-      if (!items.length) continue;
+      if (!items.length) {
+        nota(asArray(action.items).length === 0 ? 'NO_ITEMS' : 'ITEMS_INVALID');
+        continue;
+      }
       out.push({ type, label, items });
       seen.add(type);
       continue;
@@ -585,7 +723,10 @@ export function validateActions(raw: unknown): unknown[] {
 
     if (type === 'budget.update') {
       const budgetTotal = amount(action.budgetTotal, LIMITS.maxBudget);
-      if (budgetTotal === undefined) continue;
+      if (budgetTotal === undefined) {
+        nota('NO_PAYLOAD');
+        continue;
+      }
       out.push({ type, label, budgetTotal });
       seen.add(type);
       continue;
@@ -593,10 +734,16 @@ export function validateActions(raw: unknown): unknown[] {
 
     if (type === 'goal.add') {
       const goal = asRecord(action.goal);
-      if (!goal) continue;
+      if (!goal) {
+        nota('NO_PAYLOAD');
+        continue;
+      }
       const title = str(goal.title, LIMITS.maxTitle);
       const targetValue = amount(goal.targetValue, LIMITS.maxBudget);
-      if (!title || targetValue === undefined) continue;
+      if (!title || targetValue === undefined) {
+        nota('NO_PAYLOAD');
+        continue;
+      }
       out.push({
         type,
         label,
@@ -722,7 +869,48 @@ const PROMISE_PATTERNS = [
   /\b(adicione|adicionar|aplique|aplicar|implemente|implementar)\b[^.!?\n]{0,40}\babaixo\b/i,
   /\bse quiser\b[^.!?\n]{0,30}\b(aplico|adiciono|implemento|incluo)\b/i,
   /\bposso (adicionar|aplicar|implementar|registrar|incluir)\b/i,
+  /*
+   * O SUBSTANTIVO ESCAPAVA — e era exatamente o que o modelo escrevia.
+   *
+   * "A proposta está pronta para revisão e aplicação." passou intacta no
+   * aparelho, com zero actions: `revise|revisar` pega o verbo, e o texto
+   * trazia o SUBSTANTIVO. Não foi azar de redação. O system prompt manda
+   * escrever que "a proposta está pronta para revisão" — então esta é a frase
+   * mais provável do fluxo, e era a única que o filtro não via.
+   *
+   * Sem action, "revisão", "aplicação", "aplicar" e "implementar" apontam
+   * todos para um controle que não existe na tela.
+   */
+  /\brevis(?:ão|ao|ões|oes)\b/i,
+  /\baplica(?:ção|cao|ções|coes)\b/i,
+  /\b(implementar|implemente|implemento|aplicar|aplique|aplico)\b/i,
+  /\bpropost[ao]\b[^.!?\n]{0,40}\bpront[ao]\b/i,
+  /\bpront[ao]\b[^.!?\n]{0,40}\b(propost|sugest|roteiro)/i,
 ];
+
+/**
+ * A FRASE QUE NEGA A PROPOSTA É O OPOSTO DE UMA PROMESSA — e não pode ser cortada.
+ *
+ * "Não consegui montar um roteiro completo — o que segue é só o que tenho, sem
+ * proposta para aplicar." contém "aplicar", e por isso caía no filtro assim que
+ * os verbos soltos entraram. Cortá-la seria remover justamente a honestidade
+ * que `discloseIncompleteItinerary` acabou de acrescentar, e devolver a pessoa
+ * ao texto genérico.
+ *
+ * A distinção não é de vocabulário, é de sinal: prometer aplicação e declarar
+ * que não há o que aplicar usam as mesmas palavras. Esta guarda lê o sinal.
+ */
+const HONEST_ABSENCE = [
+  /\bn(?:ão|ao)\s+(?:consegui|foi poss(?:í|i)vel|tenho|h(?:á|a)|existe|existem)\b/i,
+  /\bsem\s+(?:proposta|sugest(?:ão|ao)|nada)\b/i,
+  /\bnada\s+(?:para|pra)\s+(?:aplicar|implementar|revisar|adicionar)\b/i,
+  /\bn(?:ão|ao)\s+(?:cheguei|montei|produzi)\b/i,
+];
+
+/** A frase declara ausência de proposta? Então ela FICA. */
+function declaresAbsence(sentence: string): boolean {
+  return HONEST_ABSENCE.some((pattern) => pattern.test(sentence));
+}
 
 /** Divide UMA linha em frases, preservando a pontuação. */
 function splitSentences(text: string): string[] {
@@ -786,7 +974,9 @@ export function enforcePromiseCoherence(
 
     const sentences = splitSentences(linha);
     const kept = sentences.filter(
-      (sentence) => !PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
+      (sentence) =>
+        declaresAbsence(sentence) ||
+        !PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
     );
     stripped += sentences.length - kept.length;
 
@@ -815,7 +1005,14 @@ export interface ModelOutput {
   content: string;
   actions: unknown[];
   /** Contagens para a instrumentação — números, nunca conteúdo. */
-  stats: { rawActions: number; validActions: number; strippedPromises: number; parsed: boolean };
+  stats: {
+    rawActions: number;
+    validActions: number;
+    strippedPromises: number;
+    parsed: boolean;
+    /** Por que as recusadas foram recusadas. Rótulos fechados. */
+    drops: ActionDropLog;
+  };
 }
 
 /**
@@ -830,14 +1027,14 @@ export interface ModelOutput {
  */
 export function readModelOutput(
   rawText: string,
-  options: { enforceCoherence?: boolean } = {},
+  options: { enforceCoherence?: boolean; fullDayDate?: string | null } = {},
 ): ModelOutput {
   // O reparo de roteiro (abaixo) precisa ver a resposta **antes** do corte de
   // promessas: uma resposta que promete "montei seu dia" sem action é
   // exatamente a que deve ser reparada, e cortar a frase primeiro apagaria o
   // sinal. Quem pede `enforceCoherence: false` assume o compromisso de chamar
   // `enforcePromiseCoherence` no fim, com a contagem final de actions.
-  const { enforceCoherence = true } = options;
+  const { enforceCoherence = true, fullDayDate = null } = options;
   const coerce = (text: string, count: number) =>
     enforceCoherence ? enforcePromiseCoherence(text, count) : { content: text, stripped: 0 };
 
@@ -849,12 +1046,26 @@ export function readModelOutput(
     return {
       content: coherent.content,
       actions: [],
-      stats: { rawActions: 0, validActions: 0, strippedPromises: coherent.stripped, parsed: false },
+      stats: {
+        rawActions: 0,
+        validActions: 0,
+        strippedPromises: coherent.stripped,
+        parsed: false,
+        drops: newActionDropLog(),
+      },
     };
   }
 
   const rawActions = Array.isArray(record.actions) ? record.actions : [];
-  const actions = validateActions(rawActions);
+  const drops = newActionDropLog();
+  /*
+   * A normalização vem ANTES da validação — é a única ordem em que ela serve
+   * para alguma coisa. Depois, a proposta já teria sido descartada.
+   */
+  const actions = validateActions(
+    normalizeItineraryDates(rawActions, fullDayDate, drops),
+    drops,
+  );
   const text = typeof record.content === 'string' ? record.content.trim() : '';
   const coherent = coerce(text || rawText, actions.length);
 
@@ -866,6 +1077,7 @@ export function readModelOutput(
       validActions: actions.length,
       strippedPromises: coherent.stripped,
       parsed: true,
+      drops,
     },
   };
 }
@@ -921,6 +1133,41 @@ const FULL_DAY_PATTERNS = [
   /\bcomo (fica|seria|ficaria)\b[^.!?]{0,20}\b(meu )?dia\b/,
 ];
 
+/**
+ * NOMEAR UM DIA JÁ É PEDIR O DIA.
+ *
+ * "Tokyo dia 18 de setembro" não tem verbo, não tem a palavra "roteiro" e não
+ * casava com nenhum padrão acima — então `expectsFullDay` saía falso, o reparo
+ * nunca rodava e o piso de 3 paradas nunca era cobrado. Foi assim que uma
+ * resposta sem action nenhuma passou por sucesso no aparelho.
+ *
+ * O system prompt já trata "dia 18 de setembro" como pedido de dia inteiro
+ * (regra 14). O classificador é que discordava dele — e quem decide se vale
+ * uma segunda chamada é o classificador.
+ */
+const DATE_ONLY_REQUEST = [
+  /\b(?:n?o\s+)?dia\s+\d{1,2}\b/,
+  /\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/,
+  /\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/,
+  /\bprimeiro dia da viagem\b/,
+];
+
+/**
+ * O que NÃO é pedido de roteiro, mesmo nomeando um dia.
+ *
+ * "Quanto gastei no dia 18?" cita a data e é leitura — devolver um roteiro
+ * seria responder outra pergunta. A lista é de intenção de CONSULTA, e ela
+ * vence o gatilho de data.
+ */
+const READ_INTENT_PATTERNS = [
+  /\b(quanto|quantos|quantas|qual|quais|quando|cade|tem|teria)\b/,
+  /\b(gastei|gasto|gastos|gastou|custou|custa|paguei|sobrou|resta|restou|falta|faltam)\b/,
+  /\b(orcamento|saldo|extrato|despesa|despesas|checklist|lista de compras)\b/,
+  /\b(previsao|clima|tempo|temperatura|cambio|cotacao)\b/,
+  /\b(ja (tenho|esta|estao|adicionei|coloquei))\b/,
+  /\bo que (ja|eu ja)\b/,
+];
+
 /** "Quero só um restaurante", "me indica um museu", "apenas uma atividade". */
 const SINGLE_ITEM_PATTERNS = [
   /\b(so|apenas|somente|unicamente)\b\s*(mais\s+)?(um|uma)\b/,
@@ -952,6 +1199,74 @@ const ACCEPTANCE_PATTERNS = [
 const ACCEPTANCE_MAX_WORDS = 5;
 
 /**
+ * O RUÍDO QUE VEM DEPOIS DO "SIM" — e que fazia o aceite ser perdido.
+ *
+ * "Pode ser para o dia 18 na vdd" é um aceite. Ele chegava aqui como sete
+ * palavras e morria no teto de cinco, antes mesmo de qualquer regex; e ainda
+ * que passasse, os padrões são ancorados (`^...$`) e não casariam com a cauda.
+ * O aparelho respondeu "não consegui montar uma proposta" a um "pode ser".
+ *
+ * A correção não é afrouxar o teto — isso deixaria "pode ser, mas troque o
+ * museu pelo parque" virar um sim. É REMOVER o que não altera a intenção — o
+ * reforço da data e o bordão final — e então medir o que sobrou. Quem escreve
+ * "pode ser para o dia 18" não está pedindo outra coisa: está dizendo sim e
+ * repetindo o dia.
+ */
+const FILLER_SUFFIXES =
+  /\s+(na (vdd|verdade)|entao|mesmo|por favor|pfv|pf|tb|tambem|ai|ne|pra mim|para mim|obrigado|obrigada|vlw|valeu)$/;
+
+/**
+ * "dia 18", "18 de setembro", "18/09", "18-09-2026", "no dia 18" — e o 18 nu.
+ *
+ * O número sozinho ("vamos de 18", "18 pode ser") entra porque, dentro de
+ * `isAcceptance`, ele só é lido depois de duas travas: o núcleo restante tem
+ * de ser um sim, e o turno anterior tem de ter oferecido uma data concreta.
+ * Fora desse par, "18" continua sendo apenas dezoito. O intervalo 1–31 é o que
+ * impede que "500 reais" ou "2026" sejam confundidos com um dia.
+ */
+const DATE_MENTION =
+  /\b(?:n?o\s+)?dia\s+\d{1,2}(?:\s+de\s+[a-z]+)?(?:\s+de\s+\d{2,4})?\b|\b\d{1,2}\s+de\s+[a-z]+(?:\s+de\s+\d{2,4})?\b|\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b|\b(?:[1-9]|[12]\d|3[01])\b/g;
+
+/** As preposições que sobram quando a data sai do meio da frase. */
+const DANGLING_PREPOSITIONS = /\b(para|pra|pro|no|na|em|de|do|da|o|a)\b/g;
+
+/**
+ * Tira da frase o que só REFORÇA o aceite, deixando o núcleo.
+ *
+ * "pode ser para o dia 18 na vdd" -> "pode ser"
+ * "dia 18 entao"                  -> ""        (aceite só com a data)
+ * "pode ser mas troque o museu"   -> "pode ser mas troque o museu" (intacto)
+ */
+function acceptanceCore(folded: string): { core: string; mencionaData: boolean } {
+  let texto = folded;
+  let mencionaData = false;
+
+  // O bordão sai primeiro: ele pode estar depois da data.
+  let anterior = '';
+  while (anterior !== texto) {
+    anterior = texto;
+    texto = texto.replace(FILLER_SUFFIXES, '').trim();
+  }
+
+  if (DATE_MENTION.test(texto)) {
+    mencionaData = true;
+    DATE_MENTION.lastIndex = 0;
+    texto = texto.replace(DATE_MENTION, ' ');
+    // "pode ser para o" -> "pode ser": a preposição órfã é resíduo da remoção,
+    // e só some no FIM, para não descaracterizar uma frase com pedido dentro.
+    let antes = '';
+    while (antes !== texto) {
+      antes = texto;
+      texto = texto.replace(/\s+/g, ' ').trim();
+      texto = texto.replace(new RegExp(`(?:${DANGLING_PREPOSITIONS.source})$`), '').trim();
+    }
+  }
+  DATE_MENTION.lastIndex = 0;
+
+  return { core: texto.replace(/\s+/g, ' ').trim(), mencionaData };
+}
+
+/**
  * A mensagem anterior do assistente ofereceu montar alguma coisa?
  *
  * Sem essa condição, um "sim" solto viraria pedido de roteiro em qualquer
@@ -966,22 +1281,72 @@ const OFFER_PATTERNS = [
   /\bposso (usar|considerar|assumir)\b[^.!?]{0,40}\bdia\b/,
 ];
 
+/**
+ * "Vamos de 18", "18 pode ser" — o aceite que só existe com a data ao lado.
+ *
+ * Estes não sobrevivem à remoção da data porque a data é parte da frase; o
+ * núcleo que sobra ("vamos de", "vamos") precisa ser reconhecido como sim.
+ */
+const ACCEPTANCE_WITH_DATE_PATTERNS = [
+  /^(vamos|vamos de|bora|bora de|fica|fica com|seja|manda|marca|agenda|fecha|fechou)$/,
+  /^(pode|pode ser|pode sim|quero|prefiro|melhor|entao|sim)$/,
+  /^(sim|isso|claro|ok|beleza|perfeito)\s+(pode|pode ser|vamos|manda|fecha)$/,
+];
+
 function isAcceptance(prompt: string): boolean {
   const folded = fold(prompt);
   if (!folded) return false;
-  if (folded.split(' ').length > ACCEPTANCE_MAX_WORDS) return false;
-  return ACCEPTANCE_PATTERNS.some((pattern) => pattern.test(folded));
+
+  // O caminho antigo, intacto: aceite curto e sem data.
+  if (
+    folded.split(' ').length <= ACCEPTANCE_MAX_WORDS &&
+    ACCEPTANCE_PATTERNS.some((pattern) => pattern.test(folded))
+  ) {
+    return true;
+  }
+
+  const { core, mencionaData } = acceptanceCore(folded);
+
+  /*
+   * SEM DATA NA FRASE, NADA MUDA.
+   *
+   * Só quem repetiu o dia ganha o caminho novo. É o que impede que uma frase
+   * longa qualquer passe a valer como aceite: a data é a evidência de que a
+   * pessoa está respondendo À OFERTA, e não abrindo assunto.
+   */
+  if (!mencionaData) return false;
+
+  // "Dia 18 então": sobrou nada. Responder só a data a uma oferta concreta de
+  // data é aceitar a oferta — não há outra leitura possível.
+  if (core.length === 0) return true;
+
+  if (core.split(' ').length > ACCEPTANCE_MAX_WORDS) return false;
+
+  return (
+    ACCEPTANCE_PATTERNS.some((pattern) => pattern.test(core)) ||
+    ACCEPTANCE_WITH_DATE_PATTERNS.some((pattern) => pattern.test(core))
+  );
+}
+
+/**
+ * O último turno do assistente no histórico, sem normalização.
+ *
+ * Cru porque `fold` troca `/` e `-` por espaço, e é exatamente o que uma data
+ * oferecida ("18/09/2026") precisa preservar para ser lida de volta.
+ */
+function lastAssistantRaw(history: readonly ChatTurn[]): string {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const turn = history[index];
+    if (!turn || typeof turn.content !== 'string') continue;
+    if (turn.role === 'assistant' || turn.role === 'model') return turn.content;
+    if (turn.role === 'user') return '';
+  }
+  return '';
 }
 
 /** O último turno do assistente no histórico, já normalizado. */
 function lastAssistantTurn(history: readonly ChatTurn[]): string {
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const turn = history[index];
-    if (!turn || typeof turn.content !== 'string') continue;
-    if (turn.role === 'assistant' || turn.role === 'model') return fold(turn.content);
-    if (turn.role === 'user') return '';
-  }
-  return '';
+  return fold(lastAssistantRaw(history));
 }
 
 /**
@@ -1008,7 +1373,16 @@ export function classifyItineraryRequest(
   // O aceite herda a intenção da oferta: quem respondeu "pode ser" a "posso
   // montar para o primeiro dia?" pediu um roteiro, mesmo sem escrever a
   // palavra. É o caso que voltava genérico no aparelho.
-  const askedNow = FULL_DAY_PATTERNS.some((pattern) => pattern.test(folded));
+  const readIntent = READ_INTENT_PATTERNS.some((pattern) => pattern.test(folded));
+
+  /*
+   * Nomear a data conta como pedido — salvo quando a frase é consulta.
+   * `readIntent` é o que separa "Tokyo dia 18 de setembro" de "quanto gastei
+   * no dia 18": os dois citam o dia, só um pede um roteiro.
+   */
+  const namedDate = !readIntent && DATE_ONLY_REQUEST.some((pattern) => pattern.test(folded));
+
+  const askedNow = FULL_DAY_PATTERNS.some((pattern) => pattern.test(folded)) || namedDate;
   const askedBefore = acceptsPriorOffer && FULL_DAY_PATTERNS.some((p) => p.test(previous));
 
   return {
@@ -1017,6 +1391,267 @@ export function classifyItineraryRequest(
     partialPeriod,
     acceptsPriorOffer,
   };
+}
+
+/* ------------------------ a data-alvo do dia inteiro ----------------------- */
+
+/**
+ * O recorte do calendário que o servidor conhece sobre a viagem ativa.
+ *
+ * Vem do contexto que o aplicativo já manda — `trip.today` é hoje NO DESTINO,
+ * e `startDate`/`endDate` delimitam o que existe. Nada aqui é opinião do
+ * modelo: são os três campos que permitem resolver "amanhã" sem chutar fuso.
+ */
+export interface TripWindow {
+  today?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+const MONTH_NAMES: Record<string, number> = {
+  janeiro: 1,
+  fevereiro: 2,
+  marco: 3,
+  abril: 4,
+  maio: 5,
+  junho: 6,
+  julho: 7,
+  agosto: 8,
+  setembro: 9,
+  outubro: 10,
+  novembro: 11,
+  dezembro: 12,
+};
+
+/** Teto duro do laço que enumera dias — uma viagem não vira loop infinito. */
+const MAX_TRIP_DAYS = 366;
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function shiftDays(iso: string | undefined, days: number): string | null {
+  const base = isoDate(iso);
+  if (!base) return null;
+  const [year, month, day] = base.split('-').map(Number);
+  const moved = new Date(Date.UTC(year, month - 1, day + days));
+  return `${moved.getUTCFullYear()}-${pad2(moved.getUTCMonth() + 1)}-${pad2(moved.getUTCDate())}`;
+}
+
+/**
+ * Os dias que a viagem realmente tem, em ordem.
+ *
+ * Toda resolução de data acontece DENTRO desta lista. É o que garante que o
+ * servidor nunca produza uma data fora do período: se o dia pedido não está
+ * aqui, não há o que preencher, e a conversa segue pela regra 16 do prompt —
+ * dizer que a data está fora, não ajustar em silêncio.
+ */
+export function tripDays(window: TripWindow | null | undefined): string[] {
+  const start = isoDate(window?.startDate);
+  const end = isoDate(window?.endDate);
+  if (!start || !end || end < start) return [];
+
+  const days: string[] = [];
+  let cursor: string | null = start;
+  while (cursor && cursor <= end && days.length < MAX_TRIP_DAYS) {
+    days.push(cursor);
+    cursor = shiftDays(cursor, 1);
+  }
+  return days;
+}
+
+/**
+ * Como `fold`, mas preservando `/` e `-`.
+ *
+ * `fold` existe para comparar intenção e por isso apaga pontuação — o que
+ * transforma "18/09" em "18 09" e destrói a data. Aqui a pontuação de data é o
+ * dado.
+ */
+function foldDates(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s/-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * As datas que um texto NOMEIA — e só elas.
+ *
+ * Cada leitura é conferida contra os dias da viagem antes de entrar: um dia
+ * que o período não contém simplesmente não vira candidato. E um número que
+ * cai em mais de um dia do período ("dia 18" numa viagem que atravessa dois
+ * meses com dia 18) também não entra: ambiguidade aqui é motivo para NÃO
+ * resolver, nunca para escolher.
+ */
+function datesNamedIn(text: string, days: readonly string[], today?: string): string[] {
+  if (!text || !days.length) return [];
+
+  const found = new Set<string>();
+  const keep = (iso: string | null | undefined) => {
+    if (iso && days.includes(iso)) found.add(iso);
+  };
+  const byParts = (day: number, month?: number, year?: number) => {
+    const hits = days.filter(
+      (d) =>
+        Number(d.slice(8, 10)) === day &&
+        (month === undefined || Number(d.slice(5, 7)) === month) &&
+        (year === undefined || Number(d.slice(0, 4)) === year),
+    );
+    if (hits.length === 1) found.add(hits[0]);
+  };
+
+  let rest = foldDates(text);
+
+  const base = isoDate(today);
+  if (base) {
+    // "depois de amanhã" sai antes: "amanhã" é sufixo dele e seria lido duas
+    // vezes, produzindo duas datas onde a pessoa nomeou uma.
+    if (/\bdepois de amanha\b/.test(rest)) {
+      keep(shiftDays(base, 2));
+      rest = rest.replace(/\bdepois de amanha\b/g, ' ');
+    }
+    if (/\bamanha\b/.test(rest)) keep(shiftDays(base, 1));
+    if (/\bhoje\b/.test(rest)) keep(base);
+  }
+
+  if (/\bprimeiro dia\b/.test(rest)) keep(days[0]);
+  if (/\bultimo dia\b/.test(rest)) keep(days[days.length - 1]);
+
+  // AAAA-MM-DD sai do texto ao ser lida: o rabo dela ("09-18") casaria com o
+  // padrão de dia/mês logo abaixo e viraria uma segunda leitura da MESMA data.
+  rest = rest.replace(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g, (_match, year, month, day) => {
+    keep(isoDate(`${year}-${pad2(Number(month))}-${pad2(Number(day))}`));
+    return ' ';
+  });
+
+  for (const match of rest.matchAll(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/g)) {
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    if (day < 1 || day > 31 || month < 1 || month > 12) continue;
+    const raw = match[3];
+    const year = raw ? Number(raw.length === 2 ? `20${raw}` : raw) : undefined;
+    byParts(day, month, year);
+  }
+
+  for (const match of rest.matchAll(/\b(\d{1,2}) de ([a-z]+)\b/g)) {
+    const month = MONTH_NAMES[match[2]];
+    if (!month) continue;
+    byParts(Number(match[1]), month);
+  }
+
+  // O "dia 18" nu. O `(?! de ...)` evita reler "dia 18 de setembro", que a
+  // varredura anterior já resolveu com o mês.
+  for (const match of rest.matchAll(/\bdia (\d{1,2})\b(?! de [a-z])/g)) {
+    byParts(Number(match[1]));
+  }
+
+  return [...found];
+}
+
+/**
+ * A DATA QUE O SERVIDOR RESOLVE SOZINHO — ou nenhuma.
+ *
+ * Existe porque um pedido de dia inteiro tem, quase sempre, um único dia
+ * possível, e o servidor tem os três dados para achá-lo: o que a pessoa
+ * escreveu, o que ele mesmo ofereceu no turno anterior, e o período da viagem.
+ * Quando esse dia é único, o servidor não precisa que o modelo o repita para
+ * saber qual é.
+ *
+ * O QUE ELA NUNCA FAZ
+ *
+ * Não escolhe entre duas datas nomeadas na mesma frase. Não aceita um dia fora
+ * do período. Não deduz um dia a partir do assunto. Devolver `null` é o
+ * resultado normal e correto sempre que a leitura não for única — e `null`
+ * significa que nada será preenchido.
+ */
+export function resolveFullDayDate(
+  prompt: string,
+  history: readonly ChatTurn[] = [],
+  window: TripWindow | null = null,
+): string | null {
+  const days = tripDays(window);
+  if (!days.length) return null;
+
+  const named = datesNamedIn(prompt, days, window?.today);
+  if (named.length === 1) return named[0];
+  if (named.length > 1) return null;
+
+  // Um aceite herda a data que a mensagem anterior ofereceu — é o mesmo
+  // raciocínio de `classifyItineraryRequest`, aplicado à data em vez da
+  // intenção.
+  if (isAcceptance(prompt)) {
+    const offered = datesNamedIn(lastAssistantRaw(history), days, window?.today);
+    if (offered.length === 1) return offered[0];
+    if (offered.length > 1) return null;
+  }
+
+  // Viagem de um dia só: não existe outro dia para o pedido cair.
+  return days.length === 1 ? days[0] : null;
+}
+
+/**
+ * PREENCHE A DATA QUE FOI OMITIDA. Não corrige a que veio errada.
+ *
+ * Este é o conserto do caso real: o Gemini devolveu cinco atividades com
+ * título, sem `date`, e `validateActions` descartou a proposta inteira —
+ * `dropReasons: ["ITEMS_INVALID"]`, `itemsNoTitle: 0`, `itemsNoDate: 5`. A
+ * data que faltava era a única que o pedido admitia, e o servidor já a tinha.
+ *
+ * AS QUATRO TRAVAS, e nenhuma delas é negociável:
+ *
+ * 1. Só `itinerary.add`. Nenhum outro tipo ganha campo de graça.
+ * 2. Só com a data que o SERVIDOR resolveu. Sem `targetDate`, esta função é
+ *    identidade — um item sem data continua sendo descartado, como sempre foi.
+ *    E se os itens que trouxeram data trouxeram OUTRA, unânime e diferente da
+ *    resolvida, nada é preenchido: escolher entre as duas seria corrigir, e
+ *    corrigir é inventar.
+ * 3. Só item com título. Um item sem nome não vira item por ganhar data.
+ * 4. Só omissão comprovada. Item que escreveu QUALQUER coisa em `date`,
+ *    `dueDate` ou `transactionDate` passa intacto — mesmo que ilegível — e é
+ *    descartado adiante como sempre foi. Sobrescrever o que o modelo escolheu
+ *    é a linha que separa normalizar de fabricar.
+ */
+export function normalizeItineraryDates(
+  rawActions: readonly unknown[],
+  targetDate: string | null,
+  drops?: ActionDropLog,
+): unknown[] {
+  const target = isoDate(targetDate);
+  if (!target) return [...rawActions];
+
+  return rawActions.map((entry) => {
+    const action = asRecord(entry);
+    if (!action || action.type !== 'itinerary.add' || !Array.isArray(action.items)) return entry;
+
+    /*
+     * O modelo já datou parte dos itens, e datou OUTRO dia?
+     *
+     * Então há duas leituras do mesmo pedido — a dele e a do servidor — e
+     * preencher os que faltam com qualquer uma das duas monta um roteiro que
+     * mistura dias. Ambiguidade aqui é motivo para não mexer.
+     */
+    const dated = action.items
+      .map(asRecord)
+      .map((item) => (item ? isoDate(item.date ?? item.dueDate ?? item.transactionDate) : undefined))
+      .filter((value): value is string => Boolean(value));
+    if (dated.some((value) => value !== target)) return entry;
+
+    let filled = 0;
+    const items = action.items.map((raw) => {
+      const item = asRecord(raw);
+      if (!item || hasDateValue(item)) return raw;
+      if (!str(item.title ?? item.label, LIMITS.maxTitle)) return raw;
+      filled += 1;
+      return { ...item, date: target };
+    });
+
+    if (!filled) return entry;
+    if (drops) drops.itemsDateFilled += filled;
+    return { ...action, items };
+  });
 }
 
 /** Os itens da action de roteiro, quando ela existe. */

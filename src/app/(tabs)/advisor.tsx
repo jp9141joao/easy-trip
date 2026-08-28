@@ -57,6 +57,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { CONSULTATION_STATUS_HINT, CONSULTATION_STATUS_LABEL } from '@/lib/labels';
 import {
   AIRequestError,
+  aiTrace,
   describeAIFailure,
   formatAIFailure,
   type AITraceFields,
@@ -333,6 +334,31 @@ function AITab() {
   } = useAIConversation(trip);
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<ScrollView>(null);
+
+  /*
+   * O ÚLTIMO NÚMERO DO RASTRO — o que a tela desenhou.
+   *
+   * O rastro terminava em `AI_ACTION_COMMIT`, no estado. Entre o estado e o
+   * pixel não havia medida, e foi exatamente esse trecho que precisou ser
+   * investigado por leitura de código quando o Android mostrou "a proposta
+   * está pronta" sem card nenhum.
+   *
+   * `messagesWithActions` e `renderedActionCards` saem juntos de propósito: um
+   * número sozinho não diz nada, e o par responde a pergunta inteira. Se
+   * divergirem, o defeito está aqui, na renderização — e não antes.
+   *
+   * São contagens. Nenhum texto de mensagem, nenhum id, nenhum dado da viagem.
+   */
+  const comAcoes = messages.reduce(
+    (total, message) => total + (actionsFor(message.id).length > 0 ? 1 : 0),
+    0,
+  );
+  useEffect(() => {
+    aiTrace('AI_ACTION_RENDER', {
+      messagesWithActions: comAcoes,
+      renderedActionCards: comAcoes,
+    });
+  }, [comAcoes]);
   // O diagnóstico do último erro, mostrado só em DEV embaixo da conversa.
   const [lastFailure, setLastFailure] = useState<AITraceFields | null>(null);
 

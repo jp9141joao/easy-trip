@@ -388,7 +388,48 @@ const ACTION_PROMISE_PATTERNS = [
   /\b(adicione|adicionar|aplique|aplicar|implemente|implementar)\b[^.!?\n]{0,40}\babaixo\b/i,
   /\bse quiser\b[^.!?\n]{0,30}\b(aplico|adiciono|implemento|incluo)\b/i,
   /\bposso (adicionar|aplicar|implementar|registrar|incluir)\b/i,
+  /*
+   * O SUBSTANTIVO ESCAPAVA — e era exatamente o que o modelo escrevia.
+   *
+   * "A proposta está pronta para revisão e aplicação." passou intacta no
+   * aparelho, com zero actions: `revise|revisar` pega o verbo, e o texto
+   * trazia o SUBSTANTIVO. Não foi azar de redação. O system prompt manda
+   * escrever que "a proposta está pronta para revisão" — então esta é a frase
+   * mais provável do fluxo, e era a única que o filtro não via.
+   *
+   * Sem action, "revisão", "aplicação", "aplicar" e "implementar" apontam
+   * todos para um controle que não existe na tela.
+   */
+  /\brevis(?:ão|ao|ões|oes)\b/i,
+  /\baplica(?:ção|cao|ções|coes)\b/i,
+  /\b(implementar|implemente|implemento|aplicar|aplique|aplico)\b/i,
+  /\bpropost[ao]\b[^.!?\n]{0,40}\bpront[ao]\b/i,
+  /\bpront[ao]\b[^.!?\n]{0,40}\b(propost|sugest|roteiro)/i,
 ];
+
+/**
+ * A FRASE QUE NEGA A PROPOSTA É O OPOSTO DE UMA PROMESSA — e não pode ser cortada.
+ *
+ * "Não consegui montar um roteiro completo — o que segue é só o que tenho, sem
+ * proposta para aplicar." contém "aplicar", e por isso caía no filtro assim que
+ * os verbos soltos entraram. Cortá-la seria remover justamente a honestidade
+ * que `discloseIncompleteItinerary` acabou de acrescentar, e devolver a pessoa
+ * ao texto genérico.
+ *
+ * A distinção não é de vocabulário, é de sinal: prometer aplicação e declarar
+ * que não há o que aplicar usam as mesmas palavras. Esta guarda lê o sinal.
+ */
+const HONEST_ABSENCE = [
+  /\bn(?:ão|ao)\s+(?:consegui|foi poss(?:í|i)vel|tenho|h(?:á|a)|existe|existem)\b/i,
+  /\bsem\s+(?:proposta|sugest(?:ão|ao)|nada)\b/i,
+  /\bnada\s+(?:para|pra)\s+(?:aplicar|implementar|revisar|adicionar)\b/i,
+  /\bn(?:ão|ao)\s+(?:cheguei|montei|produzi)\b/i,
+];
+
+/** A frase declara ausência de proposta? Então ela FICA. */
+function declaresAbsence(sentence: string): boolean {
+  return HONEST_ABSENCE.some((pattern) => pattern.test(sentence));
+}
 
 function splitActionPromiseSentences(line: string): string[] {
   return (line.match(/[^.!?]+[.!?]?/g) ?? []).map((sentence) => sentence.trim()).filter(Boolean);
@@ -448,7 +489,9 @@ export function enforceAIActionPromiseCoherence(
 
     const sentences = splitActionPromiseSentences(linha);
     const kept = sentences.filter(
-      (sentence) => !ACTION_PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
+      (sentence) =>
+        declaresAbsence(sentence) ||
+        !ACTION_PROMISE_PATTERNS.some((pattern) => pattern.test(sentence)),
     );
     stripped += sentences.length - kept.length;
 

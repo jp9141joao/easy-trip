@@ -31,6 +31,7 @@ export const AI_PHASES = [
   'AI_REPAIR_RESULT',
   'AI_MESSAGE_COMMIT',
   'AI_ACTION_COMMIT',
+  'AI_ACTION_RENDER',
   'AI_REQUEST_ERROR',
   'AI_REQUEST_END',
 ] as const;
@@ -89,6 +90,17 @@ export interface AITraceFields {
   size?: number;
   actionCount?: number;
   itineraryItems?: number;
+  /**
+   * Quantos ActionCards a tela REALMENTE desenhou.
+   *
+   * É o único número do rastro que vem depois do React. Sem ele, "o servidor
+   * mandou 1 action e não apareceu card" tinha de ser investigado por leitura
+   * de código: o rastro terminava em `AI_ACTION_COMMIT`, e entre o estado e o
+   * pixel não havia medida nenhuma. `messagesWithActions` ao lado dele fecha a
+   * conta — se um é 1 e o outro é 0, o defeito está na renderização.
+   */
+  renderedActionCards?: number;
+  messagesWithActions?: number;
   repaired?: boolean;
   parsed?: boolean;
   /** Milissegundos decorridos desde o começo do pedido. */
