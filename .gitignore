@@ -53,3 +53,5 @@ example
 .expo-export-check/
 dist/
 coverage/
+.e2e/
+.e2e-report.txt
