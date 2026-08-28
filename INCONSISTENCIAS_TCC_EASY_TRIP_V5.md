@@ -1,309 +1,271 @@
 # INCONSISTÊNCIAS E PENDÊNCIAS — TCC EASY TRIP V5
 
-Registro do saneamento final. Cada item da rodada anterior foi reauditado contra o código, o banco e o ambiente publicado, e classificado como **resolvido** ou **pendência real**. Nada foi removido sem verificação, e nenhuma limitação legítima foi ocultada para reduzir a lista.
+Registro da rodada de fechamento técnico. Cada pendência da rodada anterior foi reauditada contra o código, o banco e o ambiente publicado, e classificada como **resolvida**, **pendência real** ou **não verificada**. Nada foi removido sem evidência, e nenhuma limitação legítima foi ocultada para encurtar a lista — a lista, aliás, **cresceu**.
 
-Data: 2026-08-28 · versão funcional avaliada `c8121ba` · correção do arcabouço de teste `93463a8` · atualização documental `abaa9d9` · HEAD ao final da rodada `abaa9d9`, idêntico a `origin/main` · árvore de trabalho limpa no início da rodada, limpa após esses dois *commits*, e **modificada no momento em que este relatório é escrito** pelo ajuste final de consistência (INC-14), ainda não versionado.
+Data: 2026-08-28 · HEAD ao final `d2e6a3b` · `origin/main` permanece em `a092429` (sem autorização de *push*) · árvore de trabalho limpa após cada *commit*, modificada no momento em que este relatório é escrito.
 
-Repositório: https://github.com/jp9141joao/easy-trip (público, ramo `main`).
-
----
-
-# RESOLVIDAS
-
-## PEND-01 — Versão avaliada não versionada
-
-**Tipo:** RESOLVIDO NESTA RODADA (era PENDENCIA_OPERACIONAL).
-
-**Problema:** a rodada de melhorias existia apenas como alteração local sobre o `c5af399` (20 arquivos modificados, 16 não rastreados). Os números do artigo não eram recuperáveis por terceiros a partir do histórico.
-
-**Como foi resolvido:** as alterações foram versionadas no *commit* `c8121ba` ("Add trip cover, global alerts, daily spending goals and travel context improvements") e publicadas no remoto. **Não houve *commit* nesta rodada** — a versionagem já estava feita quando a reauditoria começou.
-
-**Evidência:**
-- `git rev-parse HEAD` → `c8121ba5c5f9a3b10453944442c7d98e6d64b77d`
-- `git rev-parse origin/main` → idêntico ao HEAD
-- `git status` → `nothing to commit, working tree clean`
-- `GET api.github.com/repos/jp9141joao/easy-trip/commits/c8121ba…` → 200, *commit* presente no repositório público
-
-**Escopo do que foi resolvido:** o **software avaliado está versionado** em `c8121ba`. Essa constatação não foi reaberta: o que se acrescenta abaixo, em INC-14, é apenas a distinção entre o *commit* do produto e o *commit* posterior do arcabouço de teste — questão de reprodutibilidade documental, não pendência funcional do produto.
-
-**Impacto no TCC:** a seção 3.7 passou a nomear `c8121ba` como versão avaliada e a declarar árvore limpa e *commit* publicado. A limitação 2 de 4.6 ("versão avaliada não versionada") foi **removida** e as demais renumeradas (12 → 11 limitações). A fragilidade correspondente saiu do parágrafo de validade interna, e a frente "versionar a rodada" saiu dos trabalhos futuros (cinco → quatro frentes).
+Repositório: https://github.com/jp9141joao/easy-trip-3.0 (ramo `main`).
 
 ---
 
-## INC-02 — As 151 asserções SQL do artigo anterior
+# PARTE I — RESOLVIDAS NESTA RODADA
 
-**Tipo:** DOCUMENTAL_CORRIGIDO.
+## PEND-04 — Suíte de ponta a ponta não executada
 
-**Problema:** o TCC v4 declarava 151 asserções, número que não corresponde nem à contagem estática nem à execução.
+**Estado anterior:** BLOQUEADO_POR_INFRAESTRUTURA. 292 blocos inventariados, nunca executados.
 
-**Como foi resolvido:** o v5 adota **159, por execução**, único número verificável. O 151 não aparece no TCC — apenas neste relatório e no de atualizações, como explicação histórica.
+**Estado atual:** **RESOLVIDO.**
 
-**Evidência:** execução das quatro suítes contra PostgreSQL 17.11 descartável: 28 + 8 + 92 + 31 = **159 confirmações, 0 falhas**, todas com `exit=0`. A contagem estática dos auxiliares `pg_temp.check`/`pg_temp.deny` dá 146; a diferença para 159 vem de asserções em laço e de o auxiliar `deny` emitir mais de uma confirmação por chamada. `grep -n "151" tcc_easy_trip_v5.md` → sem ocorrências.
+**Diagnóstico da causa.** O impedimento não era o código dos testes. A pilha de teste era remontada por baixo dos contêineres em execução: o diretório de trabalho era apagado e recriado com a pilha de pé, os contêineres continuavam montando o *inode* antigo — já removido — e passavam a enxergar uma pasta vazia. O sintoma era o `edge_runtime` respondendo 503 `failed to determine entrypoint`, que se parece com falha de compilação do Deno e não com uma montagem órfã.
 
-**Impacto no TCC:** nenhum ajuste necessário nesta rodada. Nenhuma alteração de código foi feita para "fazer a contagem virar 151".
+**Resolução.** `scripts/e2e/` monta uma pilha Supabase dedicada (`easy-trip-e2e`, portas 54420–54429, volumes próprios), que convive com o ambiente de desenvolvimento do autor sem tocá-lo. `e2e-stop.sh` usa `--no-backup` — sem o que o CLI restauraria, na subida seguinte, as contas da execução anterior.
 
----
+**Evidência:** 11 arquivos, 11 executados, **403 asserções, 0 falhas, 0 ignoradas**. Relatório completo em `E2E_EXECUTION_REPORT.md`.
 
-## INC-03 — Divergência entre o auxiliar de teste local e a função de identidade real
-
-**Tipo:** BUG_TESTE → **RESOLVIDO NESTA RODADA**. É a única alteração de código desta rodada, versionada no *commit* `93463a8` ("Fix local Supabase auth test bootstrap"), que altera exclusivamente `supabase/tests/_local_bootstrap.sql` — uma linha.
-
-**Problema:** `supabase/tests/_local_bootstrap.sql` reimplementava `auth.uid()` convertendo o token **antes** de tratar valor vazio:
-
-```sql
-select nullif(current_setting('request.jwt.claims', true)::json ->> 'sub', '')::uuid;
-```
-
-Quando `rls_collaboration.test.sql` retornava ao papel administrativo via `set local request.jwt.claims = ''`, a conversão levantava `invalid input syntax for type json` e interrompia a suíte. Era a razão de as suítes SQL nunca terem sido executadas até o fim a partir do repositório.
-
-**Como foi resolvido:** inversão da ordem das duas operações, tratando o vazio antes da conversão — a mesma forma que `auth.jwt()`, na linha seguinte do próprio arquivo, já usava:
-
-```sql
-select nullif(nullif(current_setting('request.jwt.claims', true), '')::json ->> 'sub', '')::uuid;
-```
-
-**Evidência (causal, medida nos dois sentidos):**
-
-| Cenário | Definição antiga | Definição corrigida |
-|---|---|---|
-| GUC ausente | NULL | NULL |
-| `claims = ''` | **ERRO `invalid input syntax for type json`** | NULL |
-| `claims` com `sub` real | UUID correto | UUID correto |
-| `claims` com `sub` vazio | — | NULL |
-| `rls_collaboration.test.sql` completo | **`exit=3`, para em 78 asserções** | **`exit=0`, 92 asserções** |
-
-Regressão completa depois da correção, cada suíte em banco novo (bootstrap → *migrations* 0001–0012 → suíte), executada **diretamente dos arquivos do repositório**, sem substituição manual de função:
-
-| Suíte | Saída | Asserções | Falhas |
-|---|---|---|---|
-| `rls_content.test.sql` | 0 | 28 | 0 |
-| `rls_articles.test.sql` | 0 | 8 | 0 |
-| `rls_collaboration.test.sql` | 0 | 92 | 0 |
-| `legacy_upgrade.test.sql` | 0 | 31 | 0 |
-| **Total** | — | **159** | **0** |
-
-**Impacto no TCC:** a seção 4.3 deixou de declarar que "a função foi substituída apenas na instância descartável" e passa a registrar o defeito, a correção e o fato de que **o repositório sozinho executa as quatro suítes**. A Tabela 2 diz agora "4 arquivos do repositório contra instância provisionada". O parágrafo de validade interna manteve — corretamente — a ressalva de que a instância local é uma reconstrução do ambiente gerenciado, usando este próprio episódio como prova de que tal reconstrução pode divergir sem aviso.
-
-**Nota histórica:** o defeito nunca alcançou o produto. Nenhuma *migration*, política ou função do esquema foi tocada, e o ambiente publicado usa a definição própria da plataforma.
+**Ressalva mantida:** a execução é **local**. O comportamento da API publicada continua não verificado — ver PEND-16.
 
 ---
 
-## INC-04 — Contagens de banco
+## PEND-07 — Risco de remoção em cascata e ausência de transferência de propriedade
 
-**Tipo:** DOCUMENTAL_CORRIGIDO.
+**Estado anterior:** a pendência funcional mais grave. `trips.user_id` cascateia; excluir a conta do dono de uma viagem compartilhada apagaria dado dos demais participantes.
 
-**Problema:** o v4 contava instruções no texto das migrações (27 políticas, 11 gatilhos, 25 índices, 26 restrições), instrumento que não alcança políticas criadas em laço `foreach` nem índices criados por constraint.
+**Estado atual:** **RESOLVIDO NO CÓDIGO. PUBLICAÇÃO PENDENTE.**
 
-**Como foi resolvido:** o v5 usa o catálogo do PostgreSQL como fonte de verdade. Revalidado nesta rodada, com os mesmos valores.
+**O que foi feito.** *Migration* 0014: `transfer_trip_ownership` grava as duas origens de autorização de `is_trip_owner` na mesma transação, e `account_deletion_blockers` lista as viagens que impedem a exclusão. `delete-account` recusa antes de apagar qualquer arquivo.
 
-**Evidência:** consulta a `pg_tables`, `pg_policies`, `pg_trigger`, `pg_indexes`, `pg_constraint` e `storage.buckets` em instância com 0001–0012 aplicadas:
+**Evidência:** 38 asserções SQL + 30 de ponta a ponta, incluindo a sequência completa: recusa, transferência, exclusão permitida, e a viagem do outro participante sobrevivendo.
 
-| Métrica | Medido | v5 |
-|---|---:|---|
-| Tabelas (esquema público) | 25 | ✓ |
-| Tabelas com RLS habilitada | 25 | ✓ |
-| Políticas (62 público + 7 storage) | 69 | ✓ |
-| Gatilhos | 15 | ✓ |
-| Índices | 58 | ✓ |
-| Restrições de verificação | 43 | ✓ |
-| Funções do projeto | 26 | ✓ |
-| Buckets | 4 | ✓ |
+**Contraprova executada:** removida a atualização de `trips.user_id`, a suíte interrompe na asserção 14 com a mensagem `trips.user_id passou para o novo proprietário`.
 
-**Impacto no TCC:** nenhum. Nenhum código foi criado ou alterado para mover esses números.
+**O que permanece:** a 0014 **não está publicada** — ver PEND-06.
 
 ---
 
-## INC-05 — Três tabelas de protocolo, ou duas?
+## PEND-10 — Sem fila de escrita fora de rede
 
-**Tipo:** DOCUMENTAL_CORRIGIDO.
+**Estado atual:** **RESOLVIDO, COM ESCOPO DECLARADO.**
 
-**Problema:** o v4 afirmava que participantes, convites e notificações não possuíam política de escrita alguma. É falso para `notifications`.
+**Evidência:** 78 casos Jest, entre eles o ciclo inteiro atravessando o disco — cria offline, edita, fecha o aplicativo, abre, conecta, sincroniza, erro temporário, tenta de novo, sai, troca de conta — e a asserção que mais importa: a sessão de uma conta nunca drena a fila de outra, nem quando a fila errada é carregada por engano.
 
-**Como foi resolvido:** o v5 enuncia a propriedade verdadeira e mais precisa — nenhum cliente **cria** notificação, mas o destinatário pode marcá-la como lida ou removê-la. Revalidado nesta rodada.
-
-**Evidência:** tabelas sem qualquer política de escrita: `trip_members` e `trip_invites` — **duas**. `notifications` tem `notifications_select` (SELECT), `notifications_update` (UPDATE) e `notifications_delete` (DELETE), e **nenhuma política de INSERT**.
-
-**Impacto no TCC:** nenhum ajuste nesta rodada; seções 3.6 e 4.4 já corretas. Nenhuma política válida foi removida para fazer o código coincidir com o texto antigo.
+**Escopo, dito para que não seja lido como mais do que é:** roteiro, lista de preparação, despesas, diário e metas. **Não cobre** exclusão de conta, transferência de propriedade, alteração de papel, convites, administração e envio de arquivos. Ver PEND-19.
 
 ---
 
-## INC-06 — "As 26 funções SQL têm caminho de busca fixo"
+## PEND-11 — Avisos apenas dentro do aplicativo
 
-**Tipo:** DOCUMENTAL_CORRIGIDO.
+**Estado atual:** **RESOLVIDO NO CÓDIGO. PUBLICAÇÃO E VALIDAÇÃO EM APARELHO PENDENTES.**
 
-**Problema:** a frase do v4 é literalmente falsa.
+**Evidência:** 29 asserções SQL + 25 de ponta a ponta + 43 casos Jest.
 
-**Como foi resolvido:** o v5 enuncia a propriedade de segurança que de fato importa — o vetor de sequestro por resolução de esquema se aplica a funções `security definer`, e essas estão integralmente protegidas.
-
-**Evidência:** contagem restrita às funções do projeto (excluídas as da extensão `pgcrypto`, que o bootstrap instala em `public`):
-
-- funções do projeto: **26**
-- `security definer`: **23** — **23 com `search_path` fixo**, nenhuma sem
-- `security invoker`: 3 (`prevent_role_escalation`, `set_updated_at` com `search_path=public`; `touch_updated_at` sem)
-- total com `search_path` fixo: **25 de 26**
-
-**Impacto no TCC:** nenhum. Nenhuma função `security invoker` foi alterada para restaurar a frase antiga.
+**O que permanece:** a 0016 e a função de envio não estão publicadas (PEND-08), e **não houve entrega verificada em aparelho físico** (PEND-18). Gerar um endereço de entrega não é prova de que a notificação chega.
 
 ---
 
-## INC-07 — URL do repositório
+## PEND-06a — Ausência de integração contínua
 
-**Tipo:** DOCUMENTAL_CORRIGIDO — **e a correção do v5 estava errada, em sentido oposto ao registrado antes.**
+**Estado atual:** **RESOLVIDO.**
 
-**Problema:** o v4 usava `.../easy-trip`; o v5 "corrigiu" para `.../easy-trip-3.0` com base no `git remote -v`. A reauditoria mostra que o remoto configurado está **desatualizado**: `easy-trip-3.0` é um nome antigo que o GitHub resolve por redirecionamento permanente.
+Três fluxos versionados. `ci.yml` e `e2e.yml` não usam segredo de produção, o que é propriedade e não limitação. `deploy.yml` publica somente por acionamento manual, a partir de `main`, com regressão completa antes e aprovação humana depois.
 
-**Como foi resolvido:** o nome canônico foi determinado pela API do GitHub e o TCC voltou a `.../easy-trip` — desta vez por evidência, e não por herança do documento antigo.
-
-**Evidência:**
-- `GET api.github.com/repos/jp9141joao/easy-trip-3.0` → **HTTP 301** (redirecionamento)
-- seguindo o redirecionamento → `full_name: jp9141joao/easy-trip`
-- `GET api.github.com/repos/jp9141joao/easy-trip` → **HTTP 200**, `private: false`, `default_branch: main`
-- o *commit* `c8121ba` é recuperável nesse repositório (HTTP 200)
-
-Como a API responde sem autenticação e informa `private: false`, o termo "público" é sustentável e foi usado.
-
-**Impacto no TCC:** a seção 3.7 passou a `easy-trip` / `https://github.com/jp9141joao/easy-trip`, com a palavra "público" agora respaldada.
-
-**Observação operacional (não é inconsistência do artigo):** o `git remote -v` local ainda aponta para o nome antigo. Funciona por redirecionamento e não afeta nenhum resultado; atualizá-lo é higiene, não correção.
+**Ressalva registrada no próprio arquivo:** a trava real é a configuração do *environment* `production` com revisor obrigatório. Sem ela, o fluxo é um botão, não uma trava.
 
 ---
 
-## INC-08 — "Chave anônima" no pacote do aplicativo
+## PEND-06b — Ausência de medição de desempenho
 
-**Tipo:** DOCUMENTAL_CORRIGIDO.
-
-**Problema:** o v4 chamava de "chave anônima" (JWT `anon` legado) uma credencial que não é isso.
-
-**Como foi resolvido:** o v5 usa "chave publicável". Revalidado nesta rodada por inspeção de **formato**, sem imprimir valor.
-
-**Evidência:** `EXPO_PUBLIC_SUPABASE_ANON_KEY` tem prefixo `sb_publishable_` e 46 caracteres — não é um JWT (que começaria por `eyJ`). Confirmação independente em produção: com essa chave, `trips.budget_total` responde `42501 — permission denied for table trips`, isto é, nenhum privilégio sobre tabela sem sessão válida.
-
-**Impacto no TCC:** nenhum ajuste nesta rodada; seções 3.3 e 3.6 já corretas. Nenhum valor de chave foi registrado em log, arquivo ou relatório.
+**Estado atual:** **PARCIALMENTE RESOLVIDO.** Ver PEND-17.
 
 ---
 
-# PENDÊNCIAS REAIS
+## INC-15 — Agendamento do resumo diário sem mecanismo seguro
 
-## PEND-09 — *Migration* 0013 não publicada
+**Estado anterior:** o cabeçalho da função trazia um `cron.schedule` comentado, com a service role escrita no meio do comando.
 
-**Tipo:** PENDENCIA_PUBLICACAO · DECISAO_AUTOR.
+**Estado atual:** **MECANISMO RESOLVIDO. AGENDAMENTO NÃO CRIADO.**
 
-**Estado atual:** IMPLEMENTADO · VALIDADO LOCALMENTE · **NÃO PUBLICADO**. Auditada nesta rodada nos dois caminhos, sem erro:
+`cron.job.command` guarda o comando como texto. A 0015 agenda uma linha sem segredo, e a função lê as credenciais do Vault na execução. 39 asserções, entre elas a que dá nome ao arquivo: nenhuma credencial aparece em `cron.job.command`.
 
-- **instalação limpa** — 0001 a 0013 em banco novo: 13 de 13 aplicam;
-- **atualização** — 0013 sobre 0001–0012 já aplicadas: aplica, e o bloco de verificação interna da própria migração aprova.
-
-Objetos resultantes conferidos: `trips.cover_image_path` (text) e `trips.daily_spending_goal` (numeric) criadas, `trips.cover_image_url` preservada; restrição `trips_daily_spending_goal_positive`; bucket `trip-covers` com `public = false`; quatro políticas de Storage — `trip_covers_member_read` (SELECT, por participação na viagem) e `trip_covers_owner_write` / `_owner_modify` / `_owner_delete` (INSERT/UPDATE/DELETE, pelo proprietário). Totais com a 0013: 5 buckets e 73 políticas, contra 4 e 69 sem ela.
-
-**Por que permanece:** publicar depende de autorização do autor, que não foi dada. **A migração não foi aplicada ao ambiente remoto nesta rodada.**
-
-**Impacto:** quatro requisitos funcionais e dois não funcionais estão implementados e rastreáveis, mas não operam em produção. Confirmado nesta rodada: `cover_image_path` e `daily_spending_goal` retornam `42703 — column does not exist`, o mesmo código devolvido para uma coluna-controle inexistente.
-
-**Ação futura:** decidir sobre a publicação. Enquanto não publicada, a Tabela 1 e o Quadro 7 mantêm a coluna de pendência de publicação, e a limitação 2 de 4.6 permanece.
+**O que permanece:** o trabalho de agendamento **não foi criado** no ambiente publicado. Ver PEND-05.
 
 ---
 
-## PEND-10 — `delete-account` não publicada
+## INC-16 — Divulgação de configuração a chamador não autenticado
 
-**Tipo:** PENDENCIA_PUBLICACAO deliberada, ligada a BUG_PRODUTO conhecido.
+**Tipo:** DEFEITO ENCONTRADO E CORRIGIDO NESTA RODADA.
 
-**Estado atual:** função implementada, aprovada na verificação de tipos, com teste de ponta a ponta escrito. **NÃO PUBLICADA** — confirmado nesta rodada: HTTP 404 `{"code":"NOT_FOUND"}`, idêntico ao de uma função-controle inexistente, enquanto `ai-chat`, `trip-suggestions`, `trip-daily-briefing` e `admin-generate-content` respondem com as suas próprias checagens de autorização.
+`admin-generate-content` verificava a chave do provedor de IA **antes** de autenticar, respondendo 503 "o serviço de IA não está configurado" a qualquer chamador sem credencial.
 
-**Por que permanece:** a pendência é deliberada e correta. A exclusão da conta do proprietário removeria em cascata a viagem inteira, incluindo registros dos demais participantes, e **não existe transferência de propriedade**. Publicar antes de resolver isso tornaria o problema alcançável pelo usuário. Nada foi publicado nem tentado nesta rodada.
+**Severidade:** baixa. Nenhum dado de usuário; é informação de implantação.
 
-**Impacto:** um requisito funcional não operante; é a pendência mais séria do ponto de vista do titular dos dados. Registrada como limitações 3 e 7 de 4.6.
+**Como foi encontrado:** `scripts/security-probe.mjs` esperava 401/403 de toda Edge Function sem credencial.
 
-**Ação futura:** implementar a transferência de propriedade da viagem e só então publicar a função — nesta ordem.
+**Correção:** a verificação foi movida para depois da autenticação e da autorização por papel. A regressão prende a ordem nas **três** funções com credencial de servidor. Contraprova executada.
 
----
-
-## PEND-11 — Resumo diário publicado, sem agendamento
-
-**Tipo:** PENDENCIA_OPERACIONAL. **Não é inconsistência documental.**
-
-**Estado atual:** `trip-daily-briefing` está **publicada** e responde HTTP 403 da própria checagem de segredo. Nenhum agendamento configurado: `grep -rn "cron" supabase/migrations/` não encontra nenhuma chamada `cron.schedule` — as únicas ocorrências são comentários explicativos em 0010, e as instruções de agendamento constam apenas em comentário no cabeçalho de `supabase/functions/trip-daily-briefing/index.ts`.
-
-**Por que permanece:** função publicada não é o mesmo que recurso operante. Ela existe e não é disparada sozinha.
-
-**Impacto:** o resumo diário só ocorre por chamada manual autenticada por segredo. Registrado como limitação 5 de 4.6.
-
-**Ação futura:** configurar o agendamento periódico e o segredo correspondente.
+**O que permanece:** a correção **não está publicada** — ver PEND-09.
 
 ---
 
-## PEND-12 — Suíte de ponta a ponta não executada
+# PARTE II — PENDÊNCIAS REAIS
 
-**Tipo:** PENDENCIA_OPERACIONAL. Motivo agora mais preciso do que na rodada anterior.
+## Grupo A — dependem de pessoas. Nenhuma resolvida.
 
-**Estado atual:** **292 blocos** de verificação em nove arquivos — contagem estática reconfirmada nesta rodada, arquivo a arquivo (auth 33, content_admin 62, delete_account 13, functions_http 17, lifecycle 41, offer_window 10, profile_avatar 34, rls_matrix 23, storage 59). **Não executados.**
+### PEND-01 — Ausência de avaliação com usuários
 
-**Por que permanece:** três obstáculos, nenhum deles contornável com segurança nesta rodada.
+**Tipo:** PREPARADO_MAS_EXIGE_EVIDENCIA_HUMANA.
 
-1. As suítes **recusam por construção** qualquer endereço que não seja local (`Recusado: … não é local. Este teste cria e apaga dados.`), de modo que não podem ser dirigidas ao ambiente publicado — e não deveriam.
-2. A pilha local não está completa: `supabase_edge_runtime` está **parado**, o que inviabiliza as suítes de Edge Function (`functions_http_e2e`, `delete_account_e2e`) por ausência de infraestrutura, não por defeito do produto.
-3. As suítes gravam dados na **base de desenvolvimento do autor**, sem garantia verificada de limpeza. Executá-las parcialmente produziria falhas de infraestrutura misturadas a resultados de produto — pior que a não execução honesta.
+`USER_EVALUATION_PROTOCOL.md` traz perfis, critérios de inclusão e exclusão, nove tarefas, roteiro do pesquisador, SUS, consentimento, anonimização, plano de análise, critérios de interrupção e tratamento de desistência. `USER_EVALUATION_RESULTS_TEMPLATE.md` está **vazio**.
 
-Chaves locais são obtíveis via `npx supabase status -o env`; a credencial **não** é o obstáculo restante, ao contrário do que a rodada anterior registrou.
+**Nenhum participante foi recrutado. Nenhuma sessão foi conduzida. Nenhum dado foi coletado.**
 
-**Impacto:** os 292 são **contagem estática de blocos escritos, jamais resultado de aprovação**, e em nenhum ponto do TCC são apresentados como tal. Registrado como limitação 4 de 4.6.
+**Esta pendência NÃO é reduzida pela existência do protocolo.** Ter um instrumento não é ter um resultado, e o próprio documento começa dizendo isso.
 
-**Ação futura:** provisionar um ambiente de teste dedicado e descartável, com a pilha completa ativa, e executar a suíte fora da base de desenvolvimento.
+**O que falta:** aprovação ética quando aplicável, recrutamento, piloto, 8–12 sessões, análise.
+
+### PEND-02 — Sem teste de intrusão independente
+
+**Tipo:** PREPARADO_MAS_EXIGE_EVIDENCIA_HUMANA.
+
+Foi conduzida uma avaliação **interna** orientada pelo MASVS 2.1.0: 24 controles, 16 com evidência automatizada, 5 por revisão, 1 inaplicável com justificativa, 1 parcial, 1 não verificado, **1 defeito encontrado e corrigido**.
+
+**O TCC não declara conformidade ao MASVS**, e o documento de avaliação começa dizendo que não é pentest. Não houve avaliador independente, análise de binário nem tentativa de exploração além de leitura e chamadas malformadas.
+
+**O que falta:** avaliador externo.
+
+### PEND-03 — Sem avaliação humana da qualidade do conteúdo da IA
+
+**Tipo:** PREPARADO_MAS_EXIGE_EVIDENCIA_HUMANA.
+
+O instrumento mede as **defesas** — 18 cenários sintéticos, 18 aprovados — e não a utilidade dos roteiros. Uma rubrica de cinco dimensões foi preparada e **não aplicada**.
+
+**O que falta:** dois avaliadores independentes, ≥ 20 roteiros, 4 destinos.
+
+### PEND-18 — Notificação não validada em aparelho físico
+
+**Tipo:** BLOQUEADO_POR_INFRAESTRUTURA.
+
+Implementado e testado automaticamente. **Sem entrega verificada em Android real**: não há *build* de desenvolvimento com credencial de notificação nesta rodada.
+
+**O que falta:** *build* EAS com credencial e um aparelho.
+
+### PEND-20 — Camada de avaliação do modelo real não executada
+
+**Tipo:** BLOQUEADO_POR_INFRAESTRUTURA.
+
+`GEMINI_API_KEY` não estava disponível. **Nenhum número foi estimado no lugar**: a seção correspondente do relatório declara "NÃO EXECUTADA". O executor traz teto de chamadas para quando houver chave.
+
+## Grupo B — dependem de autorização de publicação
+
+Todas confirmadas por inspeção remota somente leitura: o projeto publicado está na *migration* **0012** e possui **4 das 6** Edge Functions.
+
+### PEND-05 — *Migration* 0013 não publicada
+**Tipo:** IMPLEMENTADO_LOCALMENTE_PUBLICACAO_PENDENTE. Capa e meta diária. **4 RF** não operam em produção.
+
+### PEND-06 — *Migration* 0014 não publicada
+**Tipo:** IMPLEMENTADO_LOCALMENTE_PUBLICACAO_PENDENTE. Transferência de propriedade e guarda de exclusão. **3 RF** não operam em produção. É a mais consequente do grupo: enquanto não for publicada, o defeito de cascata descrito em PEND-07 permanece alcançável no ambiente publicado — mitigado apenas por `delete-account` também não estar publicada.
+
+### PEND-07b — *Migration* 0015 e agendamento não criado
+**Tipo:** IMPLEMENTADO_LOCALMENTE_PUBLICACAO_PENDENTE. O resumo diário continua sem ser disparado sozinho.
+
+### PEND-08 — *Migration* 0016 e função de envio não publicadas
+**Tipo:** IMPLEMENTADO_LOCALMENTE_PUBLICACAO_PENDENTE. **3 RF** não operam em produção.
+
+### PEND-09 — `delete-account` não publicada e correção de segurança não publicada
+**Tipo:** IMPLEMENTADO_LOCALMENTE_PUBLICACAO_PENDENTE.
+
+Do ponto de vista do titular dos dados, a exclusão de conta continua sendo a pendência mais séria — com a diferença de que **a razão mudou**: antes era retida porque publicá-la tornaria alcançável um defeito conhecido; agora o defeito está corrigido, e o que falta é publicar a correção junto.
+
+A correção de INC-16 também não está publicada: a versão publicada da função afetada ainda é a anterior.
+
+## Grupo C — pendências técnicas em aberto
+
+### PEND-16 — Toda a evidência de execução vem de ambientes locais
+
+**Tipo:** PENDENCIA_REAL.
+
+As 265 asserções de banco e as 403 de ponta a ponta rodam contra pilhas descartáveis, e as suítes recusam por construção qualquer endereço não local, porque criam e apagam dados. **O ambiente publicado não foi medido sob nenhuma delas.**
+
+Este é o risco que **substitui** o antigo "teste escrito e não executado", e é preciso nomeá-lo para que a resolução de PEND-04 não seja lida como mais do que é.
+
+### PEND-17 — Medição de desempenho parcial
+
+**Tipo:** PARCIALMENTE_RESOLVIDO.
+
+Há medição reprodutível das funções de domínio e da leitura do *backend* local, com N, média, mediana e p95, e o tamanho do *bundle* Hermes (8,36 MB). **Não há medição em aparelho**: tempo de partida, taxa de quadros e consumo de memória exigem Android instrumentado, e nenhum foi estimado. Não há linha de base histórica — esta é a primeira medição.
+
+### PEND-19 — Fila offline com escopo declarado
+
+**Tipo:** PENDENCIA_REAL_DECLARADA.
+
+Exclusão de conta, transferência de propriedade, alteração de papel, convites, administração e envio de arquivos continuam exigindo conexão. Cada exclusão tem motivo registrado em código. **Não é correto afirmar que o aplicativo funciona integralmente fora de rede**, e o TCC não o afirma.
+
+### PEND-21 — Vulnerabilidades em dependências de desenvolvimento
+
+**Tipo:** PENDENCIA_REAL.
+
+21 ocorrências, 0 críticas, 9 altas — todas em cadeia de compilação (`metro`, `@expo/cli`, `postcss`, `image-size`), nenhuma no caminho de execução do aplicativo publicado. Isso **reduz** a severidade prática, não a elimina.
+
+`npm audit fix --force` não foi executado: traria mudança de versão maior do Expo, que não se faz junto com um fechamento.
+
+### PEND-12 — Ausência de monitoração de execução
+### PEND-13 — Ausência de política automática de retenção de dados
+
+**Tipo:** PENDENCIA_OPERACIONAL. Inalteradas. A segunda continua sendo a única limitação arquitetural não declarada em comentário no próprio código.
 
 ---
 
-## PEND-13 — Limitações legítimas que permanecem por natureza
+# PARTE III — NÃO VERIFICADO
 
-**Tipo:** LIMITACAO_LEGITIMA. Nenhuma delas é defeito; todas estão declaradas no TCC e nenhuma foi suavizada nesta rodada.
+## NV-01 — Comportamento do ambiente publicado sob as suítes
 
-| Item | Estado | Onde consta |
-|---|---|---|
-| Ausência de avaliação com usuários | Nenhum estudo com participantes. O teste manual em Android é do próprio desenvolvedor. | Limitação 1 |
-| Sem avaliação da qualidade do conteúdo da IA | Exigiria instrumento e avaliadores. Métrica descartada em 3.8. | Limitação 9 |
-| Sem verificação formal de segurança | Sem teste de intrusão nem avaliação formal de conformidade ao OWASP MASVS. | Limitação 8 |
-| Ausência de CI/CD e de medição de desempenho | Nada impede que alteração futura quebre o estado verificado. | Limitação 6 |
-| Sem fila de escrita fora de rede | Decisão registrada em comentário no código. | Limitação 10 |
-| Avisos apenas dentro do aplicativo | Sem notificação do sistema operacional. | Limitação 11 |
+Não verificado, e **não verificável sem autorização**: as suítes escrevem e apagam dados, e testes destrutivos em produção estão proibidos. Mesmo com autorização de publicação, esta continuaria sendo a resposta correta.
 
----
+## NV-02 — Assinatura e *build* de release (MASVS-CODE-2)
 
-## NÃO VERIFICADO — fora do alcance desta rodada
+Exige *build* nativo. Não avaliado.
 
-| Item | Situação |
-|---|---|
-| Avisos do Expo Router | `npx expo-doctor` aprovou **18 de 18** nesta rodada e a suíte não registra aviso de rota. **Não há evidência de que persistam**, e por isso não figuram como limitação. Não se afirma que o problema tenha sido definitivamente eliminado: nenhum teste específico para ele foi conduzido. |
-| Open-Meteo em rede móvel | **NÃO VERIFICADO.** Nenhuma evidência atual de falha e nenhum teste novo. Não reintroduzido como limitação comprovada nem declarado resolvido. |
-| Backups / PITR do projeto Supabase | Configuração de painel, não inspecionável pelas credenciais disponíveis. Não citado no TCC. |
-| Teste manual em Android | Evidência única: a mensagem do *commit* `c5af399`. Registrado como **teste funcional manual do desenvolvedor**, jamais como teste com usuários. |
-| Usuários reais do aplicativo | Nenhuma evidência. O TCC **não** afirma que existem. |
+## NV-03 — Resiliência a engenharia reversa (MASVS-RESILIENCE)
+
+Não avaliado. O MASVS trata esse perfil como opcional, aplicável a aplicativo com requisito de proteção de conteúdo — não é o caso.
+
+## NV-04 — Conformidade WCAG
+
+Apenas inspeção estática. Sem ferramenta automatizada integrada.
 
 ---
 
-## INC-14 — Correção do arcabouço de teste posterior ao *commit* funcional
+# PARTE IV — INCONSISTÊNCIAS DOCUMENTAIS CORRIGIDAS
 
-**Tipo:** DOCUMENTAL / REPRODUTIBILIDADE DO TESTE → **RESOLVIDO**. **Não é pendência funcional do produto.**
+## INC-17 — O número 292
 
-**Problema:** o TCC declarava `c8121ba` como versão avaliada e afirmava que *todos* os números da seção 4 seriam recuperáveis por terceiros "bastando posicionar-se nesse *commit*". A afirmação era forte demais: a correção de `auth.uid()` descrita em INC-03, sem a qual `rls_collaboration.test.sql` para em 78 asserções, **não está contida em `c8121ba`**. Quem se posicionasse apenas em `c8121ba` reproduziria a camada de aplicação, mas não as 159 asserções SQL.
+O TCC anterior declarava 292 blocos, sempre com a ressalva de que era contagem estática e não resultado. A recontagem dá **293**, e a execução emite **403**.
 
-**Evidência:**
-- `git show --stat c8121ba` → não inclui `supabase/tests/_local_bootstrap.sql`
-- `git show --stat 93463a8` → `supabase/tests/_local_bootstrap.sql | 2 +-` (1 inserção, 1 remoção), arquivo único
-- `git log --oneline` → `abaa9d9` (documentação) ← `93463a8` (suporte de teste) ← `c8121ba` (produto)
-- `git rev-parse 93463a8` → `93463a8de8d64d0fa6205510345e66ef43639e71`
+A ressalva estava correta, e a distância entre os números mostra por quê: nem mesmo a contagem estática previa o que a execução mediria. O TCC agora registra os três, explica a diferença e **não os soma**.
 
-**Como foi resolvido:** a versão funcional avaliada **permanece `c8121ba`** — não foi movida para o HEAD documental, o que criaria um ciclo em que cada edição do texto invalidaria a referência declarada pelo próprio texto. O que mudou foi a redação: 3.7 passa a distinguir **versão do produto** de **ajuste do arcabouço de testes**, nomeando `93463a8` e afirmando explicitamente que a correção não altera código funcional, *migrations*, políticas de acesso nem o comportamento do ambiente publicado; e 4.3 passa a nomear o mesmo *commit* ao registrar a correção. A combinação dos dois pontos do histórico reproduz integralmente a avaliação.
+## INC-18 — "26 funções SQL"
 
-**Estado do arquivo:** `supabase/tests/_local_bootstrap.sql` está **commitado** em `93463a8`, com a correção de `auth.uid()` verificada e não reaberta nesta passagem. Marcado como **RESOLVIDO**.
+A rodada anterior declarava 26 funções, das quais 23 `security definer`. A medição desta rodada, sobre o esquema completo, dá **75 funções** e **34 `security definer`**. A divergência é de instrumento: a contagem anterior media um subconjunto. O número atual vem de consulta ao catálogo, por roteiro versionado.
+
+## INC-19 — Nome do repositório
+
+O TCC anterior usava `easy-trip` como nome canônico, com nota de que o remoto local apontava para `easy-trip-3.0`. A verificação desta rodada mostra que **`easy-trip-3.0` é o nome atual do remoto**, e o TCC passou a usá-lo.
+
+## INC-20 — Módulos: quatorze → quinze
+
+"Trabalho fora de rede" passou a ser um módulo do Quadro 4, e a conclusão foi ajustada.
 
 ---
 
-## Resumo das ações pendentes
+# RESUMO
 
-| # | Ação | Tipo | Urgência |
-|---|---|---|---|
-| 1 | Decidir sobre publicar a *migration* 0013 (PEND-09) | Publicação · decisão do autor | Média |
-| 2 | Transferência de propriedade **antes** de publicar `delete-account` (PEND-10) | Produto · publicação | Média |
-| 3 | Provisionar ambiente dedicado e executar a suíte de ponta a ponta (PEND-12) | Operacional | Média |
-| 4 | Configurar o agendamento do resumo diário (PEND-11) | Operacional | Baixa |
-| 5 | Atualizar o `git remote` para o nome canônico do repositório (INC-07) | Higiene | Baixa |
+| Categoria | Quantidade |
+|---|---:|
+| Resolvidas nesta rodada | 8 |
+| Parcialmente resolvidas | 1 (medição de desempenho) |
+| Pendências que dependem de pessoas | 5 |
+| Pendências que dependem de publicação | 5 |
+| Pendências técnicas em aberto | 6 |
+| Não verificado | 4 |
+| Inconsistências documentais corrigidas | 4 |
 
-Nesta rodada foi executada **uma única alteração de código**: a correção de `auth.uid()` em `supabase/tests/_local_bootstrap.sql` (INC-03), versionada em `93463a8`; a atualização dos três documentos foi versionada em `abaa9d9`. Nenhuma migração foi aplicada ao ambiente remoto, nenhuma Edge Function foi publicada e nenhum agendamento foi criado. Nenhum arquivo de produto — `src/`, `supabase/functions/`, `supabase/migrations/`, `package.json`, `app.json` — difere entre `c8121ba` e o HEAD atual.
+**A lista de pendências cresceu.** Isso é o resultado esperado de construir com autorização de publicação negada: cada frente nova acrescenta uma pendência de publicação. Um relatório que quisesse encurtar a lista teria construído menos, ou teria publicado sem autorização.

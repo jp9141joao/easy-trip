@@ -1,6 +1,6 @@
 # ATUALIZAÇÕES — TCC EASY TRIP V5
 
-Relatório das alterações aplicadas ao `tcc_easy_trip_v5.md`, consolidado após a **rodada final de saneamento** de 28 de agosto de 2026.
+Relatório das alterações aplicadas ao `tcc_easy_trip_v5.md` na **rodada de fechamento técnico** de 28 de agosto de 2026.
 
 ---
 
@@ -8,271 +8,236 @@ Relatório das alterações aplicadas ao `tcc_easy_trip_v5.md`, consolidado apó
 
 | Item | Valor |
 |---|---|
-| Repositório | `easy-trip` — https://github.com/jp9141joao/easy-trip (público) |
+| Repositório | `easy-trip-3.0` — https://github.com/jp9141joao/easy-trip-3.0 |
 | Branch | `main` |
-| HEAD atual | `abaa9d92bb9023ecd156b8d2f43a730cab88b1d9` (`abaa9d9`, "Update Easy Trip TCC v5 after final validation") |
-| `origin/main` | `abaa9d9…` — idêntico ao HEAD, sem divergência |
-| Working tree | **LIMPA no início da rodada** (`nothing to commit, working tree clean`); modificada ao longo dela pela correção do suporte de testes e pela atualização documental, e limpa novamente após os *commits* `93463a8` e `abaa9d9`; **modificada no momento em que este relatório é escrito**, pelo ajuste final de consistência descrito na seção 11, ainda não versionado |
-| `git diff --check` | limpo (sem erros de espaço em branco) |
-| Data da análise | 2026-08-28 |
-| Versão funcional do aplicativo avaliada | **`c8121ba`** — recuperável por terceiros no repositório público |
-| Correção do arcabouço de testes | **`93463a8de8d64d0fa6205510345e66ef43639e71`** (`93463a8`, "Fix local Supabase auth test bootstrap") — apenas `supabase/tests/_local_bootstrap.sql` |
-| Atualização documental | **`abaa9d9`** — apenas os três documentos do TCC |
+| HEAD no início da rodada | `a092429ba695ba106f44cced9cfb72f68bae17b6` (`a092429`) — idêntico a `origin/main`, árvore limpa |
+| HEAD ao final | `d2e6a3b0e4846cfbd506c52f72c0491d3b851a75` (`d2e6a3b`) |
+| `origin/main` | **`a092429`** — o remoto **não** foi atualizado. `AUTORIZAR_PUSH_GITHUB = NÃO` |
+| Working tree | limpa no início; limpa após cada *commit*; modificada no momento em que este relatório é escrito, pela atualização documental |
+| `git diff --check` | limpo |
+| Data | 2026-08-28 |
 
-O *commit* `c8121ba` ("Add trip cover, global alerts, daily spending goals and travel context improvements") incorpora a rodada de melhorias avaliada: capa da viagem, meta de gasto diário, idioma do destino, avisos globais, reposicionamento das Sugestões, registro central de metadados de país, conversor de moedas contextual, `supabase/migrations/0013_trip_cover_and_daily_goal.sql` e oito arquivos de teste.
+### *Commits* desta rodada
 
-> **Reprodutibilidade — resolvida, com dois pontos de histórico.** A versão funcional medida está versionada e publicada, e o *commit* foi confirmado presente no repositório remoto; a limitação "versão avaliada não versionada" foi removida do TCC. É preciso, porém, distinguir **produto** de **arcabouço de teste**: a correção de `auth.uid()` em `supabase/tests/_local_bootstrap.sql`, que permitiu executar as suítes SQL até o fim, **não está contida em `c8121ba`** — foi versionada depois, em `93463a8`. Os resultados da camada de aplicação são reproduzíveis a partir de `c8121ba`; a execução integral das suítes SQL exige `93463a8`. Nenhum arquivo de produto, *migration*, política ou Edge Function difere entre os dois *commits*: `93463a8` altera uma única linha de um arquivo de suporte de teste. O *commit* `abaa9d9` é exclusivamente documental.
+```
+d2e6a3b chore: recount every artifact from the source of truth
+ce25dc3 docs: add AI evaluation and user study protocol
+8395004 fix: keep the e2e workdir out of the lint
+161982c fix: authenticate before reporting provider configuration
+5cb77d6 feat: add push notification support
+cad8063 feat: add durable offline mutation queue
+2fa37f9 feat: schedule the daily briefing without leaking the secret
+f2ca286 ci: add quality validation and gated publish workflows
+```
 
-> **Sobre a referência acadêmica.** O TCC mantém `c8121ba` como versão funcional avaliada mesmo havendo *commits* posteriores, porque estes alteram apenas suporte de teste e documentação. Fixar a versão avaliada no HEAD documental criaria um ciclo — cada atualização do texto invalidaria a referência que o próprio texto declara.
+Todos locais. **Nenhum foi publicado**, por ausência de autorização de *push*. A recuperação por terceiros exige, portanto, acesso ao repositório local — o que é a única regressão de reprodutibilidade desta rodada em relação à anterior, e é declarada como tal em INC-15 do documento de inconsistências.
 
-**Nota sobre o nome do repositório.** O `git remote -v` local ainda aponta para `easy-trip-3.0`, que o GitHub resolve por redirecionamento permanente (HTTP 301) para o nome canônico `easy-trip`. O TCC usa o nome canônico. Corrigir o remoto é higiene local, sem efeito sobre resultado algum.
+### Autorizações vigentes
+
+| Flag | Valor | Consequência |
+|---|---|---|
+| Commits locais | **SIM** | Sete *commits* criados |
+| Push para o GitHub | NÃO | `origin/main` permanece em `a092429` |
+| Aplicar *migrations* em produção | NÃO | 0013–0016 permanecem não publicadas |
+| Publicar Edge Functions em produção | NÃO | `delete-account` e `send-push` não publicadas; a correção de segurança de `admin-generate-content` não publicada |
+| Configurar cron em produção | NÃO | O agendamento do resumo diário não foi criado no ambiente remoto |
+| Testes destrutivos em produção | NÃO | Nenhuma escrita foi feita contra o ambiente publicado. Toda execução usou pilhas locais descartáveis |
 
 ---
 
-## 2. Mudança de posicionamento
+## 2. O que mudou no produto
 
-O título foi mantido: **EASY TRIP: DESENVOLVIMENTO E AVALIAÇÃO DE UM PLANEJADOR INTELIGENTE DE VIAGENS COM INTELIGÊNCIA ARTIFICIAL**. Nenhuma expressão de "conformidade" ou "auditoria" foi reintroduzida.
+Sete frentes, todas com teste e todas com o motivo registrado em código.
+
+### 2.1 Transferência de propriedade (*migration* 0014)
+
+Resolve a lacuna funcional §50 e, com ela, um **defeito estrutural que nenhuma política de acesso poderia impedir**.
+
+`public.trips.user_id` referencia `auth.users` com `on delete cascade` (0001). A exclusão da conta do proprietário de uma viagem compartilhada apagaria a viagem inteira — com as despesas, o diário e o roteiro **dos demais participantes**. A cascata acontece abaixo da RLS.
+
+A dificuldade técnica está em `is_trip_owner` (0008), que responde afirmativamente por **duas** origens: o papel em `trip_members` **ou** `trips.user_id`. Promover alguém em `trip_members` não transfere nada — o antigo dono continuaria dono pela segunda origem, e a viagem passaria a ter dois. A função grava as duas na mesma transação, com travamento das linhas para serializar transferências simultâneas.
+
+Regras: só o dono transfere; só quem já aceitou o convite recebe (convite pendente não tem linha em `trip_members`, e é essa a regra, sem consulta extra); o antigo dono vira editor e permanece na viagem; nenhum conteúdo privado muda de dono.
+
+### 2.2 Guarda de exclusão de conta
+
+`account_deletion_blockers()` devolve as viagens em que a sessão é proprietária e há outros participantes. A mesma consulta serve à tela e à Edge Function, deliberadamente: consultas diferentes divergiriam um dia, e a tela diria "pode excluir" para um pedido que o servidor recusa.
+
+`delete-account` recusa **antes** de apagar qualquer arquivo, respondendo 200 com `{ ok: false, reason: 'ownership-blocked' }`. Não 409: `supabase-js` entrega não-2xx sem corpo, e a tela leria "erro de rede, tente de novo" — a leitura errada, porque tentar de novo nunca funcionaria. Falha fechado se a 0014 não estiver aplicada.
+
+Nenhum novo proprietário é escolhido automaticamente.
+
+### 2.3 Execução das suítes de ponta a ponta
+
+O avanço de evidência mais significativo da rodada. Detalhado em `E2E_EXECUTION_REPORT.md`.
+
+### 2.4 Integração e publicação contínuas
+
+Três fluxos de trabalho. `ci.yml` roda a regressão a cada alteração proposta, sem segredo de produção. `e2e.yml` sobe a pilha local sob demanda e diariamente. `deploy.yml` publica **somente** por acionamento manual, a partir de `main`, com a regressão completa antes e aprovação humana depois dela.
+
+### 2.5 Agendamento do resumo diário (*migration* 0015)
+
+`cron.schedule` guarda o comando como texto em `cron.job.command`. Um comando que carregasse a service role a deixaria legível numa tabela que aparece em qualquer dump. O comando agendado é uma linha sem segredo — `select public.dispatch_trip_daily_briefing();` — e é a função que lê as credenciais do Vault no momento da execução.
+
+A *migration* **não agenda e não guarda segredo**: agendar exigiria conhecer a URL e as credenciais, o que devolveria o problema ao Git. O agendamento é ato operacional explícito, e recusa com o nome do segredo que falta se o Vault estiver incompleto.
+
+### 2.6 Fila durável de escrita fora de rede
+
+A fila é o **desvio**, não o caminho: toda escrita tenta ir direto ao servidor, e a fila só entra quando a tentativa falha por algo que pode melhorar sozinho. Não há interruptor consultado antes de escrever — "há rede" e "a escrita vai passar" não são a mesma coisa.
+
+Duas decisões estruturais: a **dobra** (editar a mesma linha quatro vezes sem rede produz uma escrita; criar e apagar produz nenhuma) e o **id gerado no aparelho**, que torna o reenvio idempotente porque a segunda tentativa esbarra na chave primária.
+
+Escopo declarado: roteiro, lista de preparação, despesas, diário e metas. Fora ficam exclusão de conta, transferência de propriedade, papel de membro, convites, administração e arquivos.
+
+### 2.7 Notificações do sistema operacional (*migration* 0016)
+
+A pergunta que definiu as políticas não foi "quem pode ler tokens?", mas "o que um token permite a quem o tem?". É um endereço de entrega: quem o possui faz o telefone de outra pessoa tocar, com o texto que quiser, na tela de bloqueio.
+
+`unique (token)` e não `unique (user_id)`: telefone e tablet recebem nos dois. O `on conflict do update` cobre reinstalação e restauração de backup — o Expo reemite o token, e a linha acompanha quem usa o aparelho agora.
+
+O texto é cortado antes de sair: valor em dinheiro, e-mail, telefone e sequência longa de dígitos não chegam à tela de bloqueio.
 
 ---
 
 ## 3. Números antigos × números atuais
 
-Todas as contagens de banco são **medidas contra uma instância PostgreSQL 17.11 real**, com as *migrations* aplicadas, por consulta aos catálogos do sistema. Essa mudança de instrumento explica a maior parte das divergências em relação ao v4: parte das políticas é criada dinamicamente em laço `foreach`, e parte dos índices nasce de constraint — nenhuma das duas é alcançada por contagem de instruções no texto.
+Todas as contagens de banco são medidas contra uma instância descartável com as *migrations* aplicadas, por consulta aos catálogos, via `scripts/count-artifacts.sh`.
 
-### 3.1 Verificações executadas
-
-| Métrica | v4 | v5 (saneado) | Classificação |
+| Métrica | Rodada anterior | Esta rodada | Natureza |
 |---|---|---|---|
-| Conjuntos de teste (Jest) | 110 | **119** | CRÍTICA |
-| Casos de teste (Jest) | 1.337 | **1.542** | CRÍTICA |
-| Falhas | 0 | **0** | — |
-| Tempo da suíte | 73,781 s | **37,941 s** | RECOMENDADA |
-| `tsc --noEmit` (app) | 0 erros | **0 erros** | — |
-| `tsc -p supabase/functions` | 0 erros | **0 erros** | — |
-| `eslint .` | 0 erros, 8 avisos | **0 erros, 8 avisos** (todos em `tests/`) | — |
-| `expo-doctor` | 18/18 | **18/18** | — |
-| `any` em `src/` | 0 | **0** | — |
-| `TODO`/`FIXME` em `src/` | 0 | **0** | — |
+| Requisitos funcionais | 64 | **74** | 10 acrescentados |
+| RF operantes no esquema publicado | 59 | **63** | +4 (fila offline, que não depende de *migration*) |
+| RF pendentes de publicação | 5 | **11** | **piorou** — quatro frentes novas trouxeram estrutura de dados |
+| Requisitos não funcionais | 61 | **70** | 9 acrescentados |
+| RNF com evidência forte | 53 | **59** | |
+| Lacunas de RNF | 6 | **5** | CI e medição de desempenho fecharam; monitoração de execução aparece |
+| *Migrations* locais | 13 | **16** | |
+| *Migrations* publicadas | 12 | **12** | inalterado |
+| Tabelas | 25 | **26** | `push_tokens` |
+| Políticas | 69 | **77** | |
+| Funções do esquema público | 26 | **75** | instrumento diferente: a contagem anterior media um subconjunto |
+| Gatilhos | 15 | **16** | |
+| Índices | 58 | **61** | |
+| Buckets | 4 publicados | **5 no repositório**, 4 publicados | |
+| Edge Functions | 5 impl. / 4 publ. | **6 impl. / 4 publ.** | `send-push` |
+| Conjuntos Jest | 119 | **124** | |
+| Casos Jest | 1.542 | **1.686** | |
+| Suítes SQL | 4 | **7** | |
+| Asserções SQL | 159 | **265** | |
+| Arquivos de ponta a ponta | 9 | **11** | |
+| Ponta a ponta | 292 blocos **não executados** | **403 asserções executadas, 0 falhas** | mudança de natureza, não de grandeza |
+| Rotas | 47 | **48** | tela de sincronização |
 
-### 3.2 Banco de dados (medido, não estimado)
+### Sobre 292, 293 e 403
 
-| Métrica | v4 (estático) | v5 (medido) | Classificação |
-|---|---|---|---|
-| Tabelas no esquema público | 25 | **25** | — |
-| Tabelas com RLS habilitada | "todas" | **25 de 25** | RECOMENDADA |
-| Políticas nomeadas | 27 | **69** (62 público + 7 storage) | CRÍTICA |
-| Funções SQL do projeto | 26 | **26** | — |
-| Funções `security definer` | não informado | **23**, todas com `search_path` fixo | IMPORTANTE |
-| Gatilhos | 11 | **15** | CRÍTICA |
-| Índices | 25 | **58** (30 explícitos + 28 de constraint) | CRÍTICA |
-| Restrições de verificação | 26 | **43** | CRÍTICA |
-| Buckets de armazenamento | 4 | **4** publicados (5 com a 0013) | IMPORTANTE |
-| *Migrations* | 12 | **13** (12 publicadas + 1 pendente) | CRÍTICA |
+Três números diferentes para a mesma suíte, e nenhum substitui o outro:
 
-### 3.3 Inventário do aplicativo
+- **292** era a contagem estática declarada na rodada anterior;
+- **293** é a recontagem estática das chamadas de verificação nos nove arquivos originais;
+- **403** é o que a execução emite, nos onze arquivos atuais, porque várias chamadas estão em laços.
 
-| Métrica | v4 | v5 | Classificação |
-|---|---|---|---|
-| Arquivos de rota | 47 | **47** | — |
-| Módulos de domínio | 19 | **20** (+`tripCover.ts`) | IMPORTANTE |
-| *Hooks* | não informado | **18** | RECOMENDADA |
-| Contratos de repositório | 18 | **19** (+capa em `TripRepository`) | IMPORTANTE |
-| Serviços | não informado | **13** | RECOMENDADA |
-| Edge Functions | 5 implementadas | **5 implementadas, 4 publicadas** | IMPORTANTE |
-
-### 3.4 Suítes de banco e de ponta a ponta
-
-| Métrica | v4 | v5 (saneado) | Classificação |
-|---|---|---|---|
-| Asserções SQL | 151, **não executadas** | **159, EXECUTADAS DO REPOSITÓRIO, 0 falhas** | CRÍTICA |
-| — conteúdo editorial | — | 28 | — |
-| — publicação de artigos | — | 8 | — |
-| — colaboração e visibilidade | — | 92 | — |
-| — atualização de banco legado | — | 31 | — |
-| Blocos de ponta a ponta | 292, não executados | **292, não executados** | — |
-
-O valor 151 do v4 não é reproduzível: os quatro arquivos `.test.sql` estão inalterados desde o `9f33e2b`, a contagem estática dos seus auxiliares dá 146, e a execução emite 159 confirmações. Ver INC-02. **Nesta rodada as suítes passaram a rodar diretamente do repositório**, sem substituição manual de função na instância — ver INC-03.
-
-### 3.5 Requisitos
-
-| Métrica | v4 | v5 | Classificação |
-|---|---|---|---|
-| Requisitos funcionais | 56 | **64** (56 + 8 novos) | CRÍTICA |
-| RF rastreáveis a código e estrutura | 55 (98,2%) | **64 (100%)** | IMPORTANTE |
-| RF operantes sobre esquema publicado | — | **59 (92,2%)** | IMPORTANTE |
-| RF pendentes de publicação | 1 | **5** (4 pela 0013 + 1 Edge Function) | CRÍTICA |
-| Requisitos não funcionais | 55 | **61** (55 + 6 novos) | CRÍTICA |
-| RNF com evidência forte | 49 | **53** | CRÍTICA |
-| RNF fortes pendentes de publicação | — | **2** | IMPORTANTE |
-| Lacunas de RNF | 6 | **6** | — |
-| Limitações declaradas em 4.6 | 8 | **11** | CRÍTICA |
-
-Somas reconferidas nesta rodada: 59 + 4 + 1 + 0 = 64 ✓ · 12+10+8+8+6+5+5+4+3 = 61 ✓ · 11+7+8+7+6+4+4+3+3 = 53 ✓ · 53 + 2 + 6 = 61 ✓
+O TCC registra os três e não os soma.
 
 ---
 
-## 4. Estado remoto (reverificado nesta rodada)
-
-| Componente | Estado | Como foi verificado |
-|---|---|---|
-| Backend Supabase | **PUBLICADO e operante** | REST respondeu a todas as sondas |
-| *Migrations* 0001–0012 | **APLICADAS** | Colunas e tabelas de cada migração presentes |
-| *Migration* 0013 | **NÃO APLICADA** | `cover_image_path` e `daily_spending_goal` → `42703 — column does not exist`, mesmo código de uma coluna-controle inexistente |
-| Privilégios do papel anônimo | **REVOGADOS** | `trips.budget_total` → `42501 — permission denied for table trips` |
-| `ai-chat` | **PUBLICADA** | HTTP 401 da própria checagem de sessão |
-| `trip-suggestions` | **PUBLICADA** | HTTP 401, idem |
-| `trip-daily-briefing` | **PUBLICADA** | HTTP 403 da própria checagem de segredo |
-| `admin-generate-content` | **PUBLICADA** | HTTP 401, idem |
-| `delete-account` | **NÃO PUBLICADA** | HTTP 404 `NOT_FOUND`, idêntico ao de uma função-controle inexistente |
-| Agendamento do resumo diário | **NÃO CONFIGURADO** | Nenhum `cron.schedule` em migração alguma; instruções só em comentário |
-
-**Afirmação do v4 que ficou falsa:** *"as cinco funções serverless não estavam publicadas"* e *"não há ambiente de produção"*. Quatro das cinco estão publicadas e há backend em produção.
-
----
-
-## 5. Funcionalidades novas documentadas
-
-Os estados abaixo foram **reclassificados nesta rodada**. "PUBLICADO" descreve artefato efetivamente implantado no ambiente remoto — Edge Function publicada ou *migration* aplicada. Uma funcionalidade de cliente não é "publicada" apenas porque o backend de que ela depende existe: para essas, o estado correto é *validado localmente* e/ou *compatível com o esquema publicado*.
-
-| Funcionalidade | Onde entrou no TCC | Estado |
-|---|---|---|
-| Capa personalizada da viagem (galeria, prévia, confirmação, cancelamento, restauração do padrão) | 3.2, 3.6, 4.1 | IMPLEMENTADO · VALIDADO LOCALMENTE · **DEPENDE DA 0013, NÃO PUBLICADA** |
-| Bucket privado `trip-covers` com prefixo por viagem e URL assinada | 3.6, 4.2 | idem |
-| Meta de gasto diário (valor usado, disponível, excesso) | 3.2, 3.4, 4.1 | idem |
-| Aviso derivado de meta ultrapassada | 3.4 | idem |
-| Idioma do destino, exibido só quando difere do idioma do aparelho | 3.2, 3.3, 4.1 | IMPLEMENTADO · VALIDADO LOCALMENTE · COMPATÍVEL COM O ESQUEMA PUBLICADO |
-| Registro central de metadados de país (país → idiomas, país → moeda) | 3.3, 4.2 | idem |
-| Conversor de moedas contextual (base = moeda do orçamento; oculto quando as moedas coincidem) | 3.2, 4.2 | idem |
-| Avisos globais entre todas as viagens acessíveis, com identificação da origem | 3.2, 4.1 | idem |
-| Sugestões reposicionadas para dentro da Jornada | 3.2, 4.1 | idem — **reposicionada, não removida** |
-| Reservas: sete tipos nomeados | 3.2 | IMPLEMENTADO · COMPATÍVEL COM O ESQUEMA PUBLICADO |
-| Papéis owner/editor/viewer explicitados | 3.2, 3.6 | idem |
-| Cadeia de cinco modelos Gemini com fallback | 3.3, 3.5, 4.2 | IMPLEMENTADO · **PUBLICADO** (reside em `ai-chat`, publicada) |
-| Resolução de data para pedidos de roteiro de dia inteiro | 3.5 | IMPLEMENTADO · **PUBLICADO** · VALIDADO MANUALMENTE NO ANDROID |
-
-**Sobre a validação em Android.** A única evidência disponível é a mensagem do *commit* `c5af399` ("Fix AI itinerary action flow, ai-chat v13, validated on Android"), que cobre o **fluxo de ações de roteiro do assistente** e nada além disso. Por isso o marcador aparece em uma única linha da tabela. É teste funcional manual do próprio desenvolvedor, jamais avaliação com usuários.
-
----
-
-## 6. Seções modificadas nesta rodada de saneamento
+## 4. Alterações no `tcc_easy_trip_v5.md`
 
 | Seção | Alteração |
 |---|---|
-| 3.2 / Quadro 4 | Cabeçalho da coluna passa de "Recursos oferecidos ao usuário" para **"Recursos implementados"**; a linha de autenticação passa a marcar a exclusão de conta como fluxo com publicação pendente; a linha da IA passa a dizer "resumo diário sob acionamento, cuja automação periódica está pendente"; nota abaixo do quadro registra as três dependências (0013, `delete-account`, agendamento) e remete a 4.6 |
-| 3.7 | Versão avaliada passa a ser o *commit* `c8121ba`, com árvore limpa e *commit* publicado; URL do repositório corrigida para o nome canônico `easy-trip`, agora com "público" respaldado por evidência |
-| 3.7 (reprodutibilidade) | A frase "todos os números da seção 4 são recuperáveis bastando posicionar-se nesse *commit*" foi **substituída**: `c8121ba` fixa a versão funcional e sustenta a camada de aplicação; a execução integral das suítes SQL exige também `93463a8`, a correção do arcabouço de teste, sem alteração de produto ou esquema |
-| 4.3 (correção do *bootstrap*) | O registro do defeito passa a nomear o *commit* `93463a8`, posterior a `c8121ba` e restrito ao arquivo de suporte de teste |
-| 4.3 | Tempo da suíte 37,974 s → 37,941 s (medição desta rodada); Tabela 2 passa a dizer "4 arquivos **do repositório**"; a ressalva de substituição manual da função foi **substituída** pelo registro do defeito encontrado, da correção aplicada e do fato de o repositório executar as suítes sozinho |
-| 4.6 | Limitação "versão avaliada não versionada" **removida**; demais renumeradas (12 → 11); referências cruzadas entre limitações corrigidas; limitação de ponta a ponta reescrita com o motivo real |
-| 4.6 (validade interna) | Deixa de apontar a versão não versionada; mantém a ressalva sobre a fidelidade da instância local, usando o episódio do `auth.uid()` como prova |
-| 5 (conclusão) | Trabalhos futuros: cinco → **quatro** frentes; "versionar a rodada" removida; a frente de ponta a ponta passa a incluir o provisionamento de ambiente dedicado |
-| Resumo / Abstract | **Revisados por último e mantidos.** Não continham afirmação de versionamento, e todos os seus números (64, 59, 61, 53, 119, 1.542, 159) permanecem válidos após a reverificação |
+| Resumo / Abstract | Revisados **por último**. Números novos, três camadas verificadas por execução, recusa explícita de somá-las, e as limitações remanescentes reescritas |
+| 2.5 Quadro comparativo | 26 tabelas, 16 *migrations* |
+| 3.2 Quadro 4 | Transferência de propriedade em Colaboração; entrega por notificação em Avisos; módulo novo "Trabalho fora de rede"; nota de publicação reescrita para as cinco dependências |
+| 3.3 Arquitetura | Diagrama com 26 tabelas, 75 funções, 77 políticas, 5 buckets, 6 Edge Functions; nota distinguindo esquema **do repositório** de esquema **publicado** |
+| 3.4 Modelo de dados | 16 *migrations*, contagens novas, e a distinção entre as doze publicadas e as quatro pendentes |
+| 3.7 Reprodutibilidade | **Um único ponto de histórico**, sem separação produto/arcabouço; lista dos seis comandos versionados que reproduzem os números; sexta etapa de procedimento: contraprova |
+| 3.8 Métricas | Latência do ambiente publicado e métricas de aparelho continuam descartadas, com a razão; rubrica de avaliação humana registrada como preparada e não aplicada; "teste de intrusão e avaliação formal" reescrito para distinguir avaliação interna de certificação |
+| 4.1 | 74 RF, tabela de rastreabilidade com cinco situações, e o registro explícito de que os RF pendentes **cresceram** |
+| 4.2 | 70 RNF, quadro dos nove novos, e o fechamento de duas lacunas com a ressalva de que a de desempenho fechou **parcialmente** |
+| 4.3 | Tabela 2 com treze verificações; suítes SQL de 4 para 7; **subseção de ponta a ponta inteiramente reescrita**, com a causa do impedimento, as 28 falhas da primeira execução e o resultado final; parágrafo novo sobre contraprova |
+| 4.4 | Contagens novas; duas contagens registradas como asserções; avaliação MASVS com o defeito encontrado; distinção entre verificado localmente e verificado em produção; avaliação da validação da IA e o achado sobre medir a camada errada |
+| 4.5 Discussão | Reescrita: crescimento dos RF pendentes assumido; três camadas executadas; recusa de somar mantida; dois achados de método novos |
+| 4.6 Limitações | **Reorganizada em três grupos** — dependem de pessoas, dependem de publicação, permanecem técnicas. De 11 itens para 15, e o crescimento é honesto |
+| Ameaças à validade | Validade interna: as 28 falhas como evidência dos dois sentidos do risco; fragilidade nova declarada (suítes escritas por quem escreveu o produto). Validade de conclusão: risco novo de tratar execução local como evidência sobre produção |
+| 5 Conclusão | Quinze módulos; o defeito da cascata em destaque; três camadas executadas; limitações reescritas; trabalhos futuros de quatro para três frentes, com registro de que duas das quatro anteriores foram executadas |
 
 ---
 
-## 7. Limitações removidas e mantidas
+## 5. Limitações removidas, mantidas e novas
 
-**Removidas nesta rodada** (deixaram de ser verdadeiras):
+### Removidas (com evidência)
 
-- Versão avaliada não versionada → a versão medida é o *commit* `c8121ba`, publicado.
-
-**Removidas na rodada anterior:**
-
-- "As cinco funções serverless não estavam publicadas" → quatro estão.
-- "As suítes de banco não foram executadas" → foram, 159 asserções, 0 falhas.
-- "A camada de banco está verificada por leitura, e não por execução" → passou a estar por execução.
-
-**Mantidas — nenhuma foi suavizada:** ausência de avaliação com usuários; *migration* 0013 não publicada; exclusão de conta não publicada; remoção em cascata na exclusão do proprietário; ponta a ponta não executada; resumo diário sem agendamento; ausência de CI/CD; sem medição de desempenho; sem verificação formal de segurança; sem avaliação da qualidade do conteúdo da IA; ausência de fila de escrita fora de rede; avisos apenas dentro do aplicativo.
-
----
-
-## 8. Afirmações corrigidas
-
-| Afirmação anterior | Correção |
+| Limitação | Por que saiu |
 |---|---|
-| "as cinco funções serverless não estavam publicadas" | Quatro publicadas; apenas `delete-account` não |
-| "não há ambiente de produção" | Há backend publicado e operante |
-| "três tabelas de protocolo não possuem política de escrita alguma" | Duas (participantes e convites); notificações não tem política de **inserção**, mas tem de atualização e exclusão |
-| "as 26 funções SQL têm caminho de busca fixo" | 23 das 26 são `security definer`, e **essas 23** têm caminho fixo; das três `security invoker`, duas também o têm |
-| "27 políticas nomeadas" | 69 políticas |
-| "doze *migrations*" | Treze, das quais doze publicadas |
-| "151 asserções SQL" | 159 executadas (a contagem estática dá 146; 151 não é reproduzível) |
-| "chave anônima" | "chave publicável" — o formato em uso é `sb_publishable_…`, não JWT anônimo |
-| `c5af399` + alterações locais | **`c8121ba`**, árvore limpa, *commit* publicado; correção do arcabouço de teste em `93463a8` |
-| "todos os números da seção 4 recuperáveis apenas em `c8121ba`" | `c8121ba` para o produto e a camada de aplicação; `93463a8` para a execução integral das suítes SQL |
-| Quadro 4, "Recursos oferecidos ao usuário" | "Recursos implementados", com nota distinguindo implementado de operante no ambiente publicado |
-| repositório em `.../easy-trip-3.0` | **`.../easy-trip`** — `easy-trip-3.0` é nome antigo, resolvido por redirecionamento 301 |
-| "foi necessário substituir a função apenas na instância descartável" | O defeito foi corrigido no repositório; as suítes rodam direto dele |
-| ponta a ponta bloqueada por "falta de credencial de serviço" | Credencial local é obtível; o bloqueio real é pilha incompleta + gravação na base de desenvolvimento |
-| funcionalidades de cliente marcadas "PUBLICADO" | Reclassificadas como *validado localmente* / *compatível com o esquema publicado* |
+| "Sem fila de escrita fora de rede" | Implementada, com escopo declarado. 78 casos Jest, incluindo o ciclo inteiro atravessando o disco |
+| "Avisos apenas dentro do aplicativo" | Implementado. 29 asserções SQL + 25 de ponta a ponta + 43 casos Jest |
+| "Risco de remoção em cascata / sem transferência de propriedade" | Corrigido. 38 asserções SQL + 30 de ponta a ponta, com contraprova |
+| "Suíte de ponta a ponta não executada" | Executada: 11 arquivos, 403 asserções, 0 falhas |
+| "Ausência de integração contínua" | Três fluxos versionados |
+| "Ausência de medição de desempenho" | **Parcialmente.** Há medição de domínio e de *backend* local; não há medição em aparelho, e isso virou limitação própria |
+
+### Mantidas integralmente
+
+| Limitação | Estado |
+|---|---|
+| Ausência de avaliação com usuários | Protocolo pronto, **estudo não executado**. Ter protocolo não é ter resultado |
+| Ausência de teste de intrusão independente | Avaliação **interna** conduzida; nenhum avaliador externo |
+| Ausência de avaliação humana do conteúdo da IA | Rubrica preparada, **não aplicada** |
+| *Migration* 0013 não publicada | Confirmado remotamente |
+| Exclusão de conta não publicada | Confirmado remotamente |
+| Resumo diário sem agendamento configurado | Mecanismo pronto (0015), agendamento **não criado** no remoto |
+| Ausência de monitoração e de política de retenção | Inalteradas |
+
+### Novas
+
+| Limitação | Por quê |
+|---|---|
+| *Migrations* 0014, 0015 e 0016 não publicadas | Consequência de construir com autorização de publicação negada |
+| Função de envio de notificação não publicada | Idem |
+| Correção de segurança não publicada | O defeito está corrigido no repositório; a versão publicada é a anterior |
+| Sem validação de notificação em aparelho físico | Sem *build* com credencial de notificação |
+| Medição de desempenho sem aparelho instrumentado | O que a medição parcial não alcança |
+| Fila offline com escopo declarado | Não é correto dizer que o aplicativo funciona integralmente sem rede |
+| Vulnerabilidades em dependências de desenvolvimento | 21 ocorrências, todas em cadeia de compilação |
+| Toda evidência vem de ambientes locais | O risco simétrico que substitui o de "teste não executado" |
 
 ---
 
-## 9. Matriz de consistência entre os três documentos
+## 6. Documentos novos
 
-| Métrica | TCC | Atualizações | Inconsistências |
-|---|---|---|---|
-| Versão funcional avaliada | `c8121ba` | `c8121ba` | `c8121ba` |
-| Correção do arcabouço de teste | `93463a8` (4.3, 3.7) | `93463a8` | `93463a8` (INC-03) |
-| HEAD ao final da rodada | não declarado (referência é a versão funcional) | `abaa9d9` | `abaa9d9` |
-| Working tree | limpa no *commit* avaliado | limpa no início; modificada agora pelo ajuste final não versionado | limpa no início; modificada agora pelo ajuste final não versionado |
-| Data | 28 ago. 2026 | 28 ago. 2026 | 28 ago. 2026 |
-| Repositório | `.../easy-trip` (público) | `.../easy-trip` (público) | `.../easy-trip` (público) |
-| RF | 64 | 64 | 64 |
-| RNF | 61 | 61 | 61 |
-| Jest | 119 / 1.542 / 0 falhas | 119 / 1.542 / 0 falhas | 119 / 1.542 / 0 falhas |
-| Asserções SQL | 159, executadas, 0 falhas | 159, executadas, 0 falhas | 159, executadas, 0 falhas |
-| Blocos E2E | 292, não executados | 292, não executados | 292, não executados |
-| *Migrations* locais | 13 | 13 | 13 |
-| *Migrations* publicadas | 12 | 12 | 12 |
-| Edge Functions implementadas | 5 | 5 | 5 |
-| Edge Functions publicadas | 4 | 4 | 4 |
-| `delete-account` | não publicada | não publicada | não publicada (PEND-10) |
-| *Migration* 0013 | não publicada | não publicada | não publicada (PEND-09) |
-| Resumo diário | publicado, sem agendamento | publicado, sem agendamento | publicado, sem agendamento (PEND-11) |
-| Limitações em 4.6 | 11 | 11 | 11 |
-| Quadro 4 | "Recursos implementados", com nota de dependências | idem | idem |
-
-Nenhum valor diverge entre os três documentos.
+| Arquivo | Conteúdo | Estado |
+|---|---|---|
+| `E2E_EXECUTION_REPORT.md` | Causa do impedimento, isolamento, 28 falhas diagnosticadas, resultado final, e o que os testes **não** cobrem | Completo |
+| `SECURITY_MASVS_ASSESSMENT.md` | 24 controles do MASVS 2.1.0, evidência por controle, o defeito encontrado, e o que **não** foi avaliado | Completo |
+| `PERFORMANCE_BASELINE.md` | Metodologia, resultados com N/média/mediana/p95, tamanho do *bundle*, leitura dos números e o que **não** foi medido | Completo |
+| `AI_QUALITY_EVALUATION.md` | 18 cenários sintéticos, critérios, resultado, rubrica humana preparada, limitações | Camada 1 completa; camada 2 **não executada** |
+| `USER_EVALUATION_PROTOCOL.md` | Protocolo completo | **Estudo não executado** |
+| `USER_EVALUATION_RESULTS_TEMPLATE.md` | Modelo | **Vazio, deliberadamente** |
+| `FINAL_HARDENING_REPORT.md` | Consolidação da rodada | Completo |
 
 ---
 
-## 10. Comandos executados nesta rodada
+## 7. Comandos executados nesta rodada
 
 ```
-git status / git log -10 --oneline / git rev-parse HEAD / git rev-parse origin/main
-git diff --check / git diff --stat / git remote -v
+git status / git log / git rev-parse HEAD / git rev-parse origin/main
+git remote -v / git diff --check / git diff --stat
 npx tsc --noEmit --pretty false                            → 0 erros
 npx tsc -p supabase/functions/tsconfig.json --pretty false → 0 erros
-npx jest --runInBand      → 119 conjuntos, 1.542 casos, 0 falhas, 37,941 s
-npx eslint .              → 0 erros, 8 avisos (todos em tests/)
+npx jest --runInBand      → 124 conjuntos, 1.686 casos, 0 falhas
+npx eslint .              → 0 erros, 9 avisos (todos em tests/)
 npx expo-doctor           → 18/18
-docker run postgres:17    → PostgreSQL 17.11 descartável, banco novo por suíte
-  bootstrap + migrations 0001–0012   → todas aplicam
-  migration 0013, instalação limpa   → 0001–0013 aplicam, verificação interna aprovada
-  migration 0013, sobre 0001–0012    → aplica, verificação interna aprovada
-  rls_content.test.sql               → 28 asserções, 0 falhas, exit 0
-  rls_articles.test.sql              → 8 asserções, 0 falhas, exit 0
-  rls_collaboration.test.sql         → 92 asserções, 0 falhas, exit 0
-  legacy_upgrade.test.sql            → 31 asserções, 0 falhas, exit 0
-  contraprova com a definição antiga → para em 78 asserções, exit 3
-  catálogos: pg_tables, pg_policies, pg_trigger, pg_indexes, pg_constraint, pg_proc
-sondagem do backend publicado (REST + Edge Functions, somente leitura)
-api.github.com/repos/... (somente leitura, resolução do nome canônico)
+./scripts/sql-test.sh     → 16 migrations, instalação limpa + atualização,
+                            7 suítes, 265 asserções, 0 falhas
+./scripts/e2e/e2e-run.sh  → 11 arquivos, 11 executados, 403 asserções, 0 falhas
+./scripts/count-artifacts.sh
+scripts/benchmark.mjs     → domínio + backend local
+scripts/security-probe.mjs → 42 verificações, 0 falhas
+scripts/ai-eval/run.mjs   → 18 cenários, 18 aprovados
+npm audit                 → 21 (0 críticas, 9 altas), todas de desenvolvimento
+npx expo export --platform android → bundle Hermes 8,36 MB
+supabase migration list --linked   → somente leitura: remoto na 0012
+supabase functions list            → somente leitura: 4 de 6 publicadas
+contraprova de 0014 e 0015: defeito reintroduzido, suíte reprova, defeito removido
 ```
 
-Nenhum arquivo de `src/`, `supabase/functions/`, `supabase/migrations/`, `tests/`, `package.json` ou de configuração foi modificado. A única alteração de código é a correção de `auth.uid()` em `supabase/tests/_local_bootstrap.sql`, versionada em `93463a8`. Os contêineres descartáveis foram removidos ao final. Nenhum `db push`, publicação de função, agendamento remoto ou reinício de ambiente foi executado. Os dois *commits* posteriores a `c8121ba` — `93463a8` (suporte de teste) e `abaa9d9` (documentação) — não tocam o produto avaliado.
-
----
-
-## 11. Ajuste final de consistência
-
-Passagem posterior ao *commit* `abaa9d9`, restrita a três pontos de redação, sem nova auditoria e sem alteração de números:
-
-| Ponto | Alteração |
-|---|---|
-| Reprodutibilidade (3.7) | Separação explícita entre a versão funcional do produto (`c8121ba`) e a correção do arcabouço de teste (`93463a8`), com a afirmação de recuperação integral condicionada à combinação dos dois pontos do histórico |
-| Quadro 4 (3.2) | Cabeçalho da coluna, redação das linhas de autenticação e de IA, e nota de dependências abaixo do quadro |
-| Estado do Git (relatórios) | Distinção produto / arcabouço de teste, estado real da árvore de trabalho em cada momento e atualização da matriz de consistência |
-
-Nenhuma contagem foi alterada: permanecem 64 RF, 61 RNF, 119 conjuntos, 1.542 casos, 159 asserções SQL, 292 blocos de ponta a ponta não executados, 13 *migrations* locais e 12 publicadas, 5 Edge Functions implementadas e 4 publicadas. Nenhuma pendência real foi removida. Arquivos tocados nesta passagem: `tcc_easy_trip_v5.md`, `ATUALIZACOES_TCC_EASY_TRIP_V5.md` e `INCONSISTENCIAS_TCC_EASY_TRIP_V5.md`. `supabase/tests/_local_bootstrap.sql` foi apenas inspecionado, e não modificado.
+Nenhum `db push`, nenhuma publicação de função, nenhum agendamento remoto, nenhum `git push`. Todos os contêineres descartáveis foram removidos. O *stack* local de desenvolvimento do autor foi parado **com backup** por contenção de recursos (2 vCPU), e é restaurável por `supabase start`.
