@@ -23,7 +23,21 @@ function comExtensao(base) {
   return base;
 }
 
+/**
+ * `expo-crypto` só quando pedido explicitamente.
+ *
+ * A avaliação da IA importa `@/domain/aiActions`, que importa `@/lib/id`, que
+ * importa `expo-crypto` — e `expo-modules-core` não roda no `node` puro. A
+ * troca acontece apenas com `EVAL_STUB_EXPO=1`, para que ela seja uma decisão
+ * de quem executa e não um silêncio do arcabouço.
+ */
+const STUB_EXPO = process.env.EVAL_STUB_EXPO === '1';
+const EXPO_CRYPTO_STUB = new URL('ai-eval/expo-crypto-stub.mjs', import.meta.url).href;
+
 export async function resolve(specifier, context, next) {
+  if (STUB_EXPO && specifier === 'expo-crypto') {
+    return { url: EXPO_CRYPTO_STUB, shortCircuit: true };
+  }
   if (specifier.startsWith('@/assets/')) {
     return next(comExtensao(ASSETS + specifier.slice('@/assets/'.length)), context);
   }
