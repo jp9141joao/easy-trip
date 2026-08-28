@@ -1,0 +1,137 @@
+# =============================================================================
+# Publicação no Supabase — manual, aprovada, e nunca automática.
+#
+# A REGRA QUE DEFINE ESTE ARQUIVO
+#
+# Nenhuma migration e nenhuma Edge Function vai a produção por consequência de
+# um merge. Publicar é um ato deliberado: alguém escolhe o quê, quando, e assume
+# a responsabilidade. Um pipeline que publica sozinho ao aceitar uma proposta de
+# mudança transforma revisão de código em autorização de produção, e as duas
+# coisas não são a mesma.
+#
+# Três travas, e cada uma pega um caso diferente:
+#
+#   1. `workflow_dispatch` apenas       — não existe gatilho por push ou merge.
+#   2. `environment: production`        — o GitHub exige aprovação de um revisor
+#                                         configurado antes de o job começar, e
+#                                         é onde os segredos vivem.
+#   3. `confirmar: "PUBLICAR"`          — o disparo pede a palavra digitada, para
+#                                         que abrir o menu errado não publique.
+#
+# ANTES DE USAR, configure no repositório:
+#
+#   Settings → Environments → production
+#     · Required reviewers: pelo menos uma pessoa
+#     · Deployment branches: somente `main`
+#     · Secrets: SUPABASE_ACCESS_TOKEN, SUPABASE_PROJECT_REF, SUPABASE_DB_PASSWORD
+#
+# Enquanto o environment não existir com revisor obrigatório, este workflow não
+# é uma trava — é só um botão. A trava é a configuração.
+# =============================================================================
+name: Publicar
+
+on:
+  workflow_dispatch:
+    inputs:
+      alvo:
+        description: 'O que publicar'
+        required: true
+        type: choice
+        options:
+          - migrations
+          - functions
+          - ambos
+      confirmar:
+        description: 'Digite PUBLICAR para confirmar'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    name: Pré-condições
+    runs-on: ubuntu-latest
+    steps:
+      - name: A palavra de confirmação
+        if: inputs.confirmar != 'PUBLICAR'
+        run: |
+          echo "::error::Digite PUBLICAR para confirmar. Recebido: '${{ inputs.confirmar }}'"
+          exit 1
+      - name: Somente a partir de main
+        # Publicar de um ramo é publicar código que ninguém revisou junto.
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::A publicação só sai de main. Ramo atual: ${{ github.ref }}"
+          exit 1
+
+  qualidade:
+    name: Regressão antes de publicar
+    needs: verificar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # As mesmas verificações da CI, repetidas aqui de propósito: a CI garante
+      # que a `main` estava boa quando o commit entrou, e isto garante que ela
+      # está boa AGORA, com as dependências que serão resolvidas nesta hora.
+      - run: npx tsc --noEmit --pretty false
+      - run: npx tsc -p supabase/functions/tsconfig.json --pretty false
+      - run: npx eslint .
+      - run: npx jest --runInBand --ci
+      - name: Migrations em banco descartável
+        run: ./scripts/sql-test.sh
+      - name: Ponta a ponta
+        run: ./scripts/e2e/e2e-run.sh
+
+  publicar:
+    name: Supabase
+    needs: qualidade
+    runs-on: ubuntu-latest
+    # A aprovação humana acontece AQUI, depois de a regressão ter passado. Quem
+    # aprova vê o resultado dos testes antes de decidir.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Vincular ao projeto
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+
+      - name: O que está pendente
+        # Impresso ANTES de aplicar qualquer coisa, e é a última chance de ver
+        # divergência entre o repositório e o remoto no registro da execução.
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase migration list --linked
+
+      - name: Migrations
+        if: inputs.alvo == 'migrations' || inputs.alvo == 'ambos'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        # `db push` aplica SOMENTE as migrations pendentes. Nunca `db reset`,
+        # que recriaria o banco de produção do zero.
+        run: supabase db push --linked
+
+      - name: Edge Functions
+        if: inputs.alvo == 'functions' || inputs.alvo == 'ambos'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase functions deploy --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+
+      - name: Conferir o estado depois
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase migration list --linked

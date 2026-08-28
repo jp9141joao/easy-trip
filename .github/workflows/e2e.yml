@@ -1,0 +1,59 @@
+# =============================================================================
+# Ponta a ponta contra uma pilha Supabase local.
+#
+# POR QUE NÃO RODA EM TODO PUSH
+#
+# A pilha sobe doze contêineres e leva minutos. Rodá-la em cada proposta de
+# mudança faria o retorno do CI passar de segundos para minutos sem acrescentar
+# sinal na maioria das mudanças — as que mexem em tela já são cobertas pelo
+# Jest, e as que mexem em schema já são cobertas pelas suítes SQL da `ci.yml`.
+#
+# Então roda: sob demanda, e uma vez por dia. A execução diária é a que pega
+# quebra por dependência externa — imagem do Supabase, versão do CLI — que
+# nenhum commit do projeto causou e que ninguém descobriria antes de precisar.
+#
+# Nenhum segredo é usado. A pilha é local e o segredo do cron é o valor fixo de
+# teste que `e2e-env.sh` instala.
+# =============================================================================
+name: E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+  pull_request:
+    # Só quando a mudança pode afetar o backend de verdade.
+    paths:
+      - 'supabase/**'
+      - 'scripts/e2e/**'
+      - '.github/workflows/e2e.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Suítes de ponta a ponta
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Executar
+        run: ./scripts/e2e/e2e-run.sh
+      - name: Relatório
+        # `always()`: o relatório de uma execução que falhou é justamente o que
+        # se quer ler.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: .e2e-report.txt
+          if-no-files-found: warn
+      - name: Derrubar a pilha
+        if: always()
+        run: ./scripts/e2e/e2e-stop.sh

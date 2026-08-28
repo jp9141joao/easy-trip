@@ -1,0 +1,97 @@
+# =============================================================================
+# Validação de qualidade — roda em todo push e em toda proposta de mudança.
+#
+# O objetivo é um só: nada entra na `main` sem passar pelo mesmo conjunto de
+# verificações que se roda na máquina. As três primeiras tarefas são rápidas e
+# independentes, e por isso rodam em paralelo — quem quebrou o TypeScript não
+# precisa esperar o Jest para descobrir.
+#
+# `banco` é separada das demais porque precisa de Docker e leva mais tempo. Ela
+# roda as MESMAS suítes SQL que `./scripts/sql-test.sh` roda localmente, contra
+# um PostgreSQL descartável. Não fala com o projeto remoto e não usa segredo
+# nenhum — o que é uma propriedade, não uma limitação: uma verificação de
+# qualidade que exige credencial de produção não pode rodar numa proposta de
+# mudança vinda de fora.
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tipos:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Aplicativo
+        run: npx tsc --noEmit --pretty false
+      - name: Edge Functions
+        # Arquivo de projeto próprio: as Functions rodam em Deno e não
+        # compartilham `tsconfig.json` com o bundle.
+        run: npx tsc -p supabase/functions/tsconfig.json --pretty false
+
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx eslint .
+      - name: Espaço em branco e marcador de conflito
+        # `git diff --check` sobre a árvore inteira: pega marcador de conflito
+        # que passou despercebido e espaço em branco no fim da linha.
+        run: git diff --check HEAD
+
+  testes:
+    name: Jest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx jest --runInBand --ci
+
+  expo:
+    name: Expo Doctor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx expo-doctor
+
+  banco:
+    name: Migrations e RLS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Suítes SQL em PostgreSQL descartável
+        # Instalação limpa (0001–N), caminho de atualização com dados legados, e
+        # as quatro suítes de RLS — cada uma num banco novo.
+        run: ./scripts/sql-test.sh
