@@ -66,15 +66,64 @@ export function canEditTripSettings(role: TripRole | undefined): boolean {
 }
 
 /**
- * Sair da viagem. O proprietário não sai enquanto houver mais alguém dentro
- * (§50): sair deixaria a viagem sem quem gerencie e o conteúdo compartilhado
- * dos outros sem dono. Transferência de propriedade não existe nesta fase, e
- * improvisar uma seria pior do que não ter.
+ * Sair da viagem. O proprietário não sai enquanto houver mais alguém dentro:
+ * sair deixaria a viagem sem quem gerencie e o conteúdo compartilhado dos
+ * outros sem dono. O caminho para ele existe e é `transferOwnership` — depois
+ * de transferir, ele vira editor e passa por aqui como qualquer outro.
  */
 export function canLeaveTrip(role: TripRole | undefined, memberCount: number): boolean {
   if (!role) return false;
   if (role !== 'owner') return true;
   return memberCount <= 1;
+}
+
+/**
+ * Transferir a viagem a outra pessoa (§50, migration 0014).
+ *
+ * Só o proprietário, e só quando há para quem transferir. Numa viagem de uma
+ * pessoa só o controle não aparece: não existe destinatário possível, e um
+ * botão que abre uma lista vazia é pior do que botão nenhum.
+ */
+export function canTransferOwnership(
+  role: TripRole | undefined,
+  candidateCount: number,
+): boolean {
+  return role === 'owner' && candidateCount > 0;
+}
+
+/**
+ * Quem pode receber a viagem.
+ *
+ * A regra do servidor é "tem linha em `trip_members`" — o que exclui convite
+ * pendente sem precisar consultar convites, porque aceitar é o que cria a
+ * linha. Aqui a lista é a mesma, menos quem já é dono: a tela não deve oferecer
+ * uma transferência que a função recusaria.
+ *
+ * Ordena por nome para a lista não mudar de ordem entre aberturas — a origem é
+ * `trip_members`, cuja ordem o Postgres não garante.
+ */
+export function transferCandidates(members: TripMember[], selfId?: string): TripMember[] {
+  return members
+    .filter((member) => member.role !== 'owner' && member.userId !== selfId)
+    .sort((a, b) =>
+      memberDisplayName(a, selfId).localeCompare(memberDisplayName(b, selfId), 'pt-BR'),
+    );
+}
+
+/**
+ * O aviso que precede a confirmação.
+ *
+ * Diz as três coisas que a pessoa perde, porque a transferência não é
+ * reversível pelo mesmo caminho: depois dela, desfazer depende de o novo
+ * proprietário concordar em transferir de volta.
+ */
+export function transferWarning(name: string): string {
+  return (
+    `${name} passa a ser proprietário desta viagem e assume o controle de convites, ` +
+    'permissões, configurações e exclusão. Você continua na viagem como editor e ' +
+    'mantém o que criou — mas só poderá voltar a ser proprietário se essa pessoa ' +
+    'transferir de volta.'
+  );
 }
 
 /* -------------------------------- rótulos --------------------------------- */

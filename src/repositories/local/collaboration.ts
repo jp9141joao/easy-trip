@@ -107,6 +107,7 @@ export function createLocalMembership(
     cancelInvite: unavailable('Cancelar convites'),
     setRole: unavailable('Alterar permissões'),
     removeMember: unavailable('Remover viajantes'),
+    transferOwnership: unavailable('Transferir a propriedade da viagem'),
     leave: unavailable('Sair da viagem'),
     async myRole(tripId, userId) {
       const ownerId = await tripOwner(tripId);

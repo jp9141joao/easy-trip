@@ -285,6 +285,19 @@ export function createMembershipRepository(deps: CollaborationDeps): MembershipR
     removeMember: (tripId, userId) =>
       callRpc<void>('remove_trip_member', { target_trip: tripId, target_user: userId }),
 
+    async transferOwnership(tripId, userId) {
+      // RPC, e não dois UPDATE. A propriedade mora em `trips.user_id` E em
+      // `trip_members.role` (as duas pernas de `is_trip_owner`, 0008), e
+      // gravá-las daqui seriam duas requisições: uma falha entre elas deixaria
+      // a viagem com dois donos ou nenhum. `transfer_trip_ownership` (0014)
+      // grava as duas numa transação só.
+      const row = await callRpc<Row>('transfer_trip_ownership', {
+        target_trip: tripId,
+        new_owner: userId,
+      });
+      return toMember(row, {});
+    },
+
     leave: (tripId) => callRpc<void>('leave_trip', { target_trip: tripId }),
 
     async myRole(tripId, userId) {

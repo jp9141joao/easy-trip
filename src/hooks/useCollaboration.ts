@@ -139,6 +139,30 @@ export function useMembershipMutations(tripId: string) {
     onSuccess: invalidate,
   });
 
+  /**
+   * Transferir a propriedade (§50).
+   *
+   * A invalidação aqui é mais larga que a das outras mutações de membro, e por
+   * um motivo concreto: quem transfere PERDE permissões na mesma ação. A tela
+   * que ficou aberta continuaria oferecendo "Convidar", "Remover" e
+   * "Transferir" até o próximo `refetch`, e cada um desses toques viraria um
+   * erro vindo do servidor — que já recusaria, mas depois de a pessoa ter
+   * tocado.
+   *
+   * `invalidate` cobre membros, convites e a lista de viagens. Falta a viagem
+   * em si: `trips.user_id` mudou, e é dela que sai o que a tela de detalhe
+   * mostra sobre propriedade.
+   */
+  const transferOwnership = useMutation({
+    mutationFn: (userId: string) => dataSource.members.transferOwnership(tripId, userId),
+    onSuccess: async () => {
+      await Promise.all([
+        invalidate(),
+        queryClient.invalidateQueries({ queryKey: queryKeys.trip(tripId) }),
+      ]);
+    },
+  });
+
   const cancelInvite = useMutation({
     mutationFn: (inviteId: string) => dataSource.members.cancelInvite(inviteId),
     onSuccess: invalidate,
@@ -169,7 +193,7 @@ export function useMembershipMutations(tripId: string) {
     },
   });
 
-  return { invite, setRole, removeMember, cancelInvite, leave };
+  return { invite, setRole, removeMember, transferOwnership, cancelInvite, leave };
 }
 
 /**

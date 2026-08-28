@@ -36,6 +36,7 @@ import {
 import { AuroraBackground } from '@/components/ui/Surface';
 import { traceAuth } from '@/lib/authTrace';
 import { config, configIssues } from '@/lib/config';
+import { AccountDeletionBlockedError } from '@/repositories/auth';
 import { useAuth } from '@/providers/AuthProvider';
 import { useConnectivity } from '@/providers/ConnectivityProvider';
 import { dataSource } from '@/repositories';
@@ -60,6 +61,10 @@ export default function SettingsScreen() {
   const [signingOut, setSigningOut] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // A recusa por propriedade vira uma tela própria, não um toast. Um toast
+  // some em segundos, e esta é uma condição que a pessoa precisa LER para
+  // saber o que fazer — quais viagens travam, e que o caminho é transferir.
+  const [blocked, setBlocked] = useState<AccountDeletionBlockedError | null>(null);
 
   // A proteção de rotas continua sendo a autoridade. O logout explícito usa
   // também um `replace` depois da invalidação comprovada, apenas como rede de
@@ -105,8 +110,15 @@ export default function SettingsScreen() {
       // não é enviado e não poderia ser trocado.
       await deleteAccount();
       toast.success('Conta e dados excluídos');
-    } catch {
-      toast.error('Não foi possível excluir a conta. Tente novamente.');
+    } catch (error) {
+      // Recusa por propriedade NÃO é falha (§50). Dizer "tente novamente" aqui
+      // seria mentira: tentar de novo dá o mesmo resultado até a pessoa
+      // transferir a viagem ou encerrar a colaboração.
+      if (error instanceof AccountDeletionBlockedError) {
+        setBlocked(error);
+      } else {
+        toast.error('Não foi possível excluir a conta. Tente novamente.');
+      }
     } finally {
       setDeleting(false);
       setConfirmDelete(false);
@@ -296,6 +308,30 @@ export default function SettingsScreen() {
         loading={signingOut}
         onConfirm={() => void handleSignOut()}
         onCancel={() => (signingOut ? undefined : setConfirmSignOut(false))}
+      />
+
+      {/*
+        O que impede a exclusão, e o que fazer a respeito.
+
+        Um único botão, e ele NÃO é "excluir mesmo assim": essa opção não
+        existe, porque o que ela apagaria é conteúdo de outras pessoas. O que a
+        tela oferece é o caminho real — abrir a viagem e transferi-la.
+      */}
+      <ConfirmDialog
+        visible={Boolean(blocked)}
+        title="Sua conta ainda não pode ser excluída"
+        message={
+          blocked
+            ? `${blocked.message}\n\nSuas viagens e seus dados continuam intactos — nada foi apagado.`
+            : ''
+        }
+        confirmLabel="Ver viagens"
+        cancelLabel="Agora não"
+        onConfirm={() => {
+          setBlocked(null);
+          router.push('/(tabs)/trips');
+        }}
+        onCancel={() => setBlocked(null)}
       />
 
       <ConfirmDialog

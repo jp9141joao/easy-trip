@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { Clock3, LogOut, UserPlus, Users, X } from 'lucide-react-native';
+import { Clock3, Crown, LogOut, UserPlus, Users, X } from 'lucide-react-native';
 import { useState } from 'react';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,7 +22,10 @@ import {
 import { AuroraBackground } from '@/components/ui/Surface';
 import {
   ROLE_LABEL,
+  canTransferOwnership,
   memberDisplayName,
+  transferCandidates,
+  transferWarning,
   type InvitableRole,
   type TripMember,
 } from '@/domain/collaboration';
@@ -63,8 +66,15 @@ export default function MembersScreen() {
   const [managing, setManaging] = useState<TripMember | null>(null);
   const [removing, setRemoving] = useState<TripMember | null>(null);
   const [leaving, setLeaving] = useState(false);
+  // Dois estados, e não um: escolher para quem transferir é uma tela, confirmar
+  // é outra. Fundir as duas faria a lista de pessoas ser ela própria a
+  // confirmação — um toque errado transferiria a viagem (§50).
+  const [transferPicker, setTransferPicker] = useState(false);
+  const [transferTarget, setTransferTarget] = useState<TripMember | null>(null);
 
   const demoMode = dataSource.kind === 'local';
+  const candidates = transferCandidates(permissions.members, user?.id);
+  const canTransfer = !demoMode && canTransferOwnership(permissions.role, candidates.length);
 
   const permissionsUnavailable =
     permissions.status === 'error' || permissions.status === 'unavailable';
@@ -156,6 +166,21 @@ export default function MembersScreen() {
     } catch (error) {
       setLeaving(false);
       toast.error(memberActionError(error, 'Não foi possível sair da viagem.'));
+    }
+  };
+
+  const handleTransfer = async () => {
+    if (!transferTarget) return;
+    const name = memberDisplayName(transferTarget, user?.id);
+    try {
+      await mutations.transferOwnership.mutateAsync(transferTarget.userId);
+      setTransferTarget(null);
+      toast.success(`${name} agora é proprietário desta viagem`);
+    } catch (error) {
+      // O alvo continua na tela: a pessoa erra a escolha, corrige e tenta de
+      // novo sem reabrir a lista. Fechar tudo em caso de erro obrigaria a
+      // refazer o caminho inteiro por uma falha que pode ser de rede.
+      toast.error(memberActionError(error, 'Não foi possível transferir a propriedade.'));
     }
   };
 
@@ -277,6 +302,16 @@ export default function MembersScreen() {
           </InlineNotice>
         )}
 
+        {canTransfer ? (
+          <Button
+            label="Transferir propriedade"
+            variant="secondary"
+            icon={Crown}
+            fullWidth
+            onPress={() => setTransferPicker(true)}
+          />
+        ) : null}
+
         {permissions.canLeave && permissions.role !== 'owner' ? (
           <Button
             label="Sair desta viagem"
@@ -290,7 +325,7 @@ export default function MembersScreen() {
         {permissions.role === 'owner' && permissions.memberCount > 1 ? (
           <AppText variant="caption" color="tertiary">
             Como proprietário, você não pode sair da viagem enquanto houver outros viajantes.
-            Remova-os primeiro, ou exclua a viagem.
+            Transfira a propriedade a um deles, remova-os, ou exclua a viagem.
           </AppText>
         ) : null}
       </ScrollView>
@@ -351,6 +386,59 @@ export default function MembersScreen() {
         loading={mutations.removeMember.isPending}
         onConfirm={() => void handleRemove()}
         onCancel={() => setRemoving(null)}
+      />
+
+      {/*
+        Escolher para quem transferir.
+
+        A lista é `transferCandidates`, que já exclui o próprio proprietário e
+        quem só tem convite pendente — as mesmas pessoas que
+        `transfer_trip_ownership` (0014) aceita. Oferecer aqui alguém que a
+        função recusaria transformaria uma regra do banco num erro de tela.
+      */}
+      <BottomSheet
+        visible={transferPicker}
+        onClose={() => setTransferPicker(false)}
+        title="Transferir propriedade"
+        subtitle="Escolha quem passa a ser o proprietário desta viagem"
+      >
+        <View style={{ gap: theme.spacing.sm }}>
+          {candidates.map((member) => (
+            <Button
+              key={member.id}
+              label={`${memberDisplayName(member, user?.id)} · ${ROLE_LABEL[member.role]}`}
+              variant="secondary"
+              fullWidth
+              onPress={() => {
+                setTransferPicker(false);
+                setTransferTarget(member);
+              }}
+            />
+          ))}
+          <AppText variant="caption" color="tertiary">
+            Só aparecem viajantes que já aceitaram o convite. Quem ainda não
+            respondeu não pode receber a viagem.
+          </AppText>
+        </View>
+      </BottomSheet>
+
+      {/*
+        A confirmação NÃO é `destructive`.
+
+        Transferir não destrói nada — o conteúdo fica, as pessoas ficam, e quem
+        transfere continua na viagem como editor. Pintar de vermelho e escrever
+        "Excluir" ensinaria a pessoa a ler o diálogo de exclusão de viagem como
+        se fosse este. O que o texto precisa deixar claro é outra coisa: que
+        desfazer depende do outro lado.
+      */}
+      <ConfirmDialog
+        visible={Boolean(transferTarget)}
+        title="Transferir esta viagem?"
+        message={transferTarget ? transferWarning(memberDisplayName(transferTarget, user?.id)) : ''}
+        confirmLabel="Transferir"
+        loading={mutations.transferOwnership.isPending}
+        onConfirm={() => void handleTransfer()}
+        onCancel={() => setTransferTarget(null)}
       />
 
       <ConfirmDialog

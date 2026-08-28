@@ -334,6 +334,15 @@ export interface MembershipRepository {
   cancelInvite(inviteId: string): Promise<void>;
   setRole(tripId: string, userId: string, role: InvitableRole): Promise<TripMember>;
   removeMember(tripId: string, userId: string): Promise<void>;
+  /**
+   * Passa a viagem a outro membro (§50, migration 0014).
+   *
+   * O destinatário precisa já ter aceitado o convite — quem só foi convidado
+   * não tem linha em `trip_members` e a função do banco recusa. A troca é
+   * atômica e move as DUAS pernas de `is_trip_owner`: `trips.user_id` e o papel
+   * em `trip_members`. Devolve a linha do novo proprietário.
+   */
+  transferOwnership(tripId: string, userId: string): Promise<TripMember>;
   leave(tripId: string): Promise<void>;
   /** O papel da sessão nesta viagem. `null` quando não participa. */
   myRole(tripId: string, userId: string): Promise<TripRole | null>;

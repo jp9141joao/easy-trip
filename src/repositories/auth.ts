@@ -95,6 +95,35 @@ export interface AuthAdapter {
 }
 
 /**
+ * A conta não pode ser excluída porque destruiria dado alheio.
+ *
+ * `trips.user_id` referencia `auth.users` com `on delete cascade` (0001): se o
+ * proprietário de uma viagem compartilhada sumir, a viagem some junto — com as
+ * despesas, o diário e o roteiro dos OUTROS membros. A Edge Function recusa, e
+ * este erro carrega a lista de viagens para a tela poder dizer quais são.
+ *
+ * Não é uma falha de rede nem um "tente de novo": é uma condição que a pessoa
+ * resolve transferindo a propriedade ou encerrando a colaboração.
+ */
+export class AccountDeletionBlockedError extends Error {
+  readonly code = 'ownership-blocked' as const;
+  readonly trips: { tripId: string; destinationCity: string; otherMembers: number }[];
+
+  constructor(trips: AccountDeletionBlockedError['trips']) {
+    const nomes = trips.map((t) => t.destinationCity).join(', ');
+    super(
+      trips.length === 1
+        ? `Você é proprietário da viagem ${nomes}, que tem outros viajantes. ` +
+          'Transfira a propriedade ou remova os demais antes de excluir a conta.'
+        : `Você é proprietário de ${trips.length} viagens com outros viajantes (${nomes}). ` +
+          'Transfira a propriedade ou remova os demais antes de excluir a conta.',
+    );
+    this.name = 'AccountDeletionBlockedError';
+    this.trips = trips;
+  }
+}
+
+/**
  * Traduz a resposta do provedor para algo que uma pessoa entenda.
  *
  * Duas regras: a mensagem do Supabase nunca chega crua à tela (ela é em inglês,
@@ -488,7 +517,16 @@ class SupabaseAuthAdapter implements AuthAdapter {
     // in the bundle (§17). The Edge Function `delete-account` does it with the
     // caller's own JWT.
     const client = getSupabaseClient();
-    const { error } = await client.functions.invoke('delete-account');
+    const { data, error } = await client.functions.invoke('delete-account');
+
+    // Recusa por propriedade não é falha: é a resposta certa, e a tela precisa
+    // dizer POR QUE e o que fazer. `functions.invoke` entrega qualquer status
+    // não-2xx como `error` com o corpo fora de alcance, então a função responde
+    // 200 com `{ ok: false, reason }` justamente para este caso — ver o
+    // cabeçalho de `supabase/functions/delete-account/index.ts`.
+    const blocked = readDeletionBlock(data);
+    if (blocked) throw new AccountDeletionBlockedError(blocked);
+
     if (error) throw new AuthError('Não foi possível excluir a conta agora.', 'network');
     // A conta já não existe do outro lado: revogar remotamente não tem alvo, e
     // uma falha de rede aqui não pode deixar o aparelho autenticado numa conta
@@ -512,3 +550,31 @@ function toSession(session: { access_token: string; user: { id: string; email?: 
 export const authAdapter: AuthAdapter = config.hasSupabase
   ? new SupabaseAuthAdapter()
   : new LocalAuthAdapter();
+
+/**
+ * Lê a recusa por propriedade da resposta da Edge Function.
+ *
+ * Defensiva de propósito: uma versão antiga da função publicada responde
+ * `{ ok: true }` e cai fora daqui sem erro. O contrário — tratar ausência de
+ * campo como bloqueio — impediria de excluir a conta contra um backend que
+ * ainda não conhece a regra.
+ */
+function readDeletionBlock(
+  data: unknown,
+): AccountDeletionBlockedError['trips'] | null {
+  if (!data || typeof data !== 'object') return null;
+  const body = data as { ok?: unknown; reason?: unknown; trips?: unknown };
+  if (body.ok !== false || body.reason !== 'ownership-blocked') return null;
+  if (!Array.isArray(body.trips)) return [];
+  return body.trips.flatMap((row) => {
+    if (!row || typeof row !== 'object') return [];
+    const t = row as Record<string, unknown>;
+    return typeof t.tripId === 'string' && typeof t.destinationCity === 'string'
+      ? [{
+          tripId: t.tripId,
+          destinationCity: t.destinationCity,
+          otherMembers: typeof t.otherMembers === 'number' ? t.otherMembers : 0,
+        }]
+      : [];
+  });
+}
