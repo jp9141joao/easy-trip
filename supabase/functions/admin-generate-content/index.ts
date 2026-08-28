@@ -158,10 +158,6 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
-  if (!GEMINI_API_KEY) {
-    return json({ error: 'O serviço de IA não está configurado neste ambiente.' }, 503);
-  }
-
   // ---- Identidade vem do JWT, nunca do corpo da requisição ----
   const authHeader = req.headers.get('Authorization') ?? '';
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -185,6 +181,25 @@ Deno.serve(async (req) => {
     // Mesma resposta para "não é admin" e "não deu para verificar": na dúvida,
     // sem privilégio. Erro de leitura nunca libera a operação.
     return json({ error: 'Operação restrita a administradores.' }, 403);
+  }
+
+  // ---- Só agora a configuração ----
+  //
+  // A ORDEM É A CORREÇÃO. Esta checagem ficava ANTES da autenticação, e o
+  // efeito era um 503 dizendo "o serviço de IA não está configurado" para
+  // qualquer chamador sem credencial — um detalhe da implantação entregue a
+  // quem não provou ser ninguém.
+  //
+  // É o mesmo princípio que `trip-daily-briefing/protocol.ts` já enunciava e
+  // esta função contrariava: *configuração interna não é informação para um
+  // chamador sem privilégio, e auth nunca pode virar 503 por acaso*. Quem não
+  // se autenticou recebe 401; quem não é admin recebe 403; e só quem passou
+  // pelas duas descobre se a chave existe.
+  //
+  // Encontrado pela avaliação interna de segurança (SECURITY_MASVS_ASSESSMENT.md,
+  // MASVS-CODE-4).
+  if (!GEMINI_API_KEY) {
+    return json({ error: 'O serviço de IA não está configurado neste ambiente.' }, 503);
   }
 
   if (rateLimited(userId)) {

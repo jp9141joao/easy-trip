@@ -288,3 +288,48 @@ describe('para onde o toque leva', () => {
     expect(destinationRoute(readDestination(resposta('texto solto')))).toBeNull();
   });
 });
+
+/* ---------------------------- ordem das checagens -------------------------- */
+
+describe('configuração nunca vaza para quem não se autenticou', () => {
+  /**
+   * Regressão de um defeito real, encontrado pela sondagem de segurança
+   * (`scripts/security-probe.mjs`, MASVS-CODE-4).
+   *
+   * `admin-generate-content` checava `GEMINI_API_KEY` ANTES de autenticar, e
+   * respondia 503 "o serviço de IA não está configurado" para qualquer chamador
+   * sem credencial — um detalhe da implantação entregue a quem não provou ser
+   * ninguém.
+   *
+   * O princípio já estava escrito em `trip-daily-briefing/protocol.ts`:
+   * *auth nunca pode virar 503 por acaso*. Estas asserções o prendem nas três
+   * funções que têm credencial de servidor, para o próximo arquivo do gênero
+   * não repetir o erro.
+   */
+  const fonte = (nome: string) =>
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '../../supabase/functions', nome, 'index.ts'),
+      'utf8',
+    ) as string;
+
+  it.each(['admin-generate-content', 'send-push', 'trip-daily-briefing'])(
+    '%s autentica antes de olhar a própria configuração',
+    (nome) => {
+      const src = fonte(nome);
+      const dentroDoHandler = src.slice(src.indexOf('Deno.serve'));
+
+      const primeiro503 = dentroDoHandler.indexOf('503');
+      const primeiraAuth = Math.min(
+        ...['getUser(', 'authorizePush(', 'authorizeDailyBriefing(']
+          .map((marca) => dentroDoHandler.indexOf(marca))
+          .filter((i) => i >= 0),
+      );
+
+      expect(primeiraAuth).toBeGreaterThanOrEqual(0);
+      if (primeiro503 >= 0) {
+        expect(primeiro503).toBeGreaterThan(primeiraAuth);
+      }
+    },
+  );
+});
