@@ -103,6 +103,24 @@ defeito do produto; todas eram do arcabouço de teste, e todas foram corrigidas.
 A terceira delas também destravou uma asserção que estava sendo **pulada**
 (`16: cron autorizado`), e que agora executa.
 
+## 4.1 Uma fragilidade de ambiente, registrada
+
+Numa das execuções finais a pilha não subiu: quatro contêineres foram
+reportados como não saudáveis e o executor abortou com "chaves indisponíveis",
+sem rodar suíte alguma. A causa é contenção de recursos — a máquina tem 2 vCPU
+e 7 GB, e a execução anterior das suítes SQL ainda mantinha um contêiner de
+banco de pé. Liberados os recursos, a execução seguinte passou integralmente.
+
+Registra-se por três razões. Primeira, é honesto: a suíte não é 100% confiável
+nesta máquina. Segunda, o modo de falha é **seguro** — o executor recusa-se a
+prosseguir sem as chaves, em vez de rodar contra um alvo indefinido ou reportar
+zero falhas por não ter rodado nada. Terceira, é a razão de o executor separar
+"não executado" de "falhou": uma suíte que não rodou não pode entrar na conta
+como aprovada nem como reprovada.
+
+Numa máquina com mais recursos, ou não executando as duas suítes em sequência
+imediata, o problema não aparece.
+
 ## 5. O que estes testes cobrem
 
 - **Autenticação**: cadastro, entrada, sessão, recuperação, expiração.
