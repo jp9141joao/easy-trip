@@ -10,16 +10,20 @@ Relatório das alterações aplicadas ao `tcc_easy_trip_v5.md`, consolidado apó
 |---|---|
 | Repositório | `easy-trip` — https://github.com/jp9141joao/easy-trip (público) |
 | Branch | `main` |
-| HEAD | `c8121ba5c5f9a3b10453944442c7d98e6d64b77d` (`c8121ba`) |
-| `origin/main` | `c8121ba…` — idêntico ao HEAD, sem divergência |
-| Working tree | **LIMPA** no início da rodada (`nothing to commit, working tree clean`) |
+| HEAD atual | `abaa9d92bb9023ecd156b8d2f43a730cab88b1d9` (`abaa9d9`, "Update Easy Trip TCC v5 after final validation") |
+| `origin/main` | `abaa9d9…` — idêntico ao HEAD, sem divergência |
+| Working tree | **LIMPA no início da rodada** (`nothing to commit, working tree clean`); modificada ao longo dela pela correção do suporte de testes e pela atualização documental, e limpa novamente após os *commits* `93463a8` e `abaa9d9`; **modificada no momento em que este relatório é escrito**, pelo ajuste final de consistência descrito na seção 11, ainda não versionado |
 | `git diff --check` | limpo (sem erros de espaço em branco) |
 | Data da análise | 2026-08-28 |
-| Versão efetivamente avaliada | **`c8121ba`** — recuperável por terceiros no repositório público |
+| Versão funcional do aplicativo avaliada | **`c8121ba`** — recuperável por terceiros no repositório público |
+| Correção do arcabouço de testes | **`93463a8de8d64d0fa6205510345e66ef43639e71`** (`93463a8`, "Fix local Supabase auth test bootstrap") — apenas `supabase/tests/_local_bootstrap.sql` |
+| Atualização documental | **`abaa9d9`** — apenas os três documentos do TCC |
 
 O *commit* `c8121ba` ("Add trip cover, global alerts, daily spending goals and travel context improvements") incorpora a rodada de melhorias avaliada: capa da viagem, meta de gasto diário, idioma do destino, avisos globais, reposicionamento das Sugestões, registro central de metadados de país, conversor de moedas contextual, `supabase/migrations/0013_trip_cover_and_daily_goal.sql` e oito arquivos de teste.
 
-> **Reprodutibilidade — resolvida.** A recomendação de *checkpoint* da rodada anterior deixou de existir: a versão medida está versionada e publicada, e o *commit* foi confirmado presente no repositório remoto. A limitação "versão avaliada não versionada" foi removida do TCC.
+> **Reprodutibilidade — resolvida, com dois pontos de histórico.** A versão funcional medida está versionada e publicada, e o *commit* foi confirmado presente no repositório remoto; a limitação "versão avaliada não versionada" foi removida do TCC. É preciso, porém, distinguir **produto** de **arcabouço de teste**: a correção de `auth.uid()` em `supabase/tests/_local_bootstrap.sql`, que permitiu executar as suítes SQL até o fim, **não está contida em `c8121ba`** — foi versionada depois, em `93463a8`. Os resultados da camada de aplicação são reproduzíveis a partir de `c8121ba`; a execução integral das suítes SQL exige `93463a8`. Nenhum arquivo de produto, *migration*, política ou Edge Function difere entre os dois *commits*: `93463a8` altera uma única linha de um arquivo de suporte de teste. O *commit* `abaa9d9` é exclusivamente documental.
+
+> **Sobre a referência acadêmica.** O TCC mantém `c8121ba` como versão funcional avaliada mesmo havendo *commits* posteriores, porque estes alteram apenas suporte de teste e documentação. Fixar a versão avaliada no HEAD documental criaria um ciclo — cada atualização do texto invalidaria a referência que o próprio texto declara.
 
 **Nota sobre o nome do repositório.** O `git remote -v` local ainda aponta para `easy-trip-3.0`, que o GitHub resolve por redirecionamento permanente (HTTP 301) para o nome canônico `easy-trip`. O TCC usa o nome canônico. Corrigir o remoto é higiene local, sem efeito sobre resultado algum.
 
@@ -154,7 +158,10 @@ Os estados abaixo foram **reclassificados nesta rodada**. "PUBLICADO" descreve a
 
 | Seção | Alteração |
 |---|---|
+| 3.2 / Quadro 4 | Cabeçalho da coluna passa de "Recursos oferecidos ao usuário" para **"Recursos implementados"**; a linha de autenticação passa a marcar a exclusão de conta como fluxo com publicação pendente; a linha da IA passa a dizer "resumo diário sob acionamento, cuja automação periódica está pendente"; nota abaixo do quadro registra as três dependências (0013, `delete-account`, agendamento) e remete a 4.6 |
 | 3.7 | Versão avaliada passa a ser o *commit* `c8121ba`, com árvore limpa e *commit* publicado; URL do repositório corrigida para o nome canônico `easy-trip`, agora com "público" respaldado por evidência |
+| 3.7 (reprodutibilidade) | A frase "todos os números da seção 4 são recuperáveis bastando posicionar-se nesse *commit*" foi **substituída**: `c8121ba` fixa a versão funcional e sustenta a camada de aplicação; a execução integral das suítes SQL exige também `93463a8`, a correção do arcabouço de teste, sem alteração de produto ou esquema |
+| 4.3 (correção do *bootstrap*) | O registro do defeito passa a nomear o *commit* `93463a8`, posterior a `c8121ba` e restrito ao arquivo de suporte de teste |
 | 4.3 | Tempo da suíte 37,974 s → 37,941 s (medição desta rodada); Tabela 2 passa a dizer "4 arquivos **do repositório**"; a ressalva de substituição manual da função foi **substituída** pelo registro do defeito encontrado, da correção aplicada e do fato de o repositório executar as suítes sozinho |
 | 4.6 | Limitação "versão avaliada não versionada" **removida**; demais renumeradas (12 → 11); referências cruzadas entre limitações corrigidas; limitação de ponta a ponta reescrita com o motivo real |
 | 4.6 (validade interna) | Deixa de apontar a versão não versionada; mantém a ressalva sobre a fidelidade da instância local, usando o episódio do `auth.uid()` como prova |
@@ -191,7 +198,9 @@ Os estados abaixo foram **reclassificados nesta rodada**. "PUBLICADO" descreve a
 | "doze *migrations*" | Treze, das quais doze publicadas |
 | "151 asserções SQL" | 159 executadas (a contagem estática dá 146; 151 não é reproduzível) |
 | "chave anônima" | "chave publicável" — o formato em uso é `sb_publishable_…`, não JWT anônimo |
-| `c5af399` + alterações locais | **`c8121ba`**, árvore limpa, *commit* publicado |
+| `c5af399` + alterações locais | **`c8121ba`**, árvore limpa, *commit* publicado; correção do arcabouço de teste em `93463a8` |
+| "todos os números da seção 4 recuperáveis apenas em `c8121ba`" | `c8121ba` para o produto e a camada de aplicação; `93463a8` para a execução integral das suítes SQL |
+| Quadro 4, "Recursos oferecidos ao usuário" | "Recursos implementados", com nota distinguindo implementado de operante no ambiente publicado |
 | repositório em `.../easy-trip-3.0` | **`.../easy-trip`** — `easy-trip-3.0` é nome antigo, resolvido por redirecionamento 301 |
 | "foi necessário substituir a função apenas na instância descartável" | O defeito foi corrigido no repositório; as suítes rodam direto dele |
 | ponta a ponta bloqueada por "falta de credencial de serviço" | Credencial local é obtível; o bloqueio real é pilha incompleta + gravação na base de desenvolvimento |
@@ -203,8 +212,10 @@ Os estados abaixo foram **reclassificados nesta rodada**. "PUBLICADO" descreve a
 
 | Métrica | TCC | Atualizações | Inconsistências |
 |---|---|---|---|
-| HEAD | `c8121ba` | `c8121ba` | `c8121ba` |
-| Working tree | limpa | limpa | limpa |
+| Versão funcional avaliada | `c8121ba` | `c8121ba` | `c8121ba` |
+| Correção do arcabouço de teste | `93463a8` (4.3, 3.7) | `93463a8` | `93463a8` (INC-03) |
+| HEAD ao final da rodada | não declarado (referência é a versão funcional) | `abaa9d9` | `abaa9d9` |
+| Working tree | limpa no *commit* avaliado | limpa no início; modificada agora pelo ajuste final não versionado | limpa no início; modificada agora pelo ajuste final não versionado |
 | Data | 28 ago. 2026 | 28 ago. 2026 | 28 ago. 2026 |
 | Repositório | `.../easy-trip` (público) | `.../easy-trip` (público) | `.../easy-trip` (público) |
 | RF | 64 | 64 | 64 |
@@ -220,6 +231,7 @@ Os estados abaixo foram **reclassificados nesta rodada**. "PUBLICADO" descreve a
 | *Migration* 0013 | não publicada | não publicada | não publicada (PEND-09) |
 | Resumo diário | publicado, sem agendamento | publicado, sem agendamento | publicado, sem agendamento (PEND-11) |
 | Limitações em 4.6 | 11 | 11 | 11 |
+| Quadro 4 | "Recursos implementados", com nota de dependências | idem | idem |
 
 Nenhum valor diverge entre os três documentos.
 
@@ -249,4 +261,18 @@ sondagem do backend publicado (REST + Edge Functions, somente leitura)
 api.github.com/repos/... (somente leitura, resolução do nome canônico)
 ```
 
-Nenhum arquivo de `src/`, `supabase/functions/`, `supabase/migrations/`, `tests/`, `package.json` ou de configuração foi modificado. A única alteração de código é a correção de `auth.uid()` em `supabase/tests/_local_bootstrap.sql`. Os contêineres descartáveis foram removidos ao final. Nenhum `db push`, publicação de função, agendamento remoto ou *commit* foi executado.
+Nenhum arquivo de `src/`, `supabase/functions/`, `supabase/migrations/`, `tests/`, `package.json` ou de configuração foi modificado. A única alteração de código é a correção de `auth.uid()` em `supabase/tests/_local_bootstrap.sql`, versionada em `93463a8`. Os contêineres descartáveis foram removidos ao final. Nenhum `db push`, publicação de função, agendamento remoto ou reinício de ambiente foi executado. Os dois *commits* posteriores a `c8121ba` — `93463a8` (suporte de teste) e `abaa9d9` (documentação) — não tocam o produto avaliado.
+
+---
+
+## 11. Ajuste final de consistência
+
+Passagem posterior ao *commit* `abaa9d9`, restrita a três pontos de redação, sem nova auditoria e sem alteração de números:
+
+| Ponto | Alteração |
+|---|---|
+| Reprodutibilidade (3.7) | Separação explícita entre a versão funcional do produto (`c8121ba`) e a correção do arcabouço de teste (`93463a8`), com a afirmação de recuperação integral condicionada à combinação dos dois pontos do histórico |
+| Quadro 4 (3.2) | Cabeçalho da coluna, redação das linhas de autenticação e de IA, e nota de dependências abaixo do quadro |
+| Estado do Git (relatórios) | Distinção produto / arcabouço de teste, estado real da árvore de trabalho em cada momento e atualização da matriz de consistência |
+
+Nenhuma contagem foi alterada: permanecem 64 RF, 61 RNF, 119 conjuntos, 1.542 casos, 159 asserções SQL, 292 blocos de ponta a ponta não executados, 13 *migrations* locais e 12 publicadas, 5 Edge Functions implementadas e 4 publicadas. Nenhuma pendência real foi removida. Arquivos tocados nesta passagem: `tcc_easy_trip_v5.md`, `ATUALIZACOES_TCC_EASY_TRIP_V5.md` e `INCONSISTENCIAS_TCC_EASY_TRIP_V5.md`. `supabase/tests/_local_bootstrap.sql` foi apenas inspecionado, e não modificado.

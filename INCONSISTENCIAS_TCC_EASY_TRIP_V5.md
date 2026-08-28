@@ -2,7 +2,7 @@
 
 Registro do saneamento final. Cada item da rodada anterior foi reauditado contra o código, o banco e o ambiente publicado, e classificado como **resolvido** ou **pendência real**. Nada foi removido sem verificação, e nenhuma limitação legítima foi ocultada para reduzir a lista.
 
-Data: 2026-08-28 · HEAD `c8121ba` · `origin/main` idêntico · árvore de trabalho limpa no início da rodada.
+Data: 2026-08-28 · versão funcional avaliada `c8121ba` · correção do arcabouço de teste `93463a8` · atualização documental `abaa9d9` · HEAD ao final da rodada `abaa9d9`, idêntico a `origin/main` · árvore de trabalho limpa no início da rodada, limpa após esses dois *commits*, e **modificada no momento em que este relatório é escrito** pelo ajuste final de consistência (INC-14), ainda não versionado.
 
 Repositório: https://github.com/jp9141joao/easy-trip (público, ramo `main`).
 
@@ -24,6 +24,8 @@ Repositório: https://github.com/jp9141joao/easy-trip (público, ramo `main`).
 - `git status` → `nothing to commit, working tree clean`
 - `GET api.github.com/repos/jp9141joao/easy-trip/commits/c8121ba…` → 200, *commit* presente no repositório público
 
+**Escopo do que foi resolvido:** o **software avaliado está versionado** em `c8121ba`. Essa constatação não foi reaberta: o que se acrescenta abaixo, em INC-14, é apenas a distinção entre o *commit* do produto e o *commit* posterior do arcabouço de teste — questão de reprodutibilidade documental, não pendência funcional do produto.
+
 **Impacto no TCC:** a seção 3.7 passou a nomear `c8121ba` como versão avaliada e a declarar árvore limpa e *commit* publicado. A limitação 2 de 4.6 ("versão avaliada não versionada") foi **removida** e as demais renumeradas (12 → 11 limitações). A fragilidade correspondente saiu do parágrafo de validade interna, e a frente "versionar a rodada" saiu dos trabalhos futuros (cinco → quatro frentes).
 
 ---
@@ -44,7 +46,7 @@ Repositório: https://github.com/jp9141joao/easy-trip (público, ramo `main`).
 
 ## INC-03 — Divergência entre o auxiliar de teste local e a função de identidade real
 
-**Tipo:** BUG_TESTE → **RESOLVIDO NESTA RODADA**. É a única alteração de código desta rodada.
+**Tipo:** BUG_TESTE → **RESOLVIDO NESTA RODADA**. É a única alteração de código desta rodada, versionada no *commit* `93463a8` ("Fix local Supabase auth test bootstrap"), que altera exclusivamente `supabase/tests/_local_bootstrap.sql` — uma linha.
 
 **Problema:** `supabase/tests/_local_bootstrap.sql` reimplementava `auth.uid()` convertendo o token **antes** de tratar valor vazio:
 
@@ -276,6 +278,24 @@ Chaves locais são obtíveis via `npx supabase status -o env`; a credencial **n�
 
 ---
 
+## INC-14 — Correção do arcabouço de teste posterior ao *commit* funcional
+
+**Tipo:** DOCUMENTAL / REPRODUTIBILIDADE DO TESTE → **RESOLVIDO**. **Não é pendência funcional do produto.**
+
+**Problema:** o TCC declarava `c8121ba` como versão avaliada e afirmava que *todos* os números da seção 4 seriam recuperáveis por terceiros "bastando posicionar-se nesse *commit*". A afirmação era forte demais: a correção de `auth.uid()` descrita em INC-03, sem a qual `rls_collaboration.test.sql` para em 78 asserções, **não está contida em `c8121ba`**. Quem se posicionasse apenas em `c8121ba` reproduziria a camada de aplicação, mas não as 159 asserções SQL.
+
+**Evidência:**
+- `git show --stat c8121ba` → não inclui `supabase/tests/_local_bootstrap.sql`
+- `git show --stat 93463a8` → `supabase/tests/_local_bootstrap.sql | 2 +-` (1 inserção, 1 remoção), arquivo único
+- `git log --oneline` → `abaa9d9` (documentação) ← `93463a8` (suporte de teste) ← `c8121ba` (produto)
+- `git rev-parse 93463a8` → `93463a8de8d64d0fa6205510345e66ef43639e71`
+
+**Como foi resolvido:** a versão funcional avaliada **permanece `c8121ba`** — não foi movida para o HEAD documental, o que criaria um ciclo em que cada edição do texto invalidaria a referência declarada pelo próprio texto. O que mudou foi a redação: 3.7 passa a distinguir **versão do produto** de **ajuste do arcabouço de testes**, nomeando `93463a8` e afirmando explicitamente que a correção não altera código funcional, *migrations*, políticas de acesso nem o comportamento do ambiente publicado; e 4.3 passa a nomear o mesmo *commit* ao registrar a correção. A combinação dos dois pontos do histórico reproduz integralmente a avaliação.
+
+**Estado do arquivo:** `supabase/tests/_local_bootstrap.sql` está **commitado** em `93463a8`, com a correção de `auth.uid()` verificada e não reaberta nesta passagem. Marcado como **RESOLVIDO**.
+
+---
+
 ## Resumo das ações pendentes
 
 | # | Ação | Tipo | Urgência |
@@ -286,4 +306,4 @@ Chaves locais são obtíveis via `npx supabase status -o env`; a credencial **n�
 | 4 | Configurar o agendamento do resumo diário (PEND-11) | Operacional | Baixa |
 | 5 | Atualizar o `git remote` para o nome canônico do repositório (INC-07) | Higiene | Baixa |
 
-Nesta rodada foi executada **uma única alteração de código**: a correção de `auth.uid()` em `supabase/tests/_local_bootstrap.sql` (INC-03). Nenhuma migração foi aplicada ao ambiente remoto, nenhuma Edge Function foi publicada, nenhum agendamento foi criado e nenhum *commit* foi feito.
+Nesta rodada foi executada **uma única alteração de código**: a correção de `auth.uid()` em `supabase/tests/_local_bootstrap.sql` (INC-03), versionada em `93463a8`; a atualização dos três documentos foi versionada em `abaa9d9`. Nenhuma migração foi aplicada ao ambiente remoto, nenhuma Edge Function foi publicada e nenhum agendamento foi criado. Nenhum arquivo de produto — `src/`, `supabase/functions/`, `supabase/migrations/`, `package.json`, `app.json` — difere entre `c8121ba` e o HEAD atual.
