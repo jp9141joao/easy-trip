@@ -41,23 +41,14 @@ export function normalizeKey(value: string): string {
     .trim();
 }
 
-const COVER_BY_CITY: Record<string, string> = {
-  paris: IMAGES.paris,
-  kyoto: IMAGES.kyoto,
-  quioto: IMAGES.kyoto,
-  roma: IMAGES.rome,
-  rome: IMAGES.rome,
-  'nova york': IMAGES.newYork,
-  'new york': IMAGES.newYork,
-  toquio: IMAGES.tokyo,
-  tokyo: IMAGES.tokyo,
-  lisboa: IMAGES.lisbon,
-  lisbon: IMAGES.lisbon,
-  santorini: IMAGES.santorini,
-  barcelona: IMAGES.barcelona,
-};
-
-/** Suggests a cover for a destination the user typed, with a sane default. */
-export function suggestCoverImage(city: string): string {
-  return COVER_BY_CITY[normalizeKey(city)] ?? IMAGES.coast;
-}
+/*
+ * A escolha da capa automática de uma viagem NÃO mora mais aqui.
+ *
+ * Havia uma tabela `COVER_BY_CITY` indexada só pelo nome da cidade, com uma
+ * foto de litoral como padrão de todo destino fora dela. Sem o país, "Paris"
+ * era Paris e Paris do Texas; e o padrão era uma foto específica de um lugar
+ * específico servida como se fosse o destino da pessoa. A política passou para
+ * `@/domain/coverSelection`, onde a decisão parte da identidade geográfica
+ * inteira — cidade, estado, país — e onde a imagem de cidade só sai com o país
+ * confirmado.
+ */

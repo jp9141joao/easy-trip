@@ -26,7 +26,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
-import { suggestCoverImage } from '@/data/images';
+import { suggestTripCover } from '@/domain/coverSelection';
 import { CURRENCIES, type CurrencyCode } from '@/domain/types';
 import { useCreateTrip } from '@/hooks/useTrips';
 import { formatDateRange, parseISODate, todayISO } from '@/lib/date';
@@ -79,7 +79,7 @@ export default function NewTripScreen() {
         endDate,
         budgetTotal: budget,
         budgetCurrency: currency,
-        coverImageUrl: coverImageUrl ?? suggestCoverImage(destination.city),
+        coverImageUrl: coverImageUrl ?? suggestTripCover(destination),
       });
       toast.success('Viagem criada');
       router.replace(`/trip/${trip.id}`);
@@ -121,7 +121,7 @@ export default function NewTripScreen() {
               destination={destination}
               onSelect={(value) => {
                 setDestination(value);
-                setCoverImageUrl(suggestCoverImage(value.city));
+                setCoverImageUrl(suggestTripCover(value));
               }}
               startDate={startDate}
               endDate={endDate}
