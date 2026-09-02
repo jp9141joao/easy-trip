@@ -7,6 +7,7 @@ import { AdaptiveButtonRow, Button, ToastProvider } from '@/components/ui';
 import { formatClockTime } from '@/lib/date';
 import type { ItineraryItem } from '@/domain/types';
 import { ThemeProvider } from '@/theme';
+import { mockDeviceMetrics, janela } from '../deviceMetrics';
 
 /**
  * Cartões apertados no Android físico (§13–§19 do handoff).
@@ -30,6 +31,9 @@ const metrics: Metrics = {
   frame: { x: 0, y: 0, width: 390, height: 844 },
   insets: { top: 47, left: 0, right: 0, bottom: 24 },
 };
+
+// As larguras abaixo são de aparelho; a preferência de texto é a padrão.
+mockDeviceMetrics({ width: 390, fontScale: 1 });
 
 const wrap = (node: React.ReactElement) =>
   render(
@@ -88,10 +92,44 @@ describe('as ações do cartão de sugestão (§14)', () => {
     expect(view.getByText('Ver detalhes')).toBeTruthy();
   });
 
-  it('enquanto a largura não foi medida, aposta na fileira', () => {
-    // Um quadro em coluna que depois vira fileira chamaria atenção à toa.
+  /*
+   * ANTES DE MEDIR, A JANELA JÁ É UM LIMITE SUPERIOR.
+   *
+   * Este teste guardava a aposta na fileira enquanto `width` fosse `null` — e a
+   * aposta custava um quadro visível com "Adicion..." em todo aparelho
+   * estreito, que é o defeito relatado. A janela resolve isso sem inventar
+   * nada: o contêiner vive DENTRO dela, com margens de tela e recuo de cartão
+   * por cima, então uma fileira que não cabe na janela não cabe em lugar
+   * nenhum. Onde a janela comporta, a fileira segue sendo a aposta; onde não
+   * comporta, a coluna já vale no primeiro quadro.
+   *
+   * O quadro em coluna que depois vira fileira, que a versão anterior temia,
+   * deixou de ser possível: só pré-empilhamos quando nem a janela cabe, e a
+   * medida real nunca é maior do que ela.
+   */
+  it('sem medida, uma janela estreita já empilha — sem quadro com rótulo cortado', () => {
     const view = wrap(acoes);
-    expect(direcao(view)).toBe('row');
+    expect(direcao(view)).toBe('column');
+  });
+
+  it('sem medida, uma janela larga continua apostando na fileira', () => {
+    janela({ width: 1024 });
+    expect(direcao(wrap(acoes))).toBe('row');
+  });
+
+  it('a preferência de texto grande é levada em conta na decisão', () => {
+    // 700dp comportam os dois rótulos no tamanho de texto padrão…
+    const padrao = wrap(acoes);
+    medir(padrao, 700);
+    expect(direcao(padrao)).toBe('row');
+
+    // …e deixam de comportar quando o sistema amplia o texto. Insistir na
+    // fileira aqui é exatamente o que reintroduziria "Adicionar ao r..." —
+    // pela porta da acessibilidade, que é a pior delas.
+    janela({ width: 1024, fontScale: 1.8 });
+    const ampliado = wrap(acoes);
+    medir(ampliado, 700);
+    expect(direcao(ampliado)).toBe('column');
   });
 
   it('um botão só nunca precisa empilhar', () => {
