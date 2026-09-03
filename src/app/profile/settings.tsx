@@ -372,8 +372,10 @@ export default function SettingsScreen() {
  *
  * Quatro estados, e cada um diz uma coisa diferente:
  *
- *   indisponível  não há como receber neste ambiente (emulador, navegador).
- *                 A linha explica em vez de oferecer um controle inerte.
+ *   indisponível  não há como receber neste ambiente (emulador, navegador, ou
+ *                 o Expo Go, que não entrega push remoto). A linha explica em
+ *                 vez de oferecer um controle inerte, e o texto muda conforme a
+ *                 razão: no Expo Go o recurso existe, só não neste ambiente.
  *   bloqueado     a pessoa recusou, e o sistema não pergunta de novo. O texto
  *                 aponta os ajustes do aparelho — que é onde a decisão vive.
  *   ligado        recebendo. O botão desliga.
@@ -385,7 +387,8 @@ export default function SettingsScreen() {
 function PushRow() {
   const theme = useTheme();
   const toast = useToast();
-  const { permission, enabled, blocked, unavailable, enable, disable } = usePushNotifications();
+  const { permission, enabled, blocked, unavailable, supported, enable, disable } =
+    usePushNotifications();
   const [pending, setPending] = useState(false);
 
   const handle = async () => {
@@ -417,8 +420,9 @@ function PushRow() {
           Avisos fora do aplicativo
         </AppText>
         <AppText variant="caption" color="secondary">
-          Este ambiente não recebe notificações do sistema. Os avisos da viagem continuam
-          na Central, dentro do aplicativo.
+          {supported
+            ? 'Este ambiente não recebe notificações do sistema. Os avisos da viagem continuam na Central, dentro do aplicativo.'
+            : 'As notificações push ficam disponíveis na versão instalada do aplicativo. Os avisos da viagem continuam na Central, dentro do aplicativo.'}
         </AppText>
       </View>
     );

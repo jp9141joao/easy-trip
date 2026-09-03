@@ -2,6 +2,7 @@ import {
   JetBrainsMono_500Medium,
   JetBrainsMono_700Bold,
 } from '@expo-google-fonts/jetbrains-mono';
+import { ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
 import { Outfit_600SemiBold, Outfit_700Bold } from '@expo-google-fonts/outfit';
 import {
   PlusJakartaSans_400Regular,
@@ -13,7 +14,7 @@ import { useFonts } from 'expo-font';
 import { Stack, type ErrorBoundaryProps } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { useReminderDelivery, useRevokedTripCleanup } from '@/hooks/useNotifications';
@@ -21,7 +22,7 @@ import { useNotificationRealtime } from '@/hooks/useTripRealtime';
 import { traceAuth } from '@/lib/authTrace';
 import { AppProviders } from '@/providers/AppProviders';
 import { useAuth } from '@/providers/AuthProvider';
-import { useTheme, useThemePreference } from '@/theme';
+import { navigationThemeFrom, useTheme, useThemePreference } from '@/theme';
 
 // Hold the splash until fonts are loaded and the session has been restored, so
 // the login screen never flashes for a signed-in user (§23).
@@ -156,15 +157,34 @@ function RootNavigator() {
     if (ready) void hideSplash();
   }, [ready, hideSplash]);
 
+  /**
+   * O tema do próprio navegador, e não só o das telas (§15).
+   *
+   * Ver `navigationThemeFrom`: sem este provider o `NavigationContainer` que o
+   * Expo Router monta fica com o tema claro padrão, e o fundo dele é o que
+   * aparecia em branco durante o "voltar". Fica memorizado porque um objeto
+   * novo a cada render faria toda a árvore de navegação re-renderizar.
+   */
+  const navigationTheme = useMemo(() => navigationThemeFrom(theme), [theme]);
+
+  // A barra de status é decidida pelo tema do aplicativo, não pela aparência do
+  // sistema — e vale desde antes da árvore de navegação existir. Deixá-la fora
+  // do `ready` faria o Expo Router aplicar o padrão dele (baseado no esquema do
+  // sistema) enquanto a sessão é restaurada, e a barra trocaria de cor sozinha
+  // ao entrar na primeira tela (§13).
+  const statusBar = <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />;
+
   if (!ready) {
     // Splash is still covering the screen; render the brand colour underneath
     // so there is no white flash as it fades.
-    return <View style={{ flex: 1, backgroundColor: theme.colors.background }} />;
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.colors.background }}>{statusBar}</View>
+    );
   }
 
   return (
-    <>
-      <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
+    <NavigationThemeProvider value={navigationTheme}>
+      {statusBar}
       <Stack
         screenOptions={{
           headerShown: false,
@@ -208,6 +228,6 @@ function RootNavigator() {
           <Stack.Screen name="admin" />
         </Stack.Protected>
       </Stack>
-    </>
+    </NavigationThemeProvider>
   );
 }

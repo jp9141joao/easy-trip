@@ -12,11 +12,22 @@
  * um projeto Expo sem credencial configurada — nenhum desses é motivo para a
  * pessoa não conseguir ver o próprio roteiro. Por isso toda função devolve
  * `null` ou `false` em vez de levantar, e o chamador segue em frente.
+ *
+ * O MÓDULO NÃO É IMPORTADO DE FORMA ESTÁTICA
+ *
+ * `expo-notifications` executa efeito colateral ao ser AVALIADO, e no Expo Go
+ * esse efeito imprime um `console.error` no Android (ver
+ * `notificationsModule.ts`). Todas as funções pedem o módulo a
+ * `getNotificationsModule()`, que devolve `null` onde ele não é suportado — e
+ * `null` cai exatamente no mesmo caminho de "não há token", que já existia.
  */
 
 import * as Device from 'expo-device';
-import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+
+import { getNotificationsModule } from './notificationsModule';
+
+export { isExpoGo, isRemotePushSupported } from './notificationsModule';
 
 export type PushPermission = 'granted' | 'denied' | 'undetermined' | 'unavailable';
 
@@ -28,6 +39,9 @@ export type PushPermission = 'granted' | 'denied' | 'undetermined' | 'unavailabl
  * esse: a pessoa está no Easy Trip quando o convite de viagem chega.
  */
 export function configureForegroundBehavior(): void {
+  const Notifications = getNotificationsModule();
+  if (!Notifications) return;
+
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
       shouldShowBanner: true,
@@ -48,6 +62,9 @@ export function configureForegroundBehavior(): void {
  */
 export async function ensureAndroidChannel(): Promise<void> {
   if (Platform.OS !== 'android') return;
+  const Notifications = getNotificationsModule();
+  if (!Notifications) return;
+
   try {
     await Notifications.setNotificationChannelAsync('default', {
       name: 'Avisos da viagem',
@@ -70,6 +87,8 @@ export async function ensureAndroidChannel(): Promise<void> {
  * do aparelho, e a tela diz isso.
  */
 export async function requestPushPermission(): Promise<PushPermission> {
+  const Notifications = getNotificationsModule();
+  if (!Notifications) return 'unavailable';
   if (!Device.isDevice) return 'unavailable';
 
   try {
@@ -86,7 +105,10 @@ export async function requestPushPermission(): Promise<PushPermission> {
 }
 
 export async function currentPushPermission(): Promise<PushPermission> {
+  const Notifications = getNotificationsModule();
+  if (!Notifications) return 'unavailable';
   if (!Device.isDevice) return 'unavailable';
+
   try {
     const atual = await Notifications.getPermissionsAsync();
     if (atual.granted) return 'granted';
@@ -111,6 +133,8 @@ export interface DeviceToken {
  * token, e a tela diz que os avisos ficam dentro do aplicativo.
  */
 export async function getDeviceToken(projectId?: string): Promise<DeviceToken | null> {
+  const Notifications = getNotificationsModule();
+  if (!Notifications) return null;
   if (!Device.isDevice) return null;
   if (Platform.OS === 'web') return null;
 
@@ -141,9 +165,12 @@ export interface PushDestination {
   notificationId?: string;
 }
 
-export function readDestination(response: {
+/** O recorte da resposta de notificação de que o aplicativo depende. */
+export interface PushResponse {
   notification?: { request?: { content?: { data?: unknown } } };
-}): PushDestination {
+}
+
+export function readDestination(response: PushResponse): PushDestination {
   const data = response?.notification?.request?.content?.data;
   if (!data || typeof data !== 'object') return {};
   const d = data as Record<string, unknown>;
@@ -158,4 +185,33 @@ export function destinationRoute(destination: PushDestination): string | null {
   if (destination.tripId) return `/trip/${destination.tripId}`;
   if (destination.notificationId) return '/alerts';
   return null;
+}
+
+/** O que o hook precisa cancelar quando desmonta. */
+export interface PushResponseSubscription {
+  remove(): void;
+}
+
+/**
+ * Ouvir o toque na notificação.
+ *
+ * Existe para que o hook não precise do módulo — e portanto não precise
+ * importá-lo. Devolve `null` onde não há push remoto: não há o que ouvir, e
+ * assinar um evento que nunca chega não é diferente de não assinar.
+ */
+export function addNotificationResponseListener(
+  listener: (response: PushResponse) => void,
+): PushResponseSubscription | null {
+  const Notifications = getNotificationsModule();
+  if (!Notifications) return null;
+
+  try {
+    return Notifications.addNotificationResponseReceivedListener((response) =>
+      listener(response as PushResponse),
+    );
+  } catch {
+    // Um ouvinte que não pôde ser registrado não impede o aplicativo de abrir;
+    // o toque na notificação apenas não navega sozinho.
+    return null;
+  }
 }

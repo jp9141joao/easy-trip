@@ -1,9 +1,10 @@
 import * as Linking from 'expo-linking';
 import { ExternalLink, Map as MapIcon, Navigation } from 'lucide-react-native';
+import { useMemo } from 'react';
 import { View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 
-import { AppText, Button, GlassCard, useToast } from '@/components/ui';
+import { AdaptiveButtonRow, AppText, Button, GlassCard, useToast } from '@/components/ui';
 import type { ItineraryItem } from '@/domain/types';
 import {
   buildDayRoute,
@@ -12,6 +13,7 @@ import {
   formatApproximateDistance,
   routeRegion,
   routeStopsLabel,
+  STRAIGHT_LINE_METHOD,
 } from '@/domain/route';
 import { formatClockTime } from '@/lib/date';
 import { useTheme } from '@/theme';
@@ -36,7 +38,46 @@ import { useTheme } from '@/theme';
  *
  * Quem tem o cálculo de verdade é o aplicativo de mapas do aparelho — daí o
  * botão que manda a rota inteira para lá, na mesma ordem do roteiro.
+ *
+ * POR QUE O CARD DEIXOU DE FICAR ESPREMIDO NO ANDROID
+ *
+ * Quatro medidas fixas competiam pela mesma largura de 280dp que sobra num
+ * aparelho de 360dp, depois das margens da tela e do recuo do card:
+ *
+ * 1. o mapa tinha `height: 180` — quase dois terços da altura útil do card
+ *    num aparelho estreito, e exatamente a mesma altura num tablet;
+ * 2. horário e nome viviam num texto só, com `numberOfLines={1}`: um nome
+ *    longo era cortado no meio, e a régua de horários não existia;
+ * 3. o número da distância e a explicação do método tinham praticamente o
+ *    mesmo peso da lista de paradas logo acima;
+ * 4. os dois botões eram `flex: 1` numa fileira que não cabia — cada um ficava
+ *    com cerca de 136dp e "Ver mapa completo" virava "Ver mapa co...".
+ *
+ * A correção é a mesma em todos: nada de altura ou largura de aparelho. O mapa
+ * é uma PROPORÇÃO da largura do card, o nome ocupa o que sobra da linha
+ * (`flex: 1` com `minWidth: 0`) enquanto número e horário nunca encolhem, e a
+ * fileira de botões vira coluna quando os rótulos não cabem (§14).
  */
+
+/**
+ * O mapa acompanha a largura do card em vez de ter altura de aparelho. 16:9
+ * dá leitura de rota sem tomar o card; o teto existe para o tablet, onde a
+ * mesma proporção passaria de 400dp de mapa.
+ */
+const MAP_ASPECT_RATIO = 16 / 9;
+const MAP_MAX_HEIGHT = 200;
+
+/** Diâmetro do número da parada — bate com o marcador no mapa. */
+const STOP_BULLET = 22;
+
+/**
+ * O que o rótulo mais largo ("Abrir no Maps") precisa com o ícone e o respiro
+ * interno, com folga para quem aumenta o tamanho do texto no sistema. Abaixo
+ * disso a coluna é o layout honesto — melhor dois botões inteiros empilhados
+ * do que dois cortados lado a lado.
+ */
+const ACTION_MIN_WIDTH = 168;
+
 export function DayRouteCard({
   items,
   date,
@@ -49,8 +90,20 @@ export function DayRouteCard({
   const theme = useTheme();
   const toast = useToast();
 
-  const route = buildDayRoute(items, date);
-  if (!route) return null;
+  /*
+   * Memorizado porque o card fica dentro da lista da Jornada: sem isto, cada
+   * render da tela refazia o Haversine de todas as paradas e entregava um
+   * array novo de coordenadas ao `Polyline`, que remontava o traçado à toa.
+   */
+  const route = useMemo(() => buildDayRoute(items, date), [items, date]);
+  const region = useMemo(() => (route ? routeRegion(route) : null), [route]);
+  const path = useMemo(
+    () =>
+      route?.stops.map((stop) => ({ latitude: stop.latitude, longitude: stop.longitude })) ?? [],
+    [route],
+  );
+
+  if (!route || !region) return null;
 
   const openExternal = async () => {
     try {
@@ -61,7 +114,7 @@ export function DayRouteCard({
   };
 
   return (
-    <GlassCard style={{ gap: theme.spacing.md }}>
+    <GlassCard style={{ gap: theme.spacing.lg }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
         <Navigation size={16} color={theme.colors.primary} />
         <AppText variant="label" color="brand">
@@ -70,14 +123,22 @@ export function DayRouteCard({
       </View>
 
       <View
-        style={{ height: 180, borderRadius: theme.radius.smallCard, overflow: 'hidden' }}
+        testID="day-route-map"
+        style={{
+          width: '100%',
+          aspectRatio: MAP_ASPECT_RATIO,
+          maxHeight: MAP_MAX_HEIGHT,
+          borderRadius: theme.radius.smallCard,
+          overflow: 'hidden',
+          backgroundColor: theme.colors.surfaceMuted,
+        }}
         accessible
         accessibilityLabel={`Mapa com ${route.stops.length} paradas, na ordem do roteiro.`}
       >
         <MapView
           provider={PROVIDER_DEFAULT}
           style={{ flex: 1 }}
-          initialRegion={routeRegion(route)}
+          initialRegion={region}
           pointerEvents="none"
         >
           {/*
@@ -87,14 +148,7 @@ export function DayRouteCard({
             está escrito logo acima — e os números dos marcadores deixariam de
             bater com a lista.
           */}
-          <Polyline
-            coordinates={route.stops.map((stop) => ({
-              latitude: stop.latitude,
-              longitude: stop.longitude,
-            }))}
-            strokeColor={theme.colors.primary}
-            strokeWidth={3}
-          />
+          <Polyline coordinates={path} strokeColor={theme.colors.primary} strokeWidth={3} />
           {route.stops.map((stop) => (
             <Marker
               key={stop.id}
@@ -106,67 +160,131 @@ export function DayRouteCard({
         </MapView>
       </View>
 
-      <View style={{ gap: theme.spacing.sm }}>
-        {route.stops.map((stop, index) => (
-          <View key={stop.id} style={{ gap: 2 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
+      <View style={{ gap: theme.spacing.md }}>
+        {route.stops.map((stop, index) => {
+          const clock = formatClockTime(stop.startTime);
+          return (
+            <View key={stop.id} style={{ gap: theme.spacing.xs }}>
+              {/*
+                Três colunas com papéis diferentes: o número e o horário são
+                largura de conteúdo e NÃO encolhem — some um deles e a lista
+                deixa de bater com os marcadores do mapa. Quem cede é o nome,
+                que fica com o resto da linha e quebra em até duas antes de
+                reticenciar. `alignItems: 'flex-start'` para que um nome de
+                duas linhas não desloque o número para o meio da altura.
+              */}
               <View
                 style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: 10,
-                  backgroundColor: theme.colors.primarySoft,
-                  alignItems: 'center',
-                  justifyContent: 'center',
+                  flexDirection: 'row',
+                  alignItems: 'flex-start',
+                  gap: theme.spacing.sm,
                 }}
               >
-                <AppText variant="label" color="brand" style={{ fontSize: 10 }}>
-                  {String(stop.index)}
+                <View
+                  style={{
+                    width: STOP_BULLET,
+                    height: STOP_BULLET,
+                    borderRadius: STOP_BULLET / 2,
+                    backgroundColor: theme.colors.primarySoft,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  <AppText variant="label" color="brand" style={{ fontSize: 11 }}>
+                    {String(stop.index)}
+                  </AppText>
+                </View>
+
+                {clock ? (
+                  <AppText
+                    variant="bodySmall"
+                    color="secondary"
+                    mono
+                    style={{ flexShrink: 0 }}
+                  >
+                    {clock}
+                  </AppText>
+                ) : null}
+
+                <AppText variant="bodySmall" numberOfLines={2} style={{ flex: 1, minWidth: 0 }}>
+                  {stop.title}
                 </AppText>
               </View>
-              <AppText variant="bodySmall" numberOfLines={1} style={{ flex: 1 }}>
-                {formatClockTime(stop.startTime) ? `${formatClockTime(stop.startTime)} · ${stop.title}` : stop.title}
-              </AppText>
-            </View>
 
-            {index < route.legs.length ? (
-              <AppText variant="caption" color="tertiary" style={{ marginLeft: 28 }}>
-                {`↓ ${formatApproximateDistance(route.legs[index])}`}
-              </AppText>
-            ) : null}
-          </View>
-        ))}
+              {index < route.legs.length ? (
+                <AppText
+                  variant="caption"
+                  color="tertiary"
+                  style={{ marginLeft: STOP_BULLET + theme.spacing.sm }}
+                >
+                  {`↓ ${formatApproximateDistance(route.legs[index])}`}
+                </AppText>
+              ) : null}
+            </View>
+          );
+        })}
       </View>
 
-      <View style={{ gap: 2 }}>
-        <AppText variant="bodySmall" weight="semibold">
-          {describeRouteDistance(route)}
-        </AppText>
+      {/*
+        O total é o fecho da lista, não mais um item dela: separado por um
+        filete, com o número em destaque moderado e o método logo ao lado, em
+        texto secundário. Para o leitor de tela as duas partes voltam a ser uma
+        frase só — "≈ 5,7 km em linha reta entre os pontos" —, que é como a
+        informação tem de ser ouvida (§19).
+      */}
+      <View
+        style={{
+          gap: theme.spacing.xs,
+          paddingTop: theme.spacing.md,
+          borderTopWidth: 1,
+          borderTopColor: theme.colors.border,
+        }}
+      >
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'flex-end',
+            flexWrap: 'wrap',
+            gap: theme.spacing.xs,
+          }}
+          accessible
+          accessibilityLabel={describeRouteDistance(route)}
+        >
+          <AppText variant="body" weight="semibold" mono>
+            {formatApproximateDistance(route.totalDistanceKm)}
+          </AppText>
+          <AppText variant="bodySmall" color="secondary">
+            {STRAIGHT_LINE_METHOD}
+          </AppText>
+        </View>
         <AppText variant="caption" color="tertiary">
           {`${routeStopsLabel(route)} · a distância real de caminhada ou carro é maior`}
         </AppText>
       </View>
 
-      <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
+      <AdaptiveButtonRow minItemWidth={ACTION_MIN_WIDTH}>
         {onOpenFullMap ? (
           <Button
-            label="Ver mapa completo"
+            label="Mapa completo"
+            accessibilityLabel="Ver o mapa completo da viagem"
             variant="secondary"
             size="sm"
             icon={MapIcon}
+            fullWidth
             onPress={onOpenFullMap}
-            style={{ flex: 1 }}
           />
         ) : null}
         <Button
           label="Abrir no Maps"
+          accessibilityLabel="Abrir a rota do dia no aplicativo de mapas"
           variant="secondary"
           size="sm"
           icon={ExternalLink}
+          fullWidth
           onPress={() => void openExternal()}
-          style={{ flex: 1 }}
         />
-      </View>
+      </AdaptiveButtonRow>
     </GlassCard>
   );
 }

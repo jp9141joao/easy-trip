@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useColorScheme } from 'react-native';
+import * as SystemUI from 'expo-system-ui';
 
 import { prefsStorage } from '@/lib/storage';
 import { darkTheme, lightTheme, type Theme } from './theme';
@@ -72,6 +73,31 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // objeto só muda quando o esquema muda de fato — nenhum consumidor de
   // `useTheme` re-renderiza à toa (§37).
   const theme = useMemo(() => (scheme === 'dark' ? darkTheme : lightTheme), [scheme]);
+
+  /**
+   * O fundo da janela nativa acompanha o tema (§15).
+   *
+   * Abaixo da árvore React existe a view raiz da aplicação, e a cor dela não é
+   * decidida por nenhum estilo daqui: no Android ela nasce do
+   * `windowBackground` do tema nativo — que o `expo-splash-screen` define a
+   * partir da *aparência do sistema*, não da preferência salva no aplicativo.
+   * Quem usa o Easy Trip no escuro com o celular no claro fica com uma janela
+   * quase branca por baixo de tudo.
+   *
+   * Ela aparece em qualquer frame em que a transição do Native Stack ainda não
+   * tenha uma tela pintada por cima — o segundo caminho pelo qual o branco
+   * chegava à tela ao voltar. `expo-system-ui` troca essa cor em tempo de
+   * execução, o que também vale no Expo Go: não depende de gerar build (§12).
+   *
+   * A falha é engolida de propósito. Isto é acabamento visual; se a plataforma
+   * não suportar a chamada, o pior caso é continuar como está hoje — não vale
+   * derrubar a inicialização do aplicativo por causa dela.
+   */
+  useEffect(() => {
+    void Promise.resolve()
+      .then(() => SystemUI.setBackgroundColorAsync(theme.colors.background))
+      .catch(() => undefined);
+  }, [theme]);
 
   const preference = useMemo<ThemePreference>(
     () => ({ mode, setMode, hydrated, scheme }),

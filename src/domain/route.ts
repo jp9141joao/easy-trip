@@ -156,10 +156,18 @@ export function formatApproximateDistance(km: number): string {
 }
 
 /**
+ * O método, por extenso. É a metade da frase que impede a leitura errada, e
+ * mora aqui — e não na tela — porque o card mostra o número e o método em
+ * tipografias diferentes: separados no visual, a mesma frase para o leitor de
+ * tela e para `describeRouteDistance`.
+ */
+export const STRAIGHT_LINE_METHOD = 'em linha reta entre os pontos';
+
+/**
  * A frase completa que acompanha o mapa. Diz o método, não só o número.
  */
 export function describeRouteDistance(route: DayRoute): string {
-  return `${formatApproximateDistance(route.totalDistanceKm)} em linha reta entre os pontos`;
+  return `${formatApproximateDistance(route.totalDistanceKm)} ${STRAIGHT_LINE_METHOD}`;
 }
 
 export function routeStopsLabel(route: DayRoute): string {

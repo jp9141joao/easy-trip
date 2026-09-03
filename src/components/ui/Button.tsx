@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Pressable,
   View,
+  useWindowDimensions,
   type PressableProps,
   type StyleProp,
   type ViewStyle,
@@ -29,6 +30,16 @@ export interface ButtonProps extends Omit<PressableProps, 'style' | 'children'> 
   haptic?: boolean;
 }
 
+/**
+ * Altura MÍNIMA, não altura fixa.
+ *
+ * Era `height`, e com `allowFontScaling` ligado (§70, §87) isso é uma
+ * armadilha: na preferência de texto grande do sistema o rótulo cresce, a
+ * caixa não, e o texto é recortado dentro de um botão que continua com 40dp.
+ * Como mínimo, a caixa acompanha o rótulo quando precisa e não muda nada no
+ * tamanho padrão — 15dp de rótulo com 20 de entrelinha mais 16 de respiro
+ * vertical dão 36, abaixo dos 40, então o piso continua mandando.
+ */
 const HEIGHTS: Record<ButtonSize, number> = { sm: 40, md: 48, lg: 56 };
 
 /**
@@ -88,7 +99,8 @@ export function Button({
       accessibilityState={{ disabled: isDisabled, busy: loading }}
       style={({ pressed }) => [
         {
-          height: HEIGHTS[size],
+          minHeight: HEIGHTS[size],
+          paddingVertical: theme.spacing.sm,
           minWidth: theme.hitTarget,
           paddingHorizontal: size === 'sm' ? theme.spacing.lg : theme.spacing['2xl'],
           borderRadius: theme.radius.button,
@@ -279,12 +291,43 @@ export function AdaptiveButtonRow({
   minItemWidth?: number;
 }) {
   const theme = useTheme();
+  const { width: windowWidth, fontScale } = useWindowDimensions();
   const [width, setWidth] = React.useState<number | null>(null);
 
   const items = React.Children.toArray(children).filter(Boolean);
   const gap = theme.spacing.sm;
-  const needed = items.length * minItemWidth + gap * Math.max(items.length - 1, 0);
-  const stacked = width !== null && width < needed;
+
+  /*
+   * O QUE O RÓTULO PRECISA DEPENDE DO TAMANHO DE TEXTO DO SISTEMA.
+   *
+   * `minItemWidth` chega em dp, medido na fonte padrão. Com a preferência de
+   * texto grande do Android/iOS ligada — e `AppText` respeita essa preferência
+   * de propósito (§70, §87) — o mesmo rótulo ocupa bem mais, mas o limiar
+   * continuava sendo o número fixo. Resultado: a fileira era considerada
+   * suficiente, os dois botões dividiam a largura, e "Adicionar ao roteiro"
+   * voltava a aparecer como "Adicion...". Era exatamente o defeito que esta
+   * componente existe para evitar, escapando pela porta da acessibilidade.
+   *
+   * Escalar o valor inteiro superestima um pouco — recuo e ícone não crescem
+   * com a fonte — e a superestimativa é o lado certo do erro: uma coluna
+   * desnecessária fica mais alta, uma fileira apertada corta a palavra.
+   */
+  const needed =
+    items.length * minItemWidth * fontScale + gap * Math.max(items.length - 1, 0);
+
+  /*
+   * ANTES DE MEDIR, A JANELA JÁ DIZ O BASTANTE.
+   *
+   * `width` só existe depois do primeiro `onLayout`, e até lá a fileira era a
+   * aposta — o que num aparelho estreito significa um quadro visível com o
+   * rótulo cortado antes de o layout se corrigir. A largura da janela é um
+   * limite superior seguro da largura do contêiner (ele vive dentro dela, com
+   * margens de tela e recuo de cartão por cima), então, quando nem a janela
+   * inteira comporta a fileira, a coluna já é certeza no primeiro quadro. A
+   * medida real só refina depois, e só pode empilhar mais — nunca menos.
+   */
+  const available = width ?? windowWidth;
+  const stacked = available < needed;
 
   return (
     <View

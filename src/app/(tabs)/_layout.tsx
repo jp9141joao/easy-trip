@@ -28,6 +28,7 @@ const TABS: { name: string; label: string; icon: LucideIcon }[] = [
 ];
 
 export default function TabsLayout() {
+  const theme = useTheme();
   const { isAuthenticated } = useAuth();
 
   if (!isAuthenticated) return <Redirect href="/(auth)/login" />;
@@ -41,7 +42,22 @@ export default function TabsLayout() {
   return (
     <DockMetricsProvider>
       <Tabs
-        screenOptions={{ headerShown: false }}
+        screenOptions={{
+          headerShown: false,
+          /*
+            A cena de cada aba tem fundo próprio (§15).
+
+            Sem isto, a raiz da cena é o `Background` de
+            `@react-navigation/elements`, pintado com o fundo do tema do
+            navegador. Ele é uma view sem filhos a medir, então entra no
+            primeiro frame em que a aba é reanexada — antes do conteúdo escuro
+            da tela — e era essa a área clara que piscava ao voltar para as
+            abas. O `<ThemeProvider>` da raiz já corrige a cor herdada; aqui a
+            cena passa a declarar a sua, para não depender de herança no
+            caminho mais percorrido do aplicativo.
+          */
+          sceneStyle: { backgroundColor: theme.colors.background },
+        }}
         tabBar={(props) => <FloatingDock {...props} />}
       >
         {TABS.map((tab) => (

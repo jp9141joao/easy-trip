@@ -178,6 +178,13 @@ jest.mock('expo-haptics', () => ({
   ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
 }));
 
+// A cor de fundo da janela nativa é aplicada por um módulo nativo. Aqui ela só
+// precisa ser observável — os testes verificam que o valor pedido é o fundo do
+// tema, não o que o Android faz com ele.
+jest.mock('expo-system-ui', () => ({
+  setBackgroundColorAsync: jest.fn(async () => undefined),
+}));
+
 /* --------------------------------- Rastro IA ------------------------------- */
 
 /**

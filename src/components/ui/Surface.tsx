@@ -76,6 +76,7 @@ export interface GlassCardProps {
   onPress?: () => void;
   accessibilityLabel?: string;
   accessibilityHint?: string;
+  testID?: string;
 }
 
 /**
@@ -88,6 +89,7 @@ export function GlassCard({
   padded = true,
   elevation = 'sm',
   onPress,
+  testID,
   accessibilityLabel,
   accessibilityHint,
 }: GlassCardProps) {
@@ -127,7 +129,7 @@ export function GlassCard({
 
   if (!onPress) {
     return (
-      <View style={shell}>
+      <View testID={testID} style={shell}>
         <View style={clip}>{children}</View>
       </View>
     );
@@ -135,6 +137,7 @@ export function GlassCard({
 
   return (
     <Pressable
+      testID={testID}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
