@@ -2,8 +2,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
 import { config } from '@/lib/config';
+import { joinSharedRealtimeChannel } from '@/lib/realtimeChannel';
 import { useAuth } from '@/providers/AuthProvider';
-import { getSupabaseClient } from '@/repositories/supabase/client';
 import { queryKeys } from './queryKeys';
 
 /**
@@ -15,6 +15,15 @@ import { queryKeys } from './queryKeys';
  * mais nada (§58). Assinar todas as viagens da conta significaria receber
  * evento de uma viagem que a pessoa não está olhando, gastando bateria e
  * invalidando cache que ninguém vai ler. Ao sair da tela, tudo é removido.
+ *
+ * UMA ASSINATURA POR VIAGEM, NÃO POR TELA
+ *
+ * Seis telas da viagem montam este hook, e a navegação empilha uma sobre a
+ * outra: ao abrir Sugestões a partir da Jornada, as duas ficam montadas ao
+ * mesmo tempo. Quem cuida disso é `joinSharedRealtimeChannel` — o canal é um
+ * só, com contagem de referências, e as telas apenas entram e saem da lista de
+ * ouvintes. Era a ausência disso que estourava "cannot add `postgres_changes`
+ * callbacks ... after `subscribe()`" ao abrir Sugestões.
  *
  * POR QUE INVALIDAR EM VEZ DE APLICAR O PAYLOAD
  *
@@ -37,18 +46,40 @@ import { queryKeys } from './queryKeys';
  * payload nunca é lido nem exibido. Mesmo que um dia vazasse, não teria por
  * onde aparecer na tela (§63).
  */
+
+/** As tabelas da viagem que a tela precisa reler quando mudam. */
+export const TRIP_REALTIME_TABLES = [
+  'itinerary_items',
+  'checklist_items',
+  'expenses',
+  'tickets',
+  'journal_entries',
+  'trip_members',
+  'trip_invites',
+  'trip_suggestions',
+] as const;
+
+type TripRealtimeTable = (typeof TRIP_REALTIME_TABLES)[number];
+
 export function useTripRealtime(tripId?: string) {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const userId = user?.id;
 
   useEffect(() => {
     // Modo demonstração não tem servidor, e portanto não tem o que sincronizar:
     // o único aparelho que escreve é este.
-    if (!config.hasSupabase || !tripId) return;
+    //
+    // A conta entra na dependência, e não no nome do tópico: quem troca de
+    // identidade derruba TODOS os canais na hora (ver `applySession`), e uma
+    // tela que continuou montada precisa reentrar sob a conta nova em vez de
+    // ficar com uma assinatura que já não existe. Sem sessão não há assinatura
+    // — o Realtime lê pela RLS de quem está conectado.
+    if (!config.hasSupabase || !tripId || !userId) return;
 
-    const client = getSupabaseClient();
     const filter = `trip_id=eq.${tripId}`;
 
-    const invalidations: Record<string, () => Promise<void>> = {
+    const invalidations: Record<TripRealtimeTable, () => Promise<void>> = {
       itinerary_items: () =>
         queryClient.invalidateQueries({ queryKey: queryKeys.itinerary(tripId) }),
       checklist_items: () =>
@@ -73,27 +104,12 @@ export function useTripRealtime(tripId?: string) {
         queryClient.invalidateQueries({ queryKey: queryKeys.suggestions(tripId) }),
     };
 
-    const channel = client.channel(`trip:${tripId}`);
-
-    for (const [table, invalidate] of Object.entries(invalidations)) {
-      channel.on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table, filter },
-        () => void invalidate(),
-      );
-    }
-
-    void channel.subscribe();
-
-    return () => {
-      // `removeChannel` e não `unsubscribe`: o segundo fecha a inscrição mas
-      // deixa o canal registrado no cliente, e trocar de viagem várias vezes
-      // acumularia canais mortos que continuam contando para o limite de
-      // conexões do projeto.
-      void client.removeChannel(channel);
-    };
-  }, [tripId, queryClient]);
-
+    return joinSharedRealtimeChannel(
+      `trip:${tripId}`,
+      TRIP_REALTIME_TABLES.map((table) => ({ table, filter })),
+      (table) => void invalidations[table as TripRealtimeTable]?.(),
+    );
+  }, [tripId, userId, queryClient]);
 }
 
 /**
@@ -113,26 +129,13 @@ export function useNotificationRealtime() {
     const userId = user?.id;
     if (!config.hasSupabase || !userId) return;
 
-    const client = getSupabaseClient();
-    const channel = client
-      .channel(`notifications:${userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'notifications',
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.notifications(userId) });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.myInvites(userId) });
-        },
-      );
-
-    void channel.subscribe();
-    return () => {
-      void client.removeChannel(channel);
-    };
+    return joinSharedRealtimeChannel(
+      `notifications:${userId}`,
+      [{ table: 'notifications', filter: `user_id=eq.${userId}` }],
+      () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.notifications(userId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.myInvites(userId) });
+      },
+    );
   }, [user?.id, queryClient]);
 }

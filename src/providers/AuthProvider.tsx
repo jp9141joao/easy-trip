@@ -19,6 +19,7 @@ import { createRedirectUrl, getInitialUrl, subscribeToUrls } from '@/lib/deepLin
 import { clearAITripContext } from '@/lib/aiTripContext';
 import { setMirrorViewer } from '@/lib/fileMirror';
 import { clearPersistedQueries, invalidateQueryHydrations } from '@/lib/queryPersistence';
+import { closeSharedRealtimeChannels } from '@/lib/realtimeChannel';
 import { clearRecoveryMark, readRecoveryMark, writeRecoveryMark } from '@/lib/recoveryState';
 import { clearTripSelection } from '@/lib/tripSelectionStorage';
 import { authAdapter, dataSource, type AuthSession, type SignUpOutcome } from '@/repositories';
@@ -239,6 +240,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // olhando" é esta função, que é a única porta de escrita da sessão.
       setMirrorViewer(nextId);
       if (nextId === loadedFor.current) return; // mesma conta: token novo, nada a recarregar
+      /*
+       * Trocou a identidade — saída, expiração, sessão encerrada por fora ou
+       * outra conta entrando. Os canais Realtime da anterior caem AGORA.
+       *
+       * A folga de `CHANNEL_LINGER_MS` existe para a navegação: ela cobre o
+       * remonte do Strict Mode e o vaivém entre as telas da mesma viagem, onde
+       * quem sai volta em seguida. Aqui não há volta — quem sai é a conta. Deixar
+       * a assinatura de A viva por cinco segundos enquanto B entra colocaria dois
+       * conjuntos de canais de identidades diferentes no mesmo cliente, e o
+       * primeiro evento que chegasse invalidaria cache de B em nome de A.
+       *
+       * O fechamento é síncrono e acontece antes de `loadedFor` apontar para a
+       * conta nova, portanto antes de qualquer limpeza de cache endereçada à
+       * anterior: `clearPrivateState` roda depois desta função em todos os
+       * caminhos de saída. As telas que ainda estiverem montadas só perdem os
+       * avisos — a saída da lista de ouvintes, quando o React chegar ao cleanup,
+       * encontra o assunto já removido e não faz nada.
+       */
+      closeSharedRealtimeChannels();
       loadedFor.current = nextId;
 
       if (!nextId) {
