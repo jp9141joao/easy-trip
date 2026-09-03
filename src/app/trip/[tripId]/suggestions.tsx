@@ -27,9 +27,9 @@ import {
   SUGGESTION_CATEGORY_EMOJI,
   SUGGESTION_CATEGORY_LABEL,
   SuggestionGenerationError,
-  canRefreshSuggestions,
   formatDuration,
   formatSuggestionDiagnostics,
+  suggestionRefreshWindow,
   suggestionScreenState,
   type SuggestionCategory,
   type SuggestionScreenState,
@@ -130,7 +130,23 @@ export default function SuggestionsScreen() {
     );
   }
 
-  const refreshAllowed = canRefreshSuggestions(trip.suggestionsRefreshedAt);
+  /*
+   * O botão explica QUAL espera, e não apenas que há uma (0017).
+   *
+   * "Atualizado recentemente" só é verdade quando a última geração entregou
+   * alguma coisa. Depois de uma tentativa que falhou, a mesma frase diria à
+   * pessoa que ela recebeu algo que nunca chegou — e ainda a faria supor seis
+   * horas de espera onde há minutos.
+   */
+  const janela = suggestionRefreshWindow(trip);
+  const refreshAllowed = janela.open;
+  const refreshLabel = refreshAllowed
+    ? 'Atualizar sugestões'
+    : janela.blockedBy === 'window'
+      ? 'Atualizado recentemente'
+      : janela.blockedBy === 'in_progress'
+        ? 'Gerando agora…'
+        : 'Tente de novo em alguns minutos';
 
   const openAdd = (suggestion: TripSuggestion) => {
     const duplicate = findDuplicate(suggestion);
@@ -233,13 +249,38 @@ export default function SuggestionsScreen() {
              * Agora o código da falha escolhe título, tom e se há retentativa.
              */
             <GlassCard>
-              <ErrorState
-                title={failureState.title}
-                message={failureState.message}
-                onRetry={
-                  failureState.retryable ? () => void suggestionsQuery.refetch() : undefined
-                }
-              />
+              {/*
+                NEM TODA LISTA VAZIA É UMA FALHA — E ERA ASSIM QUE MOSCOVO
+                APARECIA.
+
+                `ErrorState` era usado para os sete estados, tom nenhum
+                incluído. A janela de seis horas caía nele: um cartão de erro,
+                sem botão (porque `retryable` é falso), dizendo "Atualizado
+                recentemente" numa viagem que não tinha nenhuma sugestão. Lido
+                da tela, aquilo é um aplicativo quebrado — quando o que houve
+                foi o sistema respeitando o próprio limite de custo.
+
+                O tom já era calculado e já dizia a diferença; só não estava
+                sendo usado. `info` é informação, e informação se apresenta como
+                estado vazio: mesmo ícone e mesma voz do "Ainda sem sugestões"
+                logo abaixo. `warning` e `error` continuam sendo falha, com o
+                botão quando repetir tem como funcionar.
+              */}
+              {failureState.tone === 'info' ? (
+                <EmptyState
+                  icon={failureState.kind === 'refresh_limited' ? RefreshCw : Sparkles}
+                  title={failureState.title}
+                  message={failureState.message}
+                />
+              ) : (
+                <ErrorState
+                  title={failureState.title}
+                  message={failureState.message}
+                  onRetry={
+                    failureState.retryable ? () => void suggestionsQuery.refetch() : undefined
+                  }
+                />
+              )}
               <DiagnosticsLine error={suggestionsQuery.error} />
             </GlassCard>
           ) : suggestions.length === 0 ? (
@@ -303,7 +344,7 @@ export default function SuggestionsScreen() {
           {permissions.canEdit && suggestions.length > 0 ? (
             <>
               <Button
-                label={refreshAllowed ? 'Atualizar sugestões' : 'Atualizado recentemente'}
+                label={refreshLabel}
                 icon={RefreshCw}
                 variant="secondary"
                 fullWidth
@@ -314,8 +355,11 @@ export default function SuggestionsScreen() {
               {!refreshAllowed && !generationError ? (
                 // Botão desabilitado sem motivo escrito vira "está quebrado".
                 <AppText variant="caption" color="secondary">
-                  Gerar sugestões tem custo, então a atualização acontece no máximo uma vez a cada
-                  6 horas por viagem.
+                  {janela.blockedBy === 'window'
+                    ? 'Gerar sugestões tem custo, então a atualização acontece no máximo uma vez a cada 6 horas por viagem.'
+                    : janela.blockedBy === 'in_progress'
+                      ? 'Alguém desta viagem está gerando sugestões agora. Isso leva menos de um minuto.'
+                      : 'A última tentativa não trouxe nenhuma sugestão. Você poderá tentar de novo em alguns minutos.'}
                 </AppText>
               ) : null}
             </>
@@ -479,13 +523,41 @@ function SuggestionCard({
   const duration = formatDuration(suggestion.estimatedDurationMinutes);
 
   return (
-    <GlassCard style={{ gap: theme.spacing.md }}>
-      <View style={{ gap: 4 }}>
-        <AppText variant="body" weight="bold">
+    <GlassCard testID="suggestion-card" style={{ gap: theme.spacing.lg }}>
+      {/*
+        CINCO BLOCOS, E O ESPAÇO ENTRE ELES É O QUE OS SEPARA.
+
+        Antes o cartão era uma pilha de `gap: md` uniforme: título, metadados,
+        descrição, etiqueta e botões ficavam todos à mesma distância uns dos
+        outros, e um leitor não tinha como saber, pelo espaçamento, o que
+        pertencia a quê. Metadado colava na descrição, a etiqueta colava no
+        botão, e o cartão inteiro parecia comprimido.
+
+        Agora a distância carrega significado: `lg` entre blocos, `sm` dentro
+        de um bloco. Título e metadados são um bloco só — o nome do lugar e as
+        três coisas que o qualificam. Descrição, procedência e ações são cada
+        um o seu.
+      */}
+      <View style={{ gap: theme.spacing.sm }}>
+        <AppText variant="body" weight="bold" style={{ lineHeight: 22 }}>
           {suggestion.title}
         </AppText>
 
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm }}>
+        {/*
+          `rowGap` maior que `columnGap` de propósito: quando categoria,
+          duração e área não cabem numa linha, a segunda linha precisa de ar
+          vertical para não encostar na primeira — enquanto lado a lado 12dp
+          já separam bem.
+        */}
+        <View
+          style={{
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            rowGap: theme.spacing.xs,
+            columnGap: theme.spacing.md,
+          }}
+        >
           <AppText variant="caption" color="secondary">
             {`${SUGGESTION_CATEGORY_EMOJI[suggestion.category]} ${SUGGESTION_CATEGORY_LABEL[suggestion.category]}`}
           </AppText>
@@ -498,9 +570,20 @@ function SuggestionCard({
             </View>
           ) : null}
           {suggestion.area ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            // `flexShrink` com `minWidth: 0`: um endereço longo encolhe e corta
+            // em si mesmo em vez de empurrar categoria e duração para fora do
+            // cartão.
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                flexShrink: 1,
+                minWidth: 0,
+              }}
+            >
               <MapPin size={12} color={theme.colors.textTertiary} />
-              <AppText variant="caption" color="tertiary" numberOfLines={1}>
+              <AppText variant="caption" color="tertiary" numberOfLines={1} style={{ flexShrink: 1 }}>
                 {suggestion.area}
               </AppText>
             </View>
@@ -508,7 +591,17 @@ function SuggestionCard({
         </View>
       </View>
 
-      <AppText variant="bodySmall" color="secondary" numberOfLines={3}>
+      {/*
+        20dp de entrelinha em texto de 14dp é o mínimo do tema, e num parágrafo
+        de três linhas dentro de um cartão ele lê apertado. 21 dá o respiro sem
+        desalinhar do resto da tela.
+      */}
+      <AppText
+        variant="bodySmall"
+        color="secondary"
+        numberOfLines={3}
+        style={{ lineHeight: 21 }}
+      >
         {suggestion.description}
       </AppText>
 
@@ -519,13 +612,30 @@ function SuggestionCard({
       )}
 
       {/*
+        A linha antes das ações.
+
+        A etiqueta de procedência é a última coisa a se LER; os botões são a
+        primeira a se TOCAR. Sem nada entre as duas, a etiqueta parecia legenda
+        do botão. O filete não é decoração: é o que diz onde o conteúdo termina.
+      */}
+      <View
+        style={{
+          height: 1,
+          backgroundColor: theme.colors.border,
+          marginTop: theme.spacing.xs,
+        }}
+      />
+
+      {/*
         Empilha quando "Adicionar ao roteiro" não cabe ao lado de "Ver
         detalhes" (§14). Num aparelho de 360dp a fileira dava cerca de 120dp
         por botão e o rótulo principal virava "Adicionar ao r..." — um botão
         que não diz o que faz.
 
         200 é o que o rótulo mais largo precisa com o ícone e o respiro
-        interno; abaixo disso a coluna é o layout honesto.
+        interno, no tamanho de fonte padrão; abaixo disso a coluna é o layout
+        honesto. `AdaptiveButtonRow` reescala esse número pela preferência de
+        texto do sistema — ver o comentário lá.
       */}
       <AdaptiveButtonRow minItemWidth={200}>
         <Button label="Ver detalhes" variant="secondary" size="sm" fullWidth onPress={onDetails} />

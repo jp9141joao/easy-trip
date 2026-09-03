@@ -33,10 +33,10 @@ import type { InvitableRole, TripRole } from '@/domain/collaboration';
 import { parseReservationDetails, type ReservationType } from '@/domain/reservations';
 import {
   MINIMUM_SUGGESTIONS,
-  canRefreshSuggestions,
   findSimilar,
   normalizeGeneratedSuggestion,
   partialSuggestionListSchema,
+  suggestionRefreshWindow,
   type GeneratedSuggestion,
   SuggestionGenerationError,
   type SuggestionAttemptDiagnostics,
@@ -711,6 +711,10 @@ interface SuggestionTripInfo {
   startDate: string;
   endDate: string;
   suggestionsRefreshedAt?: string;
+  /** Cooldown curto da última tentativa que não entregou nada (0017). */
+  suggestionsRetryAfter?: string;
+  /** Início da tentativa em curso, se houver uma dentro da lease (0017). */
+  suggestionsAttemptAt?: string;
 }
 
 export function createSuggestionRepository(
@@ -748,10 +752,19 @@ export function createSuggestionRepository(
     trip: SuggestionTripInfo,
     existing: TripSuggestion[],
   ): Promise<number> {
+    /*
+     * `trim()` porque o destino é texto digitado.
+     *
+     * `ilike` já ignora a caixa, mas não ignora espaço: um " Paris" gravado com
+     * espaço à frente não casa com nenhuma linha de `public.places`, e o
+     * destino cai no caminho da IA como se o catálogo não o cobrisse. Não há
+     * curinga aqui de propósito — `%Roma%` casaria com qualquer cidade que
+     * contivesse "roma" e sugeriria a trattoria errada.
+     */
     const result = await db()
       .from('places')
       .select('*')
-      .ilike('city', trip.destinationCity)
+      .ilike('city', trip.destinationCity.trim())
       .limit(12);
     if (result.error) {
       throw new SuggestionGenerationError(
@@ -773,8 +786,11 @@ export function createSuggestionRepository(
         description: place.description ?? `${place.name}, em ${place.city}.`,
         place_name: place.name,
         area: place.address ?? null,
-        latitude: place.latitude ?? null,
-        longitude: place.longitude ?? null,
+        // Coordenada é par ou não é nada — a mesma regra do CHECK
+        // `trip_suggestions_coords_pair` da 0012. Uma linha de catálogo com
+        // metade do par faria o upsert inteiro voltar 23514, e a viagem
+        // perderia TODAS as sugestões do catálogo por causa de uma só.
+        ...coordinatePair(place.latitude, place.longitude),
         reason: `Está no catálogo do Easy Trip para ${place.city}.`,
         source: 'catalog',
         place_id: place.id,
@@ -879,13 +895,25 @@ export function createSuggestionRepository(
             rede,
           );
         }
+        /*
+         * 429: o servidor recusou o claim.
+         *
+         * Duas coisas muito diferentes chegam aqui, e a 0017 finalmente as
+         * separa. Com `retryAfter` no corpo, a espera é o cooldown de uma
+         * tentativa que FALHOU — minutos, e o texto de tela não pode ser
+         * "Atualizado recentemente", porque nada foi atualizado. Sem ele, é a
+         * janela de seis horas de uma geração que deu certo.
+         */
         if (error.status === 429) {
+          const espera = retryAfterOf(error.payload);
           throw new SuggestionGenerationError(
-            'REFRESH_LIMITED',
-            'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
+            espera ? 'GENERATION_COOLDOWN' : 'REFRESH_LIMITED',
+            espera
+              ? 'A última tentativa de gerar sugestões não trouxe nada. Tente de novo em alguns minutos.'
+              : 'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
             existing,
             error,
-            rede,
+            { ...rede, retryAfter: espera ?? rede.retryAfter },
           );
         }
         /*
@@ -898,14 +926,33 @@ export function createSuggestionRepository(
          */
         if (error.status === 422) {
           const salvas = await persistGenerated(trip, existing, error.payload);
+          /*
+           * O PARCIAL QUE SOBE PRECISA SER O QUE FICOU GRAVADO.
+           *
+           * Aqui subia `existing` — a lista de ANTES da gravação. Numa viagem
+           * cujo catálogo não cobre o destino, `existing` é a lista vazia: a
+           * tela recebia `partialSuggestions: []`, concluía que não havia nada
+           * a mostrar e pintava o cartão de falha por cima das sugestões que
+           * esta mesma chamada acabara de salvar.
+           *
+           * Foi assim que Moscovo ficou sem tela: a janela de seis horas já
+           * tinha sido consumida (o claim é gasto ANTES do Gemini, de
+           * propósito), então as duas ou três sugestões válidas que vieram no
+           * corpo do 422 eram tudo o que a viagem teria até a janela reabrir —
+           * e eram exatamente as que a tela jogava fora.
+           *
+           * A releitura só acontece quando algo foi de fato gravado; sem isso
+           * `existing` continua sendo a resposta certa, e não há ida à rede.
+           */
+          const comOParcial = salvas > 0 ? await readAll(trip.id) : existing;
           throw new SuggestionGenerationError(
             'INCOMPLETE_GENERATION',
             salvas > 0
               ? 'Conseguimos apenas algumas sugestões para este destino. Tente de novo mais tarde.'
               : 'Não encontramos sugestões suficientes para este destino agora.',
-            existing,
+            comOParcial,
             error,
-            diag({ ...rede, aiCount: salvas }),
+            diag({ ...rede, aiCount: salvas, totalCount: comOParcial.length }),
           );
         }
         if (error.status === 404) {
@@ -917,13 +964,25 @@ export function createSuggestionRepository(
             rede,
           );
         }
+        /*
+         * 502: a tentativa aconteceu e não entregou nada.
+         *
+         * A Function já encerrou a tentativa no banco com o cooldown curto e
+         * devolveu quando ele acaba (0017). Quando esse instante vem no corpo,
+         * a tela pode dizer o prazo em vez de "tente novamente" sem prazo — e
+         * `GENERATION_COOLDOWN` é o que impede o botão morto, porque tocar
+         * agora esbarraria no cooldown do próprio banco.
+         */
         if (error.status === 502) {
+          const espera = retryAfterOf(error.payload);
           throw new SuggestionGenerationError(
-            'AI_PROVIDER_FAILED',
-            'O Gemini não conseguiu gerar sugestões agora.',
+            espera ? 'GENERATION_COOLDOWN' : 'AI_PROVIDER_FAILED',
+            espera
+              ? 'A geração não trouxe nenhuma sugestão desta vez.'
+              : 'O Gemini não conseguiu gerar sugestões agora.',
             existing,
             error,
-            rede,
+            { ...rede, retryAfter: espera ?? rede.retryAfter },
           );
         }
         if (error.status === 503) {
@@ -1065,11 +1124,42 @@ export function createSuggestionRepository(
        * frase servia para "nunca gerou" e para "gerou, falhou, e a janela foi
        * consumida mesmo assim".
        */
-      const janelaAberta = canRefreshSuggestions(trip.suggestionsRefreshedAt);
+      const janela = suggestionRefreshWindow(trip);
+      const janelaAberta = janela.open;
       const base: SuggestionAttemptDiagnostics = {
         refreshWindowOpen: janelaAberta,
+        refreshBlockedBy: janela.blockedBy,
+        retryAfter: janela.nextAttemptAt,
         forced: Boolean(options?.force),
       };
+
+      /*
+       * A recusa local tem o mesmo vocabulário da recusa do servidor (0017).
+       *
+       * `window` é a janela de seis horas de uma geração que ENTREGOU — isso é
+       * o limite de custo funcionando, e a tela mostra como informação.
+       * `cooldown` e `in_progress` são outra coisa: nada foi entregue, e dizer
+       * "Atualizado recentemente" ali descreveria como sucesso o momento exato
+       * em que a pessoa não recebeu nada.
+       */
+      const recusaLocal = (final: TripSuggestion[], diagnostico: SuggestionAttemptDiagnostics) =>
+        janela.blockedBy === 'window'
+          ? new SuggestionGenerationError(
+              'REFRESH_LIMITED',
+              'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
+              final,
+              undefined,
+              diagnostico,
+            )
+          : new SuggestionGenerationError(
+              'GENERATION_COOLDOWN',
+              janela.blockedBy === 'in_progress'
+                ? 'Já existe uma geração em andamento para esta viagem.'
+                : 'A última tentativa de gerar sugestões não trouxe nada. Tente de novo em alguns minutos.',
+              final,
+              undefined,
+              diagnostico,
+            );
 
       /*
        * "Atualizar sugestões" dentro da janela de seis horas é uma recusa, não
@@ -1085,13 +1175,7 @@ export function createSuggestionRepository(
        * dentro da janela não há atualização nenhuma a fazer.
        */
       if (options?.force && !janelaAberta) {
-        throw new SuggestionGenerationError(
-          'REFRESH_LIMITED',
-          'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
-          existing,
-          undefined,
-          { ...base, totalCount: existing.length },
-        );
+        throw recusaLocal(existing, { ...base, totalCount: existing.length });
       }
 
       const doCatalogo = await seedFromCatalog(trip, existing);
@@ -1162,19 +1246,13 @@ export function createSuggestionRepository(
          * A pessoa via uma falha permanente onde o sistema só estava dentro do
          * próprio limite de custo.
          *
-         * `REFRESH_LIMITED` é o que de fato aconteceu, e a tela já sabe
-         * apresentá-lo como informação — sem botão morto e com prazo (§13,
-         * §15 do handoff).
+         * Quem responde por que a janela está fechada é `recusaLocal`, que fala
+         * o mesmo vocabulário do servidor (0017): `REFRESH_LIMITED` quando a
+         * espera é a janela de uma geração que entregou, `GENERATION_COOLDOWN`
+         * quando é o cooldown curto de uma que falhou. Em nenhum dos dois há
+         * botão morto (§13, §15 do handoff).
          */
-        if (!janelaAberta) {
-          throw new SuggestionGenerationError(
-            'REFRESH_LIMITED',
-            'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.',
-            final,
-            undefined,
-            diagnostico,
-          );
-        }
+        if (!janelaAberta) throw recusaLocal(final, diagnostico);
 
         throw new SuggestionGenerationError(
           'INCOMPLETE_GENERATION',
@@ -1201,6 +1279,32 @@ export function createSuggestionRepository(
       }
     },
   };
+}
+
+/**
+ * O instante em que uma nova tentativa será aceita, quando o corpo da recusa
+ * traz um.
+ *
+ * É a diferença entre "tente em alguns minutos" e "atualizado recentemente":
+ * só uma tentativa que NÃO entregou nada deixa um `retryAfter` para trás
+ * (0017). Nada é inventado quando o campo não vem — a tela volta ao texto sem
+ * prazo, que é honesto, em vez de estimar um horário.
+ */
+function retryAfterOf(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const value = (payload as Record<string, unknown>).retryAfter;
+  if (typeof value !== 'string') return undefined;
+  return Number.isNaN(new Date(value).getTime()) ? undefined : value;
+}
+
+/** Coordenada é par ou não é nada (CHECK `trip_suggestions_coords_pair`, 0012). */
+function coordinatePair(
+  latitude: unknown,
+  longitude: unknown,
+): { latitude: number | null; longitude: number | null } {
+  return typeof latitude === 'number' && typeof longitude === 'number'
+    ? { latitude, longitude }
+    : { latitude: null, longitude: null };
 }
 
 function catalogCategory(type: string): SuggestionCategory {

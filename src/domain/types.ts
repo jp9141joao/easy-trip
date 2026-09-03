@@ -227,8 +227,17 @@ export interface Trip {
   dailySpendingGoal?: number;
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
-  /** Marca d'água do último refresh de sugestões (§43). */
+  /** Marca d'água da última geração de sugestões que ENTREGOU (§43, 0017). */
   suggestionsRefreshedAt?: ISODateTime;
+  /**
+   * Quando uma geração que não entregou nada poderá ser repetida (0017).
+   *
+   * Separada da marca d'água porque as duas esperas são diferentes: seis horas
+   * depois de uma atualização que deu certo, minutos depois de uma que falhou.
+   */
+  suggestionsRetryAfter?: ISODateTime;
+  /** Início da tentativa em curso, enquanto a lease dela não expira (0017). */
+  suggestionsAttemptAt?: ISODateTime;
   /**
    * Papel de quem está lendo, quando conhecido. Derivado de `trip_members`,
    * nunca gravado na linha da viagem: a mesma viagem tem papéis diferentes

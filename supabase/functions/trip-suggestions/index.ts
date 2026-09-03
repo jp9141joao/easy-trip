@@ -30,6 +30,13 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
+import {
+  classifyProviderStatus,
+  generationVerdict,
+  type GenerationOutcome,
+  type RoundFailure,
+} from './policy.ts';
+
 const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
@@ -207,46 +214,39 @@ Deno.serve(async (req) => {
    * Compare-and-set no Postgres ANTES do Gemini.
    *
    * A leitura acima serve para contexto, não para decidir a janela: duas
-   * instâncias poderiam ler a mesma marca antiga. A RPC da 0012 adquire o lock
-   * da linha, exige novamente `can_edit_trip` e só uma chamada em seis horas
-   * recebe `claimed=true`. A janela é consumida mesmo se o provider falhar —
-   * proteção de custo deliberada, sem RPC de "release" que um cliente
-   * modificado pudesse abusar para gerar em loop.
+   * instâncias poderiam ler a mesma marca antiga. A RPC da 0017 adquire o lock
+   * da linha, exige novamente `can_edit_trip` e devolve um token de tentativa a
+   * um único chamador. Enquanto essa tentativa estiver viva (lease de cinco
+   * minutos), nenhuma outra passa daqui — é o que impede duas chamadas ao
+   * Gemini em paralelo, e é por isso que o claim continua vindo ANTES do
+   * provedor.
    *
-   * POR QUE CONTINUA SEM "RELEASE", DEPOIS DO CASO DE MOSCOVO (§13 do handoff)
+   * O QUE MUDOU EM RELAÇÃO À 0012, E POR QUE
    *
-   * O sintoma relatado foi: uma tentativa falha consome a janela, e a viagem
-   * fica seis horas sem sugestões e sem botão que funcione. Devolver a janela
-   * quando a geração não produziu nada resolveria — e não dá para fazer isso
-   * com o schema atual, o que foi verificado e não suposto:
+   * Antes o claim gravava `suggestions_refreshed_at = now()`, ou seja,
+   * declarava a viagem "atualizada" antes de saber se alguma sugestão sairia.
+   * Uma falha no provedor deixava essa declaração gravada, e a viagem passava
+   * seis horas sem sugestão nenhuma e sem botão que funcionasse — o caso de
+   * Moscovo.
    *
-   *   1. a 0012 revoga `UPDATE` de `public.trips` para `authenticated` e
-   *      reconcede uma lista de colunas que NÃO inclui
-   *      `suggestions_refreshed_at`. Esta função roda com o JWT do usuário,
-   *      ou seja como `authenticated`: ela não consegue escrever a coluna;
-   *   2. a única função que escreve é `claim_trip_suggestion_refresh`, e ela
-   *      só sabe gravar `now()`. Não devolve o valor anterior, então nem um
-   *      chamador privilegiado teria o que restaurar.
+   * Agora o claim só registra que HÁ uma tentativa em curso. Quem grava a
+   * marca d'água é `settle_trip_suggestion_refresh`, no fim, com o veredito na
+   * mão:
    *
-   * Uma `release_trip_suggestion_refresh` resolveria o item 2, mas reabre o
-   * buraco que a 0012 fechou: concedida a `authenticated`, um cliente
-   * modificado faria claim → ler a marca (tem SELECT) → release → repetir, e
-   * geraria chamadas ao Gemini sem teto. Fechá-la de verdade exige uma das
-   * duas coisas, e nenhuma é decisão de uma rodada de correção:
+   *   · entregou (mesmo que parcialmente) → janela normal de seis horas;
+   *   · falhou de forma determinística    → também consome a janela, porque
+   *                                          repetir é gasto garantido sem
+   *                                          chance de sucesso;
+   *   · falhou de forma transitória, ou   → só o cooldown curto da 0017, e a
+   *     não produziu nada útil               marca d'água da última entrega de
+   *                                          verdade fica intacta.
    *
-   *   (a) restringir o release a `service_role`, o que obriga esta função a
-   *       carregar a chave de service role — hoje ela deliberadamente não
-   *       tem nenhuma, e é isso que limita o estrago de um bug aqui a "texto
-   *       ruim"; ou
-   *   (b) um token de claim que o cliente não possa forjar nem ler
-   *       (coluna nova, SELECT revogado, devolvido só a quem fez o claim).
-   *
-   * O que esta rodada faz, em vez disso, é atacar as duas pontas que não
-   * exigem schema: a geração ganha uma tentativa de completar dentro do mesmo
-   * claim (bem abaixo), o que reduz muito a chance de a janela ser gasta sem
-   * resultado; e o cliente passa a relatar a janela fechada como
-   * `REFRESH_LIMITED` — informação com prazo — em vez de
-   * `INCOMPLETE_GENERATION` com um botão morto.
+   * Isso NÃO é o "release" que a 0012 recusou a criar. O settle exige o token
+   * da tentativa, que só quem venceu o claim recebe — a linha guarda apenas
+   * `md5(token)`, e `public.trips` é legível por qualquer membro. E nenhum
+   * desfecho devolve a janela de graça: `retry` incrementa a contagem de falhas
+   * e adia a próxima tentativa, com o cooldown dobrando até as mesmas seis
+   * horas de antes.
    */
   const { data: claimRows, error: claimError } = await supabase.rpc(
     'claim_trip_suggestion_refresh',
@@ -259,10 +259,51 @@ Deno.serve(async (req) => {
     return json({ error: 'Não foi possível reservar a atualização de sugestões.' }, 503);
   }
   const claim = Array.isArray(claimRows) ? claimRows[0] : claimRows;
-  if (!claim?.claimed) {
-    return json({ error: 'As sugestões desta viagem já foram atualizadas nas últimas 6 horas.' }, 429);
+  if (!claim?.claimed || typeof claim.attempt !== 'string') {
+    /*
+     * Recusado: ou outra tentativa está em curso, ou a janela/cooldown ainda
+     * não abriu. `retryAfter` vai junto quando existe — é a diferença entre
+     * "volte em alguns minutos" e "volte em algumas horas", e sem ele o
+     * cliente não tem como escrever a frase certa.
+     */
+    return json(
+      {
+        error: 'As sugestões desta viagem já foram atualizadas recentemente.',
+        code: 'REFRESH_LIMITED',
+        retryAfter: claim?.retry_after ?? undefined,
+        refreshedAt: claim?.refreshed_at ?? undefined,
+      },
+      429,
+    );
   }
+  const attempt: string = claim.attempt;
   lastCall.set(userId, Date.now());
+
+  /**
+   * Encerra a tentativa e responde — o único caminho de saída daqui para baixo.
+   *
+   * Nenhum `return json(...)` solto depois do claim: uma saída que esquecesse
+   * de encerrar deixaria a tentativa pendurada até a lease expirar, e a viagem
+   * travada nesses minutos por nada.
+   *
+   * Se o próprio settle falhar (o banco ficou inalcançável na volta), a
+   * tentativa expira sozinha com a lease. É o pior caso, e ele custa cinco
+   * minutos — não seis horas.
+   */
+  async function finish(
+    outcome: GenerationOutcome,
+    status: number,
+    body: Record<string, unknown>,
+  ): Promise<Response> {
+    const { data, error } = await supabase.rpc('settle_trip_suggestion_refresh', {
+      target_trip: tripId,
+      attempt,
+      outcome,
+    });
+    const settled = Array.isArray(data) ? data[0] : data;
+    const retryAfter = error ? undefined : (settled?.retry_after ?? undefined);
+    return json(retryAfter ? { ...body, retryAfter } : body, status);
+  }
 
   const existingTitles = Array.isArray(payload.existingTitles)
     ? (payload.existingTitles as unknown[])
@@ -299,12 +340,17 @@ Deno.serve(async (req) => {
   /**
    * Uma rodada do Gemini, já sanitizada.
    *
-   * Devolve `null` quando a chamada não produziu saída utilizável — rede,
-   * status ruim ou corpo que não é o formato acordado. Quem decide o que fazer
-   * com isso é o chamador, porque as duas rodadas reagem de maneira diferente:
-   * a primeira falhar é um erro, a segunda falhar apenas não completou.
+   * Não devolve mais `null` para tudo que deu errado: o MOTIVO decide o
+   * desfecho da tentativa inteira (0017). Chave recusada e rede caída pedem
+   * coisas opostas — a primeira não melhora com repetição, a segunda melhora.
+   * A classificação em si vive em `policy.ts`, onde o Jest a executa.
    */
-  async function generate(evitar: string[], pedir: number): Promise<Record<string, unknown>[] | null> {
+  async function generate(
+    evitar: string[],
+    pedir: number,
+  ): Promise<
+    { ok: true; items: Record<string, unknown>[] } | { ok: false; falha: RoundFailure }
+  > {
     let response: Response;
     try {
       response = await fetch(
@@ -324,10 +370,11 @@ Deno.serve(async (req) => {
         },
       );
     } catch {
-      return null;
+      // Nem chegou a haver resposta: DNS, TLS, socket, timeout do runtime.
+      return { ok: false, falha: 'transport' };
     }
 
-    if (!response.ok) return null;
+    if (!response.ok) return { ok: false, falha: classifyProviderStatus(response.status) };
 
     let parsed: { suggestions?: unknown[] };
     try {
@@ -337,12 +384,15 @@ Deno.serve(async (req) => {
         .join('');
       parsed = JSON.parse(text);
     } catch {
-      return null;
+      return { ok: false, falha: 'format' };
     }
 
-    return (Array.isArray(parsed.suggestions) ? parsed.suggestions : [])
-      .map(sanitizeSuggestion)
-      .filter((suggestion): suggestion is Record<string, unknown> => suggestion !== null);
+    return {
+      ok: true,
+      items: (Array.isArray(parsed.suggestions) ? parsed.suggestions : [])
+        .map(sanitizeSuggestion)
+        .filter((suggestion): suggestion is Record<string, unknown> => suggestion !== null),
+    };
   }
 
   /** Título normalizado, para não gravar "Praça Vermelha" duas vezes. */
@@ -354,13 +404,33 @@ Deno.serve(async (req) => {
       .trim();
 
   const primeira = await generate(existingTitles, MINIMUM_SUGGESTIONS);
-  if (primeira === null) {
-    // A primeira rodada falhar é falha de verdade: não há o que completar.
-    return json({ error: 'Não foi possível gerar sugestões agora.' }, 502);
+  if (!primeira.ok) {
+    /*
+     * A primeira rodada falhar é falha de verdade: não há o que completar.
+     *
+     * O que a tentativa custa depende do motivo, e é aqui que a correção
+     * aparece. `input` — chave ausente, corpo recusado, schema inválido — é
+     * determinístico: consome a janela de seis horas, porque repetir daqui a
+     * dez minutos gastaria de novo com a mesma certeza de falhar. Rede, 5xx,
+     * 429 e corpo ilegível são transitórios: custam só o cooldown curto, e a
+     * marca d'água da última entrega de verdade fica onde estava.
+     */
+    const veredito = generationVerdict({
+      failure: primeira.falha,
+      produced: 0,
+      minimumNeeded,
+    });
+    return finish(veredito.outcome, veredito.status, {
+      error:
+        veredito.outcome === 'exhausted'
+          ? 'A geração de sugestões não está configurada corretamente neste ambiente.'
+          : 'Não foi possível gerar sugestões agora.',
+      code: veredito.code,
+    });
   }
 
-  const vistos = new Set(primeira.map(chave));
-  const suggestions = [...primeira];
+  const vistos = new Set(primeira.items.map(chave));
+  const suggestions = [...primeira.items];
 
   /*
    * UMA tentativa de completar, dentro da mesma execução (§14 do handoff).
@@ -385,7 +455,7 @@ Deno.serve(async (req) => {
       faltam,
     );
 
-    for (const item of segunda ?? []) {
+    for (const item of segunda.ok ? segunda.items : []) {
       const k = chave(item);
       if (!k || vistos.has(k)) continue;
       vistos.add(k);
@@ -396,32 +466,41 @@ Deno.serve(async (req) => {
   suggestions.splice(12);
 
   /*
-   * Geração parcial não é sucesso.
+   * O veredito da tentativa. A tabela de decisão inteira está em `policy.ts`;
+   * aqui só se aplica o que ela devolveu.
    *
-   * O `responseSchema` pede `minItems`, mas o modelo pode devolver menos, e a
-   * sanitização acima descarta o que não se sustenta — sobrar 1 quando o
-   * objetivo era completar 3 é um resultado incompleto, e devolvê-lo com 200
-   * faria o cliente pintar "pronto" numa tela que continua abaixo do mínimo
-   * (§21 do handoff).
+   * ZERO SUGESTÃO ÚTIL NÃO PODE CUSTAR SEIS HORAS — é o que esta correção
+   * conserta. O provedor respondeu, o corpo era legível, e ainda assim nada
+   * sobreviveu à sanitização: nada será persistido, e prender a viagem por
+   * seis horas por causa disso é cobrar da pessoa por um resultado que ela não
+   * recebeu. Vira `retry`, com o cooldown curto.
    *
-   * O que já é válido vai junto: o 422 carrega o parcial, para o cliente
-   * gravar o que serve e ainda assim dizer que não completou. A janela de seis
-   * horas segue consumida — o custo do Gemini já foi pago.
+   * GERAÇÃO PARCIAL CONTINUA CONSUMINDO A JANELA. Uma sugestão válida é
+   * conteúdo que fica salvo e visível; a chamada foi paga e entregou. O 422
+   * continua dizendo que não completou, e continua carregando o parcial para o
+   * cliente gravar — o que mudou desde a correção anterior é só que agora isso
+   * está separado, no banco, do caso em que nada foi entregue.
    */
-  if (suggestions.length < minimumNeeded) {
-    return json(
-      {
-        error: 'A geração não alcançou o mínimo de sugestões para esta viagem.',
-        code: 'INSUFFICIENT_SUGGESTIONS',
-        requested: minimumNeeded,
-        generated: suggestions.length,
-        suggestions,
-      },
-      422,
-    );
+  const veredito = generationVerdict({ produced: suggestions.length, minimumNeeded });
+
+  if (veredito.status === 502) {
+    return finish(veredito.outcome, veredito.status, {
+      error: 'A geração não devolveu nenhuma sugestão utilizável para este destino.',
+      code: veredito.code,
+    });
   }
 
-  return json({ suggestions });
+  if (veredito.status === 422) {
+    return finish(veredito.outcome, veredito.status, {
+      error: 'A geração não alcançou o mínimo de sugestões para esta viagem.',
+      code: 'INSUFFICIENT_SUGGESTIONS',
+      requested: minimumNeeded,
+      generated: suggestions.length,
+      suggestions,
+    });
+  }
+
+  return finish(veredito.outcome, veredito.status, { suggestions });
 });
 
 /**

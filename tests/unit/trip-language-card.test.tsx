@@ -96,6 +96,26 @@ describe('país multilíngue (§13)', () => {
     mockLanguage.mockReturnValue('pt');
     expect(montar('CH', 'Suíça').getByText('Alemão, Francês e Italiano')).toBeTruthy();
   });
+
+  /*
+   * O caso nomeado no handoff (§58): Canadá fala inglês E francês, e quem já
+   * fala inglês continua ganhando em saber do francês. Esconder o cartão
+   * inteiro porque UM idioma coincidiu apagaria justamente a parte que a pessoa
+   * não sabia — e o singular no rótulo é a consequência de sobrar um só.
+   */
+  it('Canadá para quem fala inglês: sobra o francês, no singular', () => {
+    mockLanguage.mockReturnValue('en');
+    const view = montar('CA', 'Canadá');
+
+    expect(view.getByText('Francês')).toBeTruthy();
+    expect(view.getByText('Idioma do destino')).toBeTruthy();
+    expect(view.queryByText(/Inglês/)).toBeNull();
+  });
+
+  it('Canadá para quem fala português: mostra os dois', () => {
+    mockLanguage.mockReturnValue('pt');
+    expect(montar('CA', 'Canadá').getByText('Inglês e Francês')).toBeTruthy();
+  });
 });
 
 describe('destino sem metadados (§43)', () => {

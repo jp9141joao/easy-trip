@@ -118,10 +118,23 @@ q "Tabelas em \`public\`" \
   "select count(*) from pg_tables where schemaname='public'"
 q "Colunas em \`public\`" \
   "select count(*) from information_schema.columns where table_schema='public'"
-q "Funções em \`public\`" \
+# Funções: separar o que as migrations do Easy Trip criam do que uma extensão
+# instala junto. No banco descartável a `pgcrypto` da 0001 cai em `public` (no
+# Supabase real ela vive em `extensions`), e contá-la inflava a métrica do
+# projeto. `pg_depend` com `deptype='e'` marca exatamente o que pertence a uma
+# extensão; o filtro abaixo remove esses objetos.
+NAO_EXT="not exists (select 1 from pg_depend d where d.classid='pg_proc'::regclass and d.objid=p.oid and d.refclassid='pg_extension'::regclass and d.deptype='e')"
+
+q "**Funções criadas pelo projeto**" \
+  "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and $NAO_EXT"
+q "  · \`security definer\`" \
+  "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.prosecdef and $NAO_EXT"
+q "  · \`security definer\` com \`search_path\` fixo" \
+  "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.prosecdef and exists (select 1 from unnest(coalesce(p.proconfig,'{}')) c where c like 'search_path=%') and $NAO_EXT"
+q "Funções de extensão em \`public\` (não são do projeto)" \
+  "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and not ($NAO_EXT)"
+q "Funções em \`public\`, total do ambiente" \
   "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public'"
-q "Funções \`security definer\`" \
-  "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.prosecdef"
 q "Triggers (não internos)" \
   "select count(*) from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and not t.tgisinternal"
 q "Índices em \`public\`" \
@@ -132,6 +145,8 @@ q "  · CHECK" \
   "select count(*) from pg_constraint c join pg_namespace n on n.oid=c.connamespace where n.nspname='public' and c.contype='c'"
 q "  · FOREIGN KEY" \
   "select count(*) from pg_constraint c join pg_namespace n on n.oid=c.connamespace where n.nspname='public' and c.contype='f'"
+q "  · PRIMARY KEY" \
+  "select count(*) from pg_constraint c join pg_namespace n on n.oid=c.connamespace where n.nspname='public' and c.contype='p'"
 q "  · UNIQUE" \
   "select count(*) from pg_constraint c join pg_namespace n on n.oid=c.connamespace where n.nspname='public' and c.contype='u'"
 q "Policies em \`public\`" \

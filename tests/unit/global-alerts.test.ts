@@ -230,3 +230,55 @@ describe('ordem por urgência, não por viagem (§25)', () => {
     expect(aDois.date! < aCinco.date!).toBe(true);
   });
 });
+
+/**
+ * Aviso derivado respeita o ESTADO da viagem, não só a data do registro (§20).
+ *
+ * A variante "Atividade hoje" exigia apenas `next.date === today`, e isso
+ * parecia bastar: uma viagem concluída terminou antes de hoje, logo não teria
+ * atividade hoje. Só que a data de fim se edita. Encurtar a viagem depois de
+ * montar o roteiro deixa atividades fora do novo intervalo, e uma delas datada
+ * de hoje ressuscitava o aviso numa viagem já encerrada — a central passava a
+ * cobrar um compromisso de uma viagem que acabou.
+ */
+describe('viagem concluída não gera compromisso (§20, §61)', () => {
+  const concluída = trip('a', 'Tóquio', { startDate: '2026-08-10', endDate: '2026-08-20' });
+
+  const atividade = (date: string): ItineraryItem => ({
+    id: 'i1',
+    tripId: 'a',
+    date,
+    type: 'atracao',
+    title: 'Templo Senso-ji',
+    completed: false,
+    sortOrder: 0,
+    visibility: 'shared',
+  });
+
+  it('não anuncia "Atividade hoje" para uma viagem já encerrada', () => {
+    // A atividade ficou para trás do novo fim da viagem, mas está datada de hoje.
+    const alerts = alertsForTrip(concluída, HOJE, { ...vazio, itinerary: [atividade(HOJE)] });
+
+    expect(alerts.filter((a) => a.id.includes('activity-'))).toHaveLength(0);
+  });
+
+  it('não anuncia "Próxima atividade" para uma viagem já encerrada', () => {
+    const alerts = alertsForTrip(concluída, HOJE, {
+      ...vazio,
+      itinerary: [atividade('2026-09-05')],
+    });
+
+    expect(alerts.filter((a) => a.id.includes('activity-'))).toHaveLength(0);
+  });
+
+  it('a mesma atividade de hoje continua virando aviso numa viagem em andamento', () => {
+    // O contraste é o que prova que o corte acima é do ESTADO, e não da data.
+    const alerts = alertsForTrip(trip('b', 'Tóquio'), HOJE, {
+      ...vazio,
+      itinerary: [atividade(HOJE)],
+    });
+
+    expect(alerts.filter((a) => a.id.includes('activity-'))).toHaveLength(1);
+    expect(alerts.find((a) => a.id.includes('activity-'))?.title).toBe('Atividade hoje');
+  });
+});

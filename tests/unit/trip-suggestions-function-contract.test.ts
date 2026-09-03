@@ -9,6 +9,10 @@ const migrationSource = readFileSync(
   resolve(process.cwd(), 'supabase/migrations/0012_trip_suggestions.sql'),
   'utf8',
 );
+const leaseSource = readFileSync(
+  resolve(process.cwd(), 'supabase/migrations/0017_suggestion_generation_lease.sql'),
+  'utf8',
+);
 const briefingSource = readFileSync(
   resolve(process.cwd(), 'supabase/functions/trip-daily-briefing/index.ts'),
   'utf8',
@@ -25,7 +29,46 @@ describe('trip-suggestions server-side cost and role contract', () => {
     expect(provider).toBeGreaterThan(claim);
     expect(functionSource).toContain("claimError.code === '42501'");
     expect(functionSource).toContain('return json({ error: \'Sem permissão');
-    expect(functionSource).toContain('últimas 6 horas.\' }, 429)');
+    expect(functionSource).toContain("code: 'REFRESH_LIMITED'");
+    expect(functionSource).toContain('429,');
+  });
+
+  /**
+   * 0017 — nenhuma saída depois do claim pode esquecer de encerrá-lo.
+   *
+   * Uma tentativa que não é encerrada fica pendurada até a lease expirar, e a
+   * viagem passa esses minutos travada por nada. Por isso, do claim para
+   * baixo, o único jeito de responder é `finish(...)`, que encerra e só então
+   * devolve — e é o motivo de este teste medir a ORDEM, e não a presença.
+   */
+  it('settles every exit that happens after the claim', () => {
+    const finish = functionSource.slice(
+      functionSource.indexOf('async function finish('),
+      functionSource.indexOf('const existingTitles'),
+    );
+    // Quem responde depois do claim é `finish`, e ele encerra a tentativa antes
+    // de devolver — com o token DESTA tentativa, não um release aberto.
+    expect(finish).toContain("supabase.rpc('settle_trip_suggestion_refresh'");
+    expect(finish).toContain('attempt,');
+
+    // E, do fim de `finish` em diante, não sobra nenhuma saída solta: um
+    // `return json(...)` ali sairia sem encerrar, deixando a tentativa
+    // pendurada até a lease expirar.
+    const depoisDeFinish = functionSource.slice(functionSource.indexOf('const existingTitles'));
+    expect(depoisDeFinish).not.toContain('return json(');
+    expect(depoisDeFinish).toContain('return finish(');
+  });
+
+  /**
+   * A tabela de decisão não mora aqui: mora em `policy.ts`, onde o Jest a
+   * executa caso a caso (`suggestions-generation-window.test.ts`). O que se
+   * confere neste arquivo é que a Function realmente a consulta em vez de
+   * decidir por conta própria.
+   */
+  it('asks the policy module what the attempt cost', () => {
+    expect(functionSource).toContain("from './policy.ts'");
+    expect(functionSource).toContain('generationVerdict(');
+    expect(functionSource).toContain('classifyProviderStatus(response.status)');
   });
 
   /**
@@ -65,8 +108,8 @@ describe('trip-suggestions server-side cost and role contract', () => {
   });
 
   it('still refuses the first round failing — there is nothing to complete', () => {
-    expect(functionSource).toContain('if (primeira === null)');
-    expect(functionSource).toContain("json({ error: 'Não foi possível gerar sugestões agora.' }, 502)");
+    expect(functionSource).toContain('if (!primeira.ok)');
+    expect(functionSource).toContain("'Não foi possível gerar sugestões agora.'");
   });
 
   /**
@@ -131,6 +174,8 @@ describe('trip-suggestions server-side cost and role contract', () => {
   });
 
   it('keeps the claim in Postgres as a role-checked compare-and-set', () => {
+    // A 0012 continua sendo a origem do desenho, e o texto dela não foi
+    // reescrito: migration aplicada não se edita.
     expect(migrationSource).toContain(
       'create or replace function public.claim_trip_suggestion_refresh(target_trip uuid)',
     );
@@ -139,6 +184,41 @@ describe('trip-suggestions server-side cost and role contract', () => {
     expect(migrationSource).toContain(
       'revoke all on function public.claim_trip_suggestion_refresh(uuid) from public, anon;',
     );
+  });
+
+  /**
+   * 0017 — a janela deixou de ser gasta antes de se saber o resultado.
+   *
+   * O comportamento em si é medido contra um PostgreSQL de verdade em
+   * `supabase/tests/suggestion_refresh_window.test.sql`. O que se guarda aqui
+   * são as duas propriedades que uma refatoração distraída apagaria sem que
+   * nenhum teste de comportamento reclamasse: o claim não gravar a marca
+   * d'água, e o token nunca ser gravado em claro numa linha que os membros da
+   * viagem conseguem ler.
+   */
+  it('claims without declaring the trip updated, and never stores the token in the clear', () => {
+    const claim = leaseSource.slice(
+      leaseSource.indexOf('create or replace function public.claim_trip_suggestion_refresh'),
+      leaseSource.indexOf('create or replace function public.settle_trip_suggestion_refresh'),
+    );
+
+    expect(claim).toContain('set suggestions_attempt_key = md5(token::text)');
+    expect(claim).not.toContain('set suggestions_refreshed_at');
+    expect(claim).toContain('if not public.can_edit_trip(target_trip) then');
+
+    // Os três números vivem em funções, e não repetidos no corpo das duas RPCs.
+    expect(leaseSource).toContain('public.suggestion_refresh_interval()');
+    expect(leaseSource).toContain('public.suggestion_attempt_lease()');
+    expect(leaseSource).toContain('public.suggestion_failure_cooldown(');
+
+    // O encerramento exige o token da tentativa: não é um release aberto.
+    expect(leaseSource).toContain('t.suggestions_attempt_key = md5(attempt::text)');
+    expect(leaseSource).toContain(
+      'revoke all on function public.settle_trip_suggestion_refresh(uuid, uuid, text) from public, anon;',
+    );
+
+    // E a 0012 não foi editada para caber a mudança.
+    expect(migrationSource).not.toContain('suggestions_attempt_key');
   });
 });
 

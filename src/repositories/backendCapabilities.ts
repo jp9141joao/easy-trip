@@ -62,6 +62,13 @@ const EXPECTED_IDENTIFIERS: Record<BackendCapabilityCode, readonly string[]> = {
     'trip_suggestions',
     'suggestions_refreshed_at',
     'title_key',
+    // 0017: sem estas colunas o servidor ainda gasta a janela de seis horas
+    // numa geração que falhou, e o aplicativo não tem como distinguir as duas
+    // esperas. A leitura da viagem já as pede, então a ausência aparece aqui
+    // como incompatibilidade de backend — e não como uma falha sem explicação.
+    'suggestions_retry_after',
+    'suggestions_attempt_at',
+    'settle_trip_suggestion_refresh',
   ],
 };
 

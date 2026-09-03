@@ -11,6 +11,7 @@ import {
   type SuggestionCategory,
 } from '@/domain/suggestions';
 import { useAuth } from '@/providers/AuthProvider';
+import { BackendCapabilityError } from '@/repositories/backendCapabilities';
 import { dataSource } from '@/repositories';
 import { queryKeys } from './queryKeys';
 import { useItinerary } from './useTripData';
@@ -18,11 +19,13 @@ import { useItinerary } from './useTripData';
 /**
  * Depois de uma tentativa de geração, a marca d'água mudou (§24 do handoff).
  *
- * `suggestions_refreshed_at` mora na linha da VIAGEM, não na coleção de
- * sugestões — e é ela que decide se "Atualizar sugestões" fica habilitado. O
- * claim é consumido dentro da Function, então quem tem a versão velha da viagem
- * é justamente quem acabou de gastá-lo: sem invalidar, o botão continuaria
- * aceso e o próximo toque só descobriria a janela fechada indo à rede.
+ * O estado da geração mora na linha da VIAGEM, não na coleção de sugestões — e
+ * é ele que decide se "Atualizar sugestões" fica habilitado. Desde a 0017 são
+ * três marcas, e uma tentativa mexe em pelo menos uma delas: a marca d'água de
+ * seis horas quando entregou, o cooldown curto quando não entregou. Quem tem a
+ * versão velha da viagem é justamente quem acabou de tentar: sem invalidar, o
+ * botão continuaria aceso e o próximo toque só descobriria a recusa indo à
+ * rede.
  *
  * Invalida as duas chaves porque a Home lista viagens pela coleção agregada, e
  * é dela que sai o cartão. Nenhuma delas é a chave das sugestões, então isto
@@ -89,7 +92,39 @@ export function useSuggestions(
     queryFn: load,
     enabled: Boolean(tripId) && access.resolved,
     staleTime: 30 * 60 * 1000,
+    retry: shouldRetrySuggestions,
   });
+}
+
+/**
+ * Repetir `ensure` só faz sentido quando a ida à rede não chegou a acontecer.
+ *
+ * O PADRÃO DO APLICATIVO NÃO SERVE AQUI. `AppProviders` repete toda consulta
+ * até três vezes, e para uma leitura isso é acerto: a segunda tentativa pega o
+ * que a primeira perdeu. `ensure` não é uma leitura — é uma leitura que pode
+ * GERAR, e a geração reserva a tentativa no compare-and-set ANTES do Gemini
+ * (0012, 0017). Depois da primeira tentativa a porta está fechada de um jeito
+ * ou de outro — janela de seis horas se ela entregou, cooldown de minutos se
+ * não — e as repetições nem chegam a chamar a Function: elas só reencontram a
+ * lista abaixo do mínimo e levantam a mesma recusa.
+ *
+ * A 0017 encurtou a espera, e não a transformou em "pode repetir agora": três
+ * tentativas em sequência continuariam sendo três esqueletos de 30 s para
+ * chegar ao mesmo veredito.
+ *
+ * O preço disso era pago em tela. Cada tentativa carrega o orçamento de 30 s
+ * do `postJson`, então uma falha de geração deixava o esqueleto no ar por até
+ * um minuto e meio antes de mostrar qualquer coisa — e o que aparecia no fim
+ * era o erro da ÚLTIMA tentativa, que já não descrevia o que de fato houve.
+ *
+ * Uma `SuggestionGenerationError` é sempre um veredito: a tentativa aconteceu
+ * e o motivo já está classificado (§15). Ela sobe na hora. O que continua
+ * merecendo repetição é o resto — a leitura da coleção que não chegou.
+ */
+export function shouldRetrySuggestions(failureCount: number, error: unknown): boolean {
+  if (error instanceof SuggestionGenerationError) return false;
+  if (error instanceof BackendCapabilityError) return false;
+  return failureCount < 2;
 }
 
 export function useRefreshSuggestions(tripId: string) {
@@ -101,9 +136,9 @@ export function useRefreshSuggestions(tripId: string) {
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.suggestions(tripId), data);
     },
-    // `onSettled`, e não `onSuccess`: a janela de seis horas é consumida pelo
-    // compare-and-set ANTES do Gemini, então uma geração que falha no provedor
-    // também deixou a marca d'água nova para trás.
+    // `onSettled`, e não `onSuccess`: a tentativa é reservada ANTES do Gemini,
+    // então uma geração que falha no provedor também deixou estado novo na
+    // linha da viagem — o cooldown curto da 0017, no lugar da marca d'água.
     onSettled: () => invalidateAfterClaim(queryClient, tripId, user?.id),
   });
 }

@@ -682,15 +682,23 @@ begin
   perform pg_temp.as_user('0b000000-0000-4000-8000-00000000000b');
   select * into primeira from public.claim_trip_suggestion_refresh(
     'a1000000-0000-4000-8000-000000000001');
+  -- Desde a 0017 o claim RESERVA a tentativa e não declara a viagem
+  -- atualizada: a marca d'água só é gravada no encerramento, quando já se sabe
+  -- se alguma sugestão saiu. Quem prova o ciclo completo é
+  -- `suggestion_refresh_window.test.sql`; aqui interessa o recorte de papel.
   perform pg_temp.check(
-    primeira.claimed and primeira.refreshed_at is not null,
+    primeira.claimed and primeira.attempt is not null,
     'EDITOR_B reivindica a janela de refresh');
+  perform pg_temp.check(
+    (select suggestions_refreshed_at from public.trips
+      where id = 'a1000000-0000-4000-8000-000000000001') is null,
+    'reservar não é atualizar: a marca d''água segue vazia');
 
   select * into segunda from public.claim_trip_suggestion_refresh(
     'a1000000-0000-4000-8000-000000000001');
   perform pg_temp.check(
-    not segunda.claimed and segunda.refreshed_at = primeira.refreshed_at,
-    'segunda claim imediata é recusada sem mover timestamp');
+    not segunda.claimed and segunda.attempt is null,
+    'segunda claim imediata é recusada, e sem token');
 
   perform pg_temp.as_user('0d000000-0000-4000-8000-00000000000d');
   perform pg_temp.check(
@@ -707,17 +715,21 @@ begin
   end;
 
   -- Reabre a janela como operação de teste server-side, para provar que owner
-  -- e editor são ambos autorizados sem esperar seis horas reais.
+  -- e editor são ambos autorizados sem esperar seis horas reais. A tentativa de
+  -- EDITOR_B é descartada junto: sem isso, o que recusaria OWNER_A seria a
+  -- lease dela, e o teste mediria concorrência em vez de papel.
   perform pg_temp.as_postgres();
   update public.trips
-     set suggestions_refreshed_at = now() - interval '7 hours'
+     set suggestions_refreshed_at = now() - interval '7 hours',
+         suggestions_attempt_key = null,
+         suggestions_attempt_at = null
    where id = 'a1000000-0000-4000-8000-000000000001';
 
   perform pg_temp.as_user('0a000000-0000-4000-8000-00000000000a');
   select * into do_owner from public.claim_trip_suggestion_refresh(
     'a1000000-0000-4000-8000-000000000001');
   perform pg_temp.check(
-    do_owner.claimed and do_owner.refreshed_at > now() - interval '1 minute',
+    do_owner.claimed and do_owner.attempt is not null,
     'OWNER_A reivindica a janela quando ela reabre');
 
   -- Nem owner pode adulterar/backdatear a marca d'água pelo REST; a única
@@ -743,13 +755,23 @@ begin
    where s.trip_id = 'a1000000-0000-4000-8000-000000000001';
   perform pg_temp.check(
     conteudo_depois = conteudo_antes,
-    'claims alteram somente a marca d''água, nunca o conteúdo das sugestões');
+    'claims alteram somente o estado da geração, nunca o conteúdo das sugestões');
 
   perform pg_temp.as_postgres();
   perform pg_temp.check(
     not has_column_privilege(
       'authenticated', 'public.trips', 'suggestions_refreshed_at', 'update'),
     'authenticated não atualiza suggestions_refreshed_at diretamente');
+  -- E o mesmo vale para as colunas que a 0017 acrescentou: se o aplicativo
+  -- pudesse zerar o cooldown, o desenho inteiro seria decorativo.
+  perform pg_temp.check(
+    not has_column_privilege(
+      'authenticated', 'public.trips', 'suggestions_retry_after', 'update'),
+    'authenticated não atualiza suggestions_retry_after diretamente');
+  perform pg_temp.check(
+    not has_column_privilege(
+      'authenticated', 'public.trips', 'suggestions_attempt_key', 'update'),
+    'authenticated não atualiza suggestions_attempt_key diretamente');
   perform pg_temp.check(
     has_table_privilege('service_role', 'public.trips', 'update'),
     'service_role conserva UPDATE completo em trips');

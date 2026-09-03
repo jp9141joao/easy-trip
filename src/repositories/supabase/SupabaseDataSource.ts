@@ -302,6 +302,8 @@ const toTrip = (row: Row): Trip => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   suggestionsRefreshedAt: row.suggestions_refreshed_at ?? undefined,
+  suggestionsRetryAfter: row.suggestions_retry_after ?? undefined,
+  suggestionsAttemptAt: row.suggestions_attempt_at ?? undefined,
 });
 
 /**
@@ -1565,9 +1567,22 @@ export const supabaseDataSource: DataSource = {
     async (tripId) => {
       const result = await db()
         .from('trips')
-        .select('id, destination_city, destination_country, start_date, end_date, suggestions_refreshed_at')
+        .select(
+          'id, destination_city, destination_country, start_date, end_date, ' +
+            'suggestions_refreshed_at, suggestions_retry_after, suggestions_attempt_at',
+        )
         .eq('id', tripId)
         .maybeSingle();
+      /*
+       * `null` aqui significa "esta viagem não existe mais", e `ensure` conta
+       * com isso. Devolver `null` também quando a LEITURA falhou apagava a
+       * diferença: uma sessão expirada ou uma recusa da RLS viravam
+       * `PERSISTENCE_FAILED` — "Não foi possível salvar" — numa tela em que
+       * nada tinha sido salvo, e a pessoa procurava um problema de gravação
+       * que não existia. O erro do PostgREST sobe inteiro para ser
+       * classificado onde há contexto para isso.
+       */
+      if (result.error) throw result.error;
       const row = result.data as Row | null;
       if (!row) return null;
       return {
@@ -1577,6 +1592,8 @@ export const supabaseDataSource: DataSource = {
         startDate: row.start_date,
         endDate: row.end_date,
         suggestionsRefreshedAt: row.suggestions_refreshed_at ?? undefined,
+        suggestionsRetryAfter: row.suggestions_retry_after ?? undefined,
+        suggestionsAttemptAt: row.suggestions_attempt_at ?? undefined,
       };
     },
     async () => (await db().auth.getSession()).data.session?.access_token,

@@ -328,9 +328,19 @@ export function alertsForTrip(trip: Trip, today: ISODate, records: TripRecords):
     });
   }
 
-  /* Próxima atividade */
+  /*
+   * Próxima atividade
+   *
+   * As DUAS variantes exigem `status !== 'completed'` (§20). A de hoje exigia
+   * só `next.date === today`, o que parecia bastar — uma viagem concluída
+   * terminou ANTES de hoje, então ela não teria atividade hoje. Só que a data
+   * de fim se edita: encurtar a viagem depois de montar o roteiro deixa para
+   * trás atividades fora do novo intervalo, e uma delas datada de hoje voltava
+   * a virar "Atividade hoje" numa viagem já encerrada. O aviso derivado
+   * respeita o estado da viagem, e não só a data do registro.
+   */
   const [next] = getNextActivities(records.itinerary, 1, today);
-  if (next && next.date === today) {
+  if (next && next.date === today && status !== 'completed') {
     push({
       kind: `activity-${next.id}`,
       title: 'Atividade hoje',

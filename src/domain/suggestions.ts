@@ -77,6 +77,16 @@ export const SUGGESTION_FAILURE_CODES = [
   'EDGE_FUNCTION_UNAVAILABLE',
   'PERMISSION_DENIED',
   'REFRESH_LIMITED',
+  /**
+   * A tentativa aconteceu, custou uma chamada ao provedor e não entregou nada.
+   *
+   * Diferente de `REFRESH_LIMITED`, que é a janela de seis horas de uma
+   * atualização que DEU certo. Aqui não houve atualização nenhuma: houve uma
+   * falha, e o que separa a pessoa da próxima tentativa são minutos (0017).
+   * Chamar isso de "Atualizado recentemente" seria descrever como sucesso o
+   * exato momento em que nada foi entregue.
+   */
+  'GENERATION_COOLDOWN',
   'AI_UNAVAILABLE',
   'AI_PROVIDER_FAILED',
   'INVALID_AI_RESPONSE',
@@ -130,6 +140,15 @@ export interface SuggestionAttemptDiagnostics {
   totalCount?: number;
   /** A janela de 6h estava aberta quando a tentativa começou? */
   refreshWindowOpen?: boolean;
+  /** Qual barreira recusou a tentativa, quando ela foi recusada (0017). */
+  refreshBlockedBy?: SuggestionRefreshBlock;
+  /**
+   * Quando será possível tentar de novo, se isso é sabido.
+   *
+   * É um instante, não um conteúdo: entra no texto da tela para a espera ter
+   * prazo em vez de virar "mais tarde".
+   */
+  retryAfter?: ISODateTime;
   /** A tentativa foi um "Atualizar sugestões" explícito? */
   forced?: boolean;
 }
@@ -179,6 +198,7 @@ export interface SuggestionScreenState {
     | 'empty'
     | 'incomplete'
     | 'refresh_limited'
+    | 'cooldown'
     | 'network'
     | 'permission'
     | 'unavailable'
@@ -198,6 +218,23 @@ const SCREEN_STATES: Record<SuggestionFailureCode, SuggestionScreenState> = {
       'Gerar sugestões tem custo, então isso acontece no máximo uma vez a cada 6 horas por ' +
       'viagem. Você poderá atualizar as sugestões novamente mais tarde.',
     tone: 'info',
+    retryable: false,
+  },
+  /*
+   * A tentativa falhou e não entregou nada — e é por isso que este estado não
+   * pode ser o "Atualizado recentemente" acima.
+   *
+   * O texto não promete horas nem manda "tentar de novo mais tarde" sem prazo:
+   * são minutos, e `suggestionScreenState` acrescenta o horário exato quando a
+   * resposta trouxe um. `retryable: false` porque tocar agora esbarraria no
+   * cooldown do próprio banco — um botão que não pode funcionar ensina que o
+   * aplicativo quebrou.
+   */
+  GENERATION_COOLDOWN: {
+    kind: 'cooldown',
+    title: 'A geração não trouxe nada',
+    message: 'Não conseguimos gerar sugestões agora. Tente novamente em alguns minutos.',
+    tone: 'warning',
     retryable: false,
   },
   INCOMPLETE_GENERATION: {
@@ -312,7 +349,32 @@ export function suggestionScreenState(error: unknown): SuggestionScreenState {
   const transport = error.diagnostics.transport;
   if (transport === 'offline' || transport === 'timeout') return NETWORK_STATE;
 
-  return SCREEN_STATES[error.code] ?? SCREEN_STATES.AI_PROVIDER_FAILED;
+  const state = SCREEN_STATES[error.code] ?? SCREEN_STATES.AI_PROVIDER_FAILED;
+  return withRetryTime(state, error.diagnostics.retryAfter);
+}
+
+/**
+ * "Mais tarde" não é uma resposta — "às 14:35" é.
+ *
+ * Só acrescenta o horário quando a espera é curta o bastante para um relógio
+ * fazer sentido. Dizer "às 14:35" para uma janela que reabre amanhã de manhã
+ * seria pior do que não dizer nada: o horário sem o dia leva a pessoa a tentar
+ * no horário errado.
+ */
+function withRetryTime(
+  state: SuggestionScreenState,
+  retryAfter: ISODateTime | undefined,
+  now: Date = new Date(),
+): SuggestionScreenState {
+  if (!retryAfter) return state;
+  const quando = new Date(retryAfter);
+  const faltam = quando.getTime() - now.getTime();
+  if (Number.isNaN(quando.getTime()) || faltam <= 0 || faltam > SUGGESTIONS_REFRESH_INTERVAL_MS) {
+    return state;
+  }
+
+  const hora = quando.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return { ...state, message: `${state.message} Você poderá tentar de novo às ${hora}.` };
 }
 
 /**
@@ -335,6 +397,8 @@ export function formatSuggestionDiagnostics(error: unknown): string | null {
   if (d.aiCount !== undefined) partes.push(`ai=${d.aiCount}`);
   if (d.totalCount !== undefined) partes.push(`total=${d.totalCount}`);
   if (d.refreshWindowOpen !== undefined) partes.push(`window=${d.refreshWindowOpen ? 'open' : 'closed'}`);
+  if (d.refreshBlockedBy) partes.push(`blocked=${d.refreshBlockedBy}`);
+  if (d.retryAfter) partes.push(`retry=${d.retryAfter}`);
   if (d.forced !== undefined) partes.push(`forced=${d.forced}`);
 
   return partes.length > 1 ? partes.join(' · ') : null;
@@ -485,12 +549,103 @@ export function formatDuration(minutes: number | undefined): string | undefined 
  */
 export const SUGGESTIONS_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * Quanto tempo uma tentativa em curso segura a viagem.
+ *
+ * Espelha `public.suggestion_attempt_lease()` da 0017 — o valor que vale é o do
+ * banco, que é quem recusa o claim. Aqui ele serve para o aplicativo não
+ * disparar um pedido que já se sabe que será recusado, e para o botão não ficar
+ * aceso enquanto outro aparelho gera.
+ */
+export const SUGGESTIONS_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
+
+/** O que está impedindo uma nova geração agora. */
+export type SuggestionRefreshBlock = 'window' | 'cooldown' | 'in_progress';
+
+/**
+ * Os campos da viagem que decidem se dá para gerar — e só eles.
+ *
+ * Não recebe a `Trip` inteira de propósito: a resposta depende de três colunas,
+ * e passar o objeto todo esconderia isso de quem lê o teste.
+ */
+export interface SuggestionRefreshGate {
+  suggestionsRefreshedAt?: ISODateTime;
+  suggestionsRetryAfter?: ISODateTime;
+  suggestionsAttemptAt?: ISODateTime;
+}
+
+export interface SuggestionRefreshWindow {
+  open: boolean;
+  /** Qual das três barreiras recusa agora. Ausente quando a janela está aberta. */
+  blockedBy?: SuggestionRefreshBlock;
+  /** Quando a barreira mais longa cede. Ausente quando a janela está aberta. */
+  nextAttemptAt?: ISODateTime;
+}
+
+function instante(value: ISODateTime | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/**
+ * Dá para gerar sugestões desta viagem agora? E, se não, por que e até quando?
+ *
+ * TRÊS BARREIRAS, E ELAS NÃO SÃO A MESMA COISA (0017)
+ *
+ *  · `window`      — a última geração ENTREGOU, e a janela de seis horas está
+ *                    correndo. Não é falha: é o limite de custo funcionando.
+ *  · `cooldown`    — a última tentativa não entregou nada. São minutos, e o
+ *                    texto de tela precisa dizer isso em vez de "atualizado
+ *                    recentemente", que descreveria como sucesso uma falha.
+ *  · `in_progress` — alguém está gerando agora. Some sozinha com a lease, mesmo
+ *                    que a Function que a registrou tenha morrido no caminho.
+ *
+ * Quando mais de uma barreira está de pé, quem responde é a que dura MAIS: é
+ * ela que a pessoa vai de fato esperar, e prometer o prazo da mais curta seria
+ * marcar um horário em que o pedido ainda vai ser recusado.
+ */
+export function suggestionRefreshWindow(
+  gate: SuggestionRefreshGate,
+  now: Date = new Date(),
+): SuggestionRefreshWindow {
+  const agora = now.getTime();
+  const barreiras: { blockedBy: SuggestionRefreshBlock; ate: number }[] = [];
+
+  const tentativa = instante(gate.suggestionsAttemptAt);
+  if (tentativa !== undefined && agora - tentativa < SUGGESTIONS_ATTEMPT_LEASE_MS) {
+    barreiras.push({ blockedBy: 'in_progress', ate: tentativa + SUGGESTIONS_ATTEMPT_LEASE_MS });
+  }
+
+  const entrega = instante(gate.suggestionsRefreshedAt);
+  if (entrega !== undefined && agora - entrega < SUGGESTIONS_REFRESH_INTERVAL_MS) {
+    barreiras.push({ blockedBy: 'window', ate: entrega + SUGGESTIONS_REFRESH_INTERVAL_MS });
+  }
+
+  const cooldown = instante(gate.suggestionsRetryAfter);
+  if (cooldown !== undefined && cooldown > agora) {
+    barreiras.push({ blockedBy: 'cooldown', ate: cooldown });
+  }
+
+  if (barreiras.length === 0) return { open: true };
+
+  const maior = barreiras.reduce((atual, proxima) => (proxima.ate > atual.ate ? proxima : atual));
+  return {
+    open: false,
+    blockedBy: maior.blockedBy,
+    nextAttemptAt: new Date(maior.ate).toISOString(),
+  };
+}
+
+/**
+ * A janela de seis horas isolada, para quem só tem a marca d'água em mãos.
+ *
+ * Continua sendo a regra de sempre: uma data ilegível não pode trancar a
+ * viagem, então ela vale como "nunca gerou".
+ */
 export function canRefreshSuggestions(
   refreshedAt: ISODateTime | undefined,
   now: Date = new Date(),
 ): boolean {
-  if (!refreshedAt) return true;
-  const last = new Date(refreshedAt).getTime();
-  if (Number.isNaN(last)) return true;
-  return now.getTime() - last >= SUGGESTIONS_REFRESH_INTERVAL_MS;
+  return suggestionRefreshWindow({ suggestionsRefreshedAt: refreshedAt }, now).open;
 }
