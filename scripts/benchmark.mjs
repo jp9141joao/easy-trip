@@ -283,5 +283,4 @@ if (JSON_OUT) {
   console.log(JSON.stringify({ node: process.version, at: new Date().toISOString(), resultados }, null, 2));
 } else {
   log('\n---\n');
-  log('O que NÃO foi medido, e por quê, está em PERFORMANCE_BASELINE.md.');
 }

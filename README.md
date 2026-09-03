@@ -24,6 +24,7 @@ consultoria humana e um assistente contextual.
 - [Arquitetura](#arquitetura)
 - [Testes](#testes)
 - [Decisões de compatibilidade com Expo Go](#decisões-de-compatibilidade-com-expo-go)
+- [Documentação complementar](#documentação-complementar)
 
 ---
 
@@ -299,9 +300,30 @@ app fala apenas com o BFF.
 | PDF | abre no visualizador do sistema | renderizar in-app exigiria módulo incompatível; a intenção é preservada |
 | Streaming da IA | resposta única com estado de digitação | streaming não é confiável no runtime do Expo Go (§50) |
 | Blur | `expo-blur` no iOS, superfície sólida no Android | custo de frame em aparelhos modestos (§69) |
+| Notificação push do sistema | desligada no Expo Go, ativa na versão instalada | o Expo Go não entrega push remoto no Android desde o SDK 53 — `expo-notifications` só é carregado onde há suporte (`src/services/notificationsModule.ts`) |
 
 Regra geral: quando a solução tecnicamente ideal quebra o Expo Go, preserva-se
 a **intenção** da funcionalidade com a alternativa mais próxima que funciona.
+
+Sobre a última linha, uma distinção que importa: o que o Expo Go não entrega é a
+**notificação do sistema operacional**. Os avisos internos do Easy Trip — a
+Central de notificações, os lembretes que vencem, os alertas de orçamento —
+continuam funcionando normalmente no Expo Go, porque não passam pelo push. Em
+*development build*, APK/AAB ou *build* do EAS o push remoto é carregado e o
+fluxo completo (permissão, token, registro, *deep link*) segue como implementado.
+Isso é limitação do ambiente de desenvolvimento, não do produto instalado.
+
+---
+
+## Documentação complementar
+
+| Documento | O que registra |
+|---|---|
+| [`GO_LIVE_SUPABASE.md`](GO_LIVE_SUPABASE.md) | Runbook do primeiro deploy remoto |
+| [`docs/PUBLICACAO_CONJUNTA_0017.md`](docs/PUBLICACAO_CONJUNTA_0017.md) | Ordem obrigatória de publicação da migration 0017 e da Function `trip-suggestions` |
+| [`SECURITY_MASVS_ASSESSMENT.md`](SECURITY_MASVS_ASSESSMENT.md) | Avaliação interna orientada pelo OWASP MASVS 2.1.0 |
+| [`AI_QUALITY_EVALUATION.md`](AI_QUALITY_EVALUATION.md) | Avaliação das defesas da IA e rubrica para avaliação humana futura |
+| [`USER_EVALUATION_PROTOCOL.md`](USER_EVALUATION_PROTOCOL.md) | Protocolo de avaliação com usuários — preparado, não executado |
 
 ---
 
