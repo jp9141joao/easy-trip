@@ -181,9 +181,18 @@ describe('classificação da falha do Gemini', () => {
   it('separa estouro de prazo, queda de rede e defeito nosso', () => {
     const timeout = new Error('deadline');
     timeout.name = 'TimeoutError';
+    /*
+     * `fallback: true` acompanha `retryable: true` nos dois transitórios.
+     *
+     * Sem ele, `runModelChain` lia a ausência como "erro determinístico" e
+     * quebrava a cadeia: um prazo estourado no primeiro modelo encerrava a
+     * requisição sem chamar os outros quatro. Quem impede o desperdício é o
+     * orçamento global, não a ausência da bandeira.
+     */
     expect(classifyUpstreamException(timeout)).toEqual({
       code: 'GEMINI_TIMEOUT',
       retryable: true,
+      fallback: true,
     });
 
     const abort = new Error('aborted');
@@ -193,6 +202,7 @@ describe('classificação da falha do Gemini', () => {
     expect(classifyUpstreamException(new TypeError('Network request failed'))).toEqual({
       code: 'GEMINI_NETWORK',
       retryable: true,
+      fallback: true,
     });
 
     // Um defeito nosso não pode ser rotulado como problema de rede nem ganhar

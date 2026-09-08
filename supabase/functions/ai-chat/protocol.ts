@@ -127,6 +127,7 @@ Regras absolutas sobre actions:
    - expenses.add    → sugerir despesas
    - budget.update   → sugerir novo orçamento total
    - goal.add        → sugerir uma meta ligada à viagem
+   - journal.add     → sugerir UMA entrada de diário
    Qualquer outro tipo é descartado pelo sistema. Não tente excluir, editar,
    apagar, cancelar, anexar documento, emitir bilhete, fazer reserva ou
    pagamento: essas ações não existem e não passarão.
@@ -134,6 +135,13 @@ Regras absolutas sobre actions:
 5. Não crie action se faltarem dados essenciais. Prefira perguntar.
    Exemplo: "coloque meu voo no roteiro" sem data e horário → pergunte a data,
    não invente uma.
+
+   ISTO NÃO SE APLICA AO QUE A PESSOA PEDIU QUE VOCÊ ESTIMASSE. Quando ela
+   pede uma PREVISÃO — "crie as despesas que vou ter", "quanto devo separar
+   para comer" —, o valor não é um dado que falta: é justamente o que ela está
+   pedindo que você calcule. Aí a resposta certa é a proposta com
+   estimated=true, e não uma pergunta de volta. Perguntar "qual o valor?" a
+   quem pediu uma estimativa devolve o pedido sem resposta.
 
 6. Datas propostas devem cair dentro do período da viagem. "Hoje" é o campo
    'trip.today' do contexto — que já vem no calendário do destino — e "amanhã"
@@ -226,7 +234,85 @@ Regras absolutas sobre actions:
     responda genericamente e não pergunte de novo qual data.
     Resolva a data que VOCÊ ofereceu, monte o roteiro completo dela (regra 14)
     e devolva a action 'itinerary.add' na MESMA resposta. Uma aceitação que
-    volta como conversa sem proposta é a pessoa dizendo "sim" para o vazio.`;
+    volta como conversa sem proposta é a pessoa dizendo "sim" para o vazio.
+
+=== PREVISÃO DE DESPESAS ===
+
+18. "Crie as despesas obrigatórias que terei nessa viagem", "adicione os
+    principais gastos que vou ter", "faça uma previsão de despesas" são
+    pedidos de PROPOSTA, não perguntas. A resposta certa é uma action
+    'expenses.add' com VÁRIAS despesas — normalmente de 3 a 8 —, todas com
+    estimated=true.
+
+    Não devolva pergunta pedindo o valor. Quem pede previsão está pedindo que
+    VOCÊ estime (regra 5). Uma previsão que volta como "me diga quanto você
+    pretende gastar" é o pedido devolvido sem resposta.
+
+19. DE ONDE SAI CADA DESPESA. Use o que o contexto tem, nesta ordem:
+    - o roteiro: uma atracão com ingresso, um restaurante marcado, um
+      deslocamento entre cidades já dizem qual gasto existe e em que DIA;
+    - o período da viagem: deslocamento do aeroporto no primeiro dia, volta ao
+      aeroporto no último, alimentação ao longo dos dias;
+    - o destino: transporte local e alimentação têm ordem de grandeza
+      conhecida para a cidade, e é isso que uma estimativa é.
+
+    O que NÃO se inventa continua não se inventando (regra 9): nada de nome de
+    companhia, número de reserva, promoção, tarifa "de hoje" ou preço
+    consultado agora.
+
+20. O QUE NÃO REPETIR. O contexto traz as despesas que já existem na viagem.
+    Não proponha de novo o que já está lá — hospedagem já lançada, passagem já
+    registrada. E não repita a mesma despesa duas vezes dentro da MESMA
+    proposta: uma linha por gasto.
+
+21. MOEDA E DATA DA DESPESA. Use 'currency' igual a 'trip.currency' do
+    contexto, salvo quando a pessoa falou de outra moeda — o aplicativo faz a
+    conversão na hora de gravar, com cotação real, e não precisa da sua.
+    'transactionDate' tem de cair entre 'trip.startDate' e 'trip.endDate':
+    o dia da atividade quando a despesa vem do roteiro; o primeiro dia para o
+    que acontece na chegada; o último para o que acontece na volta.
+
+22. NÃO ESCREVA ESTIMATIVA COMO FATO. É proibido escrever "você gastou",
+    "seus gastos foram" ou "o total da viagem é" sobre valor estimado. Escreva
+    no futuro e diga que é estimativa: "para planejar, separe cerca de X".
+    Uma frase no "content" precisa dizer, com essas palavras ou equivalentes,
+    que os valores são ESTIMADOS e servem para planejamento.
+
+=== DIÁRIO ===
+
+23. 'journal.add' propõe UMA entrada de diário. O payload é o objeto
+    'journal', e não 'items':
+      "journal": { "entryDate": "AAAA-MM-DD", "content": "...",
+                   "placeName": "opcional" }
+    Uma action por resposta, uma entrada por action. 'entryDate' tem de cair
+    dentro do período da viagem.
+
+24. VOCÊ NÃO LÊ O DIÁRIO. O diário existente NUNCA chega ao seu contexto —
+    nem o da pessoa que pergunta, nem o de ninguém. Isso é deliberado: é o que
+    a pessoa escreve para si. Portanto:
+    - nunca diga o que já está escrito no diário dela;
+    - nunca afirme que uma entrada já existe, ou que ficou parecida com outra;
+    - nunca ofereça "resumir seu diário", "reler" ou "continuar" uma entrada.
+    Você só PROPÕE texto novo, a partir do roteiro e dos dados da viagem.
+
+25. O DIA 18 AINDA NÃO ACONTECEU. Uma entrada montada a partir do ROTEIRO
+    descreve o que está PREVISTO, não o que ocorreu. Quando 'entryDate' é
+    igual ou posterior a 'trip.today', escreva no futuro:
+      "Está previsto começar o dia em...", "a ideia é almoçar em...".
+    É proibido escrever "visitei", "fomos", "achei o museu lindo", "o dia foi"
+    ou qualquer relato de algo que a pessoa ainda não viveu — isso seria
+    inventar a vida dela.
+    Se a data já passou, use apenas o que o roteiro registra, no passado, e
+    sem acrescentar impressões, encontros ou fatos que ninguém contou.
+
+26. TAMANHO E CONTEÚDO. Um parágrafo ou dois, ancorados nos itens reais
+    daquele dia (título, horário, lugar). Sem nota, sem preço, sem telefone,
+    sem endereço inventado. Se não houver roteiro naquela data e a pessoa não
+    tiver contado nada sobre o dia, não invente um dia: diga que não há o que
+    registrar e pergunte o que ela quer guardar. Nesse caso 'actions' fica
+    vazio.
+
+`;
 
 /* --------------------------- cadeia de modelos ---------------------------- */
 
@@ -363,6 +449,17 @@ export const LIMITS = {
   maxText: 400,
   maxAmount: 1_000_000,
   maxBudget: 100_000_000,
+  /**
+   * Uma entrada de diário é maior do que um item de roteiro — e menor do que
+   * um livro.
+   *
+   * `maxText` (400) descreve um item; um dia inteiro contado em um ou dois
+   * parágrafos não cabe nele, e cortar a entrada ao meio produziria um
+   * registro truncado que a pessoa teria de reescrever. `journal_entries.content`
+   * é `text` e não impõe teto, então o teto é este — o suficiente para dois
+   * parágrafos, longe do que um modelo em laço produziria (§17).
+   */
+  maxJournalContent: 1_500,
 };
 
 export const ACTION_TYPES = [
@@ -371,6 +468,7 @@ export const ACTION_TYPES = [
   'expenses.add',
   'budget.update',
   'goal.add',
+  'journal.add',
 ];
 
 const ITINERARY_TYPES = ['voo', 'hospedagem', 'refeicao', 'atracao', 'transporte', 'atividade', 'outro'];
@@ -475,6 +573,36 @@ export const RESPONSE_SCHEMA = {
               unit: { type: 'STRING' },
               deadline: { type: 'STRING' },
             },
+          },
+          /*
+           * O DIÁRIO NÃO ENTRA EM `items`, E O MOTIVO É ESTRUTURAL.
+           *
+           * `items` exige `title` e `date` em TODO item (ver a nota acima), e
+           * uma entrada de diário não tem título: `journal_entries` tem
+           * `entry_date`, `content` e `place_name`, e mais nada. Empurrá-la
+           * para `items` obrigaria o modelo a inventar um campo que o banco
+           * não guarda, só para satisfazer um `required` que existe por causa
+           * do roteiro.
+           *
+           * `goal` já resolvia esse mesmo problema para a meta, que também é
+           * um registro só. O diário segue o precedente: um objeto próprio,
+           * com os campos REAIS da tabela.
+           */
+          journal: {
+            type: 'OBJECT',
+            properties: {
+              entryDate: {
+                type: 'STRING',
+                description: 'Data da entrada, AAAA-MM-DD, dentro do período da viagem.',
+              },
+              content: {
+                type: 'STRING',
+                description:
+                  'O texto da entrada. Um ou dois parágrafos. No futuro quando a data ainda não chegou.',
+              },
+              placeName: { type: 'STRING' },
+            },
+            required: ['entryDate', 'content'],
           },
         },
         required: ['type', 'label'],
@@ -756,6 +884,46 @@ export function validateActions(raw: unknown, drops?: ActionDropLog): unknown[] 
         },
       });
       seen.add(type);
+      continue;
+    }
+
+    if (type === 'journal.add') {
+      /*
+       * O payload canônico é `journal` — mas `items[0]` também é aceito.
+       *
+       * Não é frouxidão: um modelo que acabou de escrever quatro actions com
+       * `items` erra o campo do quinto tipo com facilidade, e o custo desse
+       * erro seria descartar uma entrada boa e devolver à pessoa uma promessa
+       * sem card. É a mesma tolerância que `expenses.add` já tem com
+       * `description ?? title ?? label`, e ela não afrouxa nada do que
+       * importa: o que sai daqui continua sendo montado campo a campo, com os
+       * três campos REAIS da tabela e nada além deles.
+       */
+      const raw =
+        asRecord(action.journal) ??
+        asRecord(asArray(action.items)[0]);
+      if (!raw) {
+        nota('NO_PAYLOAD');
+        continue;
+      }
+
+      const entryDate = isoDate(raw.entryDate ?? raw.date ?? raw.transactionDate);
+      const content = str(raw.content ?? raw.description ?? raw.text, LIMITS.maxJournalContent);
+      /*
+       * Data e texto não são acessórios: uma entrada sem um dos dois não é uma
+       * entrada. `place_name` é — some sozinho e a entrada continua de pé.
+       */
+      if (!entryDate || !content) {
+        nota('NO_PAYLOAD');
+        continue;
+      }
+
+      out.push({
+        type,
+        label,
+        journal: { entryDate, content, placeName: str(raw.placeName, 200) },
+      });
+      seen.add(type);
     }
   }
 
@@ -768,6 +936,7 @@ const DEFAULT_LABEL: Record<string, string> = {
   'expenses.add': 'Adicionar às despesas',
   'budget.update': 'Atualizar orçamento',
   'goal.add': 'Criar meta',
+  'journal.add': 'Adicionar ao diário',
 };
 
 /* ------------------------------ leitura crua ------------------------------ */
@@ -886,6 +1055,33 @@ const PROMISE_PATTERNS = [
   /\b(implementar|implemente|implemento|aplicar|aplique|aplico)\b/i,
   /\bpropost[ao]\b[^.!?\n]{0,40}\bpront[ao]\b/i,
   /\bpront[ao]\b[^.!?\n]{0,40}\b(propost|sugest|roteiro)/i,
+  /*
+   * A PROMESSA NOMEADA PELO CONTEÚDO — "preparei um diário", "montei as
+   * despesas".
+   *
+   * As linhas acima cobrem a promessa que se chama de "proposta" ou
+   * "sugestão". Um modelo que escreve "preparei uma entrada de diário para o
+   * dia 18" não usa nenhuma das duas palavras, e com `actions: []` a frase
+   * aponta para um card que não existe — exatamente o defeito que este bloco
+   * inteiro existe para impedir, só que com o substantivo novo.
+   *
+   * Os verbos de execução ("criei o diário", "adicionei as despesas") estão
+   * aqui pelo mesmo motivo e por um pior: além de prometerem um card ausente,
+   * afirmam uma gravação que NUNCA aconteceu — nem quando há action, porque
+   * quem grava é a pessoa, na confirmação.
+   */
+  /\b(preparei|montei|escrevi|criei|gerei|deixei|fiz)\b[^.!?\n]{0,40}\b(di(?:á|a)rio|entrada de di(?:á|a)rio|registro)\b/i,
+  /\b(preparei|montei|criei|gerei|lancei|lan(?:ç|c)ei|listei|fiz)\b[^.!?\n]{0,40}\b(despesas?|gastos?|previs(?:ão|ao) de (?:despesas?|gastos?))\b/i,
+  /*
+   * "abaixo" NÃO entra aqui, e a ausência é deliberada.
+   *
+   * "Suas despesas estão abaixo do orçamento" é a resposta CERTA para "estou
+   * gastando demais?" — uma pergunta de leitura, que corretamente não traz
+   * action. Um padrão com "abaixo" apagaria justamente a resposta boa. A frase
+   * que promete um card ("a proposta abaixo") já é pega pelo padrão de
+   * `proposta|sugestão` acima, que exige o substantivo.
+   */
+  /\b(di(?:á|a)rio|despesas?|gastos?)\b[^.!?\n]{0,40}\bpront[ao]s?\b/i,
 ];
 
 /**
@@ -1168,6 +1364,26 @@ const READ_INTENT_PATTERNS = [
   /\bo que (ja|eu ja)\b/,
 ];
 
+/**
+ * PEDIR UM DIÁRIO **A PARTIR DO** ROTEIRO NÃO É PEDIR UM ROTEIRO.
+ *
+ * "Com base no meu roteiro do dia 18, crie um diário do que acontecerá no dia"
+ * casa com `/\broteiro\b/` e saía daqui como pedido de dia inteiro. As
+ * consequências eram duas, e as duas apareceram no aparelho: o servidor
+ * gastava uma segunda geração tentando "reparar" um roteiro que ninguém
+ * pediu, e `discloseIncompleteItinerary` colava "Não consegui montar um
+ * roteiro completo para este dia agora" na frente de uma resposta que trazia
+ * a entrada de diário certa.
+ *
+ * O padrão exige o verbo de criação PERTO da palavra diário — "crie um
+ * diário", "escreva uma entrada de diário". Citar o diário de passagem
+ * ("depois eu anoto no diário") não desliga nada.
+ */
+const JOURNAL_REQUEST_PATTERNS = [
+  /\b(crie|criar|cria|monte|montar|monta|escreva|escrever|escreve|faca|fazer|gere|gerar|registre|registrar|adicione|adicionar|anote|anotar|redija|redigir)\b[^.!?]{0,40}\b(diario|entrada de diario|entradas de diario)\b/,
+  /\b(entrada|registro)\b[^.!?]{0,20}\b(no|do|de|para o)\s*diario\b/,
+];
+
 /** "Quero só um restaurante", "me indica um museu", "apenas uma atividade". */
 const SINGLE_ITEM_PATTERNS = [
   /\b(so|apenas|somente|unicamente)\b\s*(mais\s+)?(um|uma)\b/,
@@ -1385,8 +1601,15 @@ export function classifyItineraryRequest(
   const askedNow = FULL_DAY_PATTERNS.some((pattern) => pattern.test(folded)) || namedDate;
   const askedBefore = acceptsPriorOffer && FULL_DAY_PATTERNS.some((p) => p.test(previous));
 
+  /*
+   * O pedido de diário vence o gatilho de roteiro, como `readIntent` vence o
+   * gatilho de data: os dois citam o roteiro, só um pede que ele seja montado.
+   */
+  const journalRequest = JOURNAL_REQUEST_PATTERNS.some((pattern) => pattern.test(folded));
+
   return {
-    expectsFullDay: (askedNow || askedBefore) && !singleItem && !partialPeriod,
+    expectsFullDay:
+      (askedNow || askedBefore) && !singleItem && !partialPeriod && !journalRequest,
     singleItem,
     partialPeriod,
     acceptsPriorOffer,
@@ -1876,21 +2099,42 @@ export function classifyUpstreamStatus(status: number): UpstreamFailure {
       // o que não pode acontecer é uma troca no provedor derrubar o
       // assistente inteiro (§11).
       return { code: 'GEMINI_MODEL_UNAVAILABLE', retryable: false, fallback: true };
+    /*
+     * 5xx SEGUE PARA O PRÓXIMO MODELO — e esta linha é a correção de um
+     * defeito real, não um ajuste de gosto.
+     *
+     * `fallback` estava ausente aqui, e `runModelChain` lê a AUSÊNCIA como
+     * "erro determinístico": ela registra a falha e **quebra a cadeia
+     * inteira**. Na prática, um 503 no primeiro modelo — instabilidade de
+     * minutos do provedor, a coisa mais transitória que existe — derrubava a
+     * requisição com `modelsTried: 1`, e os outros quatro modelos, que
+     * estavam disponíveis, nunca eram chamados. Do lado de fora isso chega
+     * como `HTTP 502 · GEMINI_UNAVAILABLE · UPSTREAM`, que foi exatamente o
+     * que apareceu no aparelho.
+     *
+     * A regra que o comentário do `default` sempre descreveu — "só 400, 401 e
+     * 403 param a cadeia, porque são defeito nosso" — passa a estar escrita no
+     * código. Uma intermitência do provedor é a razão de a cadeia existir.
+     */
     case 500:
-      return { code: 'GEMINI_UPSTREAM_500', retryable: true };
+      return { code: 'GEMINI_UPSTREAM_500', retryable: true, fallback: true };
     case 502:
-      return { code: 'GEMINI_UPSTREAM_502', retryable: true };
+      return { code: 'GEMINI_UPSTREAM_502', retryable: true, fallback: true };
     case 503:
-      return { code: 'GEMINI_UNAVAILABLE', retryable: true };
+      return { code: 'GEMINI_UNAVAILABLE', retryable: true, fallback: true };
     case 504:
-      return { code: 'GEMINI_TIMEOUT', retryable: true };
+      return { code: 'GEMINI_TIMEOUT', retryable: true, fallback: true };
     default:
       // 400, 401, 403 e afins são determinísticos: chave errada ou payload
       // inválido falham igual na segunda vez, e repetir só faz a pessoa
       // esperar o dobro pelo mesmo erro. Trocar de modelo seria pior ainda —
       // esconderia um defeito nosso. Só 5xx desconhecido ganha o benefício da
-      // dúvida, e ainda assim só no mesmo modelo.
-      return { code: `GEMINI_UPSTREAM_${status}`, retryable: status >= 500 };
+      // dúvida — e, tendo-o, ganha também a cadeia.
+      return {
+        code: `GEMINI_UPSTREAM_${status}`,
+        retryable: status >= 500,
+        fallback: status >= 500,
+      };
   }
 }
 
@@ -1939,10 +2183,16 @@ export function classifyUpstreamResponse(
  */
 export function classifyUpstreamException(error: unknown): UpstreamFailure {
   const name = error instanceof Error ? error.name : '';
+  /*
+   * `fallback` pelo mesmo motivo de 5xx: um modelo que não respondeu no prazo
+   * ou cuja conexão caiu não diz nada sobre o próximo da cadeia. O orçamento
+   * global é quem impede o desperdício — `runModelChain` não começa uma
+   * tentativa nova sem `minModelBudgetMs` no relógio.
+   */
   if (name === 'TimeoutError' || name === 'AbortError') {
-    return { code: 'GEMINI_TIMEOUT', retryable: true };
+    return { code: 'GEMINI_TIMEOUT', retryable: true, fallback: true };
   }
-  if (name === 'TypeError') return { code: 'GEMINI_NETWORK', retryable: true };
+  if (name === 'TypeError') return { code: 'GEMINI_NETWORK', retryable: true, fallback: true };
   return { code: 'AI_CHAT_INTERNAL', retryable: false };
 }
 
@@ -2412,6 +2662,15 @@ export async function runModelChain(options: ModelChainOptions): Promise<ModelCh
  * interrompida por orçamento saem no neutro `AI_MODELS_EXHAUSTED`, porque
  * afirmar "a cota do dia acabou" sem prova manda a pessoa embora por engano.
  */
+/**
+ * Os códigos que significam "o provedor oscilou", e não "acabou a cota".
+ *
+ * Fechado de propósito: `GEMINI_MODEL_UNAVAILABLE` (catálogo desatualizado) e
+ * a família de cota ficam de fora, porque têm causa e conserto diferentes.
+ */
+const TRANSIENT_UPSTREAM =
+  /^(GEMINI_UNAVAILABLE|GEMINI_TIMEOUT|GEMINI_NETWORK|GEMINI_UPSTREAM_5\d\d)$/;
+
 export function classifyChainOutcome(
   reasons: readonly string[],
   { complete, dailyQuota = false }: { complete: boolean; dailyQuota?: boolean },
@@ -2421,6 +2680,21 @@ export function classifyChainOutcome(
 
   const unicos = new Set(reasons);
   if (unicos.size !== 1) return neutro;
+
+  /*
+   * TODOS OS MODELOS CAÍRAM POR INSTABILIDADE — e isso não é "limite de uso".
+   *
+   * Este ramo só passou a ser alcançável quando 5xx ganhou `fallback`: antes,
+   * um 503 quebrava a cadeia no primeiro modelo e nunca chegava aqui. Agora a
+   * cadeia pode terminar com cinco intermitências, e o neutro
+   * `AI_MODELS_EXHAUSTED` diria à pessoa que ela estourou um limite que ela
+   * não estourou — mandando-a esperar a renovação de uma cota que está
+   * intacta. A causa é do provedor e passa sozinha; a frase precisa dizer
+   * isso.
+   */
+  if (TRANSIENT_UPSTREAM.test(reasons[0])) {
+    return { code: 'GEMINI_ALL_MODELS_UNAVAILABLE', retryable: false };
+  }
 
   switch (reasons[0]) {
     case 'GEMINI_QUOTA_EXCEEDED':
@@ -2470,6 +2744,9 @@ export const AI_FAILURE_MESSAGE: Readonly<Record<string, string>> = {
     'será restabelecido após a renovação dos limites do provedor.',
   GEMINI_MODELS_UNAVAILABLE:
     'O assistente está temporariamente indisponível. Tente novamente mais tarde.',
+  GEMINI_ALL_MODELS_UNAVAILABLE:
+    'O provedor da inteligência artificial está instável neste momento. ' +
+    'Nenhum limite seu foi atingido — tente novamente em alguns instantes.',
 };
 
 export const AI_GENERIC_FAILURE_MESSAGE =

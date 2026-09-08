@@ -22,6 +22,7 @@ import {
   type AIExpenseProposalItem,
   type AIGoalProposal,
   type AIItineraryProposalItem,
+  type AIJournalProposal,
   type AITripAction,
 } from './aiActions';
 import type { ChecklistItem, ItineraryItem, Trip } from './types';
@@ -44,7 +45,8 @@ export type ReviewItem =
   | (ReviewItemBase & { kind: 'checklist'; value: AIChecklistProposalItem })
   | (ReviewItemBase & { kind: 'expense'; value: AIExpenseProposalItem })
   | (ReviewItemBase & { kind: 'budget'; value: { budgetTotal: number } })
-  | (ReviewItemBase & { kind: 'goal'; value: AIGoalProposal });
+  | (ReviewItemBase & { kind: 'goal'; value: AIGoalProposal })
+  | (ReviewItemBase & { kind: 'journal'; value: AIJournalProposal });
 
 export interface ReviewGroup {
   actionId: string;
@@ -155,6 +157,33 @@ function buildItems(action: AITripAction, ctx: ReviewContext): ReviewItem[] {
           included: true,
         },
       ];
+
+    /*
+     * O diário NÃO é deduplicado, e a razão é a privacidade, não a preguiça.
+     *
+     * Comparar a entrada proposta com as que já existem exigiria LER o diário
+     * da pessoa aqui — e o diário é o único conteúdo que este aplicativo trata
+     * como fora do alcance da IA (ver `buildTripContext`). Uma conferência de
+     * duplicata que precise abrir o diário para funcionar troca a garantia
+     * inteira por um aviso.
+     *
+     * A data continua conferida: uma entrada fora do período da viagem é quase
+     * sempre engano de quem propôs, e isso se decide sem ler nada.
+     */
+    case 'journal.add': {
+      const warnings = isWithinTrip(action.journal.entryDate, ctx.trip)
+        ? []
+        : [outsideTripWarning(action.journal.entryDate)];
+      return [
+        {
+          kind: 'journal' as const,
+          key: `${action.id}:0`,
+          value: action.journal,
+          warnings,
+          included: warnings.length === 0,
+        },
+      ];
+    }
   }
 }
 
@@ -201,7 +230,7 @@ export function selectAll(groups: ReviewGroup[], actionId: string): ReviewGroup[
 export function editItem(
   groups: ReviewGroup[],
   key: string,
-  patch: Partial<AIItineraryProposalItem & AIChecklistProposalItem & AIExpenseProposalItem & AIGoalProposal & { budgetTotal: number }>,
+  patch: Partial<AIItineraryProposalItem & AIChecklistProposalItem & AIExpenseProposalItem & AIGoalProposal & AIJournalProposal & { budgetTotal: number }>,
 ): ReviewGroup[] {
   return groups.map((group) => ({
     ...group,
@@ -268,6 +297,14 @@ export function reviewToActions(groups: ReviewGroup[]): AITripAction[] {
           (candidate): candidate is Extract<ReviewItem, { kind: 'goal' }> => candidate.kind === 'goal',
         );
         if (item) actions.push({ ...action, goal: item.value });
+        break;
+      }
+      case 'journal.add': {
+        const item = included.find(
+          (candidate): candidate is Extract<ReviewItem, { kind: 'journal' }> =>
+            candidate.kind === 'journal',
+        );
+        if (item) actions.push({ ...action, journal: item.value });
         break;
       }
     }

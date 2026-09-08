@@ -371,16 +371,39 @@ describe('erro determinístico PARA a cadeia — trocar de modelo esconderia o d
   });
 
   it('200 com corpo ilegível não vira troca de modelo', () => {
-    // `GEMINI_PARSE_ERROR` é defeito de leitura nosso; nenhum outro modelo
-    // conserta isso.
-    expect(classifyUpstreamResponse(200, readRateLimitSignals('')).fallback).toBeUndefined();
+    /*
+     * `GEMINI_PARSE_ERROR` é defeito de leitura nosso; nenhum outro modelo
+     * conserta isso.
+     *
+     * `classifyUpstreamResponse(200, …)` cai no `default` de
+     * `classifyUpstreamStatus`, que hoje concede `fallback` a partir de 500 —
+     * 200 fica abaixo do corte, e continua parando a cadeia.
+     */
+    expect(classifyUpstreamResponse(200, readRateLimitSignals('')).fallback).toBe(false);
   });
 });
 
 /* ------------------- transitório que não é falta de cota ------------------ */
 
 describe('5xx e queda de rede mantêm a política de repetição existente', () => {
-  it('500 repete UMA vez no mesmo modelo e não desce a cadeia', async () => {
+  /*
+   * ESTE TESTE FIXAVA O DEFEITO, E POR ISSO MUDOU.
+   *
+   * Ele afirmava que um 500 "não desce a cadeia" — e era exatamente esse o
+   * comportamento que derrubava o assistente. `classifyUpstreamStatus` não
+   * marcava `fallback` em nenhum 5xx, e `runModelChain` lê a AUSÊNCIA de
+   * `fallback` como "erro determinístico": registrava a falha e quebrava a
+   * cadeia inteira. Um 503 do primeiro modelo — a intermitência mais banal que
+   * existe — encerrava a requisição com `modelsTried: 1`, e os outros quatro
+   * modelos, disponíveis, nunca eram chamados. No aparelho isso chegava como
+   * `HTTP 502 · GEMINI_UNAVAILABLE · UPSTREAM`.
+   *
+   * A intenção declarada da cadeia sempre foi a oposta — o comentário do
+   * `default` diz que só 400, 401 e 403 param, porque são defeito nosso. A
+   * repetição no mesmo modelo continua sendo UMA; o que passou a existir é o
+   * passo seguinte.
+   */
+  it('500 repete UMA vez no mesmo modelo e ENTÃO desce a cadeia', async () => {
     const { resultado, chamadas } = await executar(
       {
         [MODELO_A]: { status: 500, body: '{}' },
@@ -389,10 +412,22 @@ describe('5xx e queda de rede mantêm a política de repetição existente', () 
       { allowSameModelRetry: true },
     );
 
-    expect(chamadas.map((c) => c.modelId)).toEqual([MODELO_A, MODELO_A]);
+    expect(chamadas.map((c) => c.modelId)).toEqual([MODELO_A, MODELO_A, MODELO_B]);
+    expect(resultado.ok).toBe(true);
+  });
+
+  it('503 em TODOS os modelos percorre a cadeia inteira antes de desistir', async () => {
+    const { resultado, chamadas } = await executar(paraTodos({ status: 503, body: '{}' }));
+
+    expect(new Set(chamadas.map((c) => c.modelId)).size).toBe(TEXT_MODEL_CHAIN.length);
     expect(resultado.ok).toBe(false);
     if (resultado.ok) throw new Error('inalcançável');
-    expect(resultado.failure.code).toBe('GEMINI_UPSTREAM_500');
+    /*
+     * E o código final NÃO é o neutro de "limites de uso atingidos": a pessoa
+     * não estourou limite nenhum, o provedor é que oscilou. Mandá-la esperar a
+     * renovação de uma cota intacta é conselho errado.
+     */
+    expect(resultado.failure.code).toBe('GEMINI_ALL_MODELS_UNAVAILABLE');
   });
 
   it('queda de rede transitória repete e a segunda passa', async () => {
@@ -470,7 +505,17 @@ describe('o orçamento é GLOBAL, e nunca 60 segundos por modelo', () => {
       { allowSameModelRetry: true },
     );
 
-    expect(chamadas).toHaveLength(1);
+    /*
+     * O que se mede é a REPETIÇÃO no mesmo modelo, e ela não acontece: sobram
+     * 13s, e `retryMinBudgetMs` são 15s.
+     *
+     * A contagem total não serve mais como prova disso. Desde que 5xx ganhou
+     * `fallback`, o que sobra do orçamento ainda dá para começar o PRÓXIMO
+     * modelo (13s > `minModelBudgetMs`, 8s) — e começar é o certo: o modelo
+     * seguinte pode responder, e a alternativa é devolver 502 com orçamento na
+     * mão. Contar chamadas confundia "não repetiu" com "não seguiu".
+     */
+    expect(chamadas.filter((c) => c.modelId === MODELO_A)).toHaveLength(1);
   });
 });
 
@@ -597,7 +642,10 @@ describe('o reparo começa no modelo que funcionou (§14, §15)', () => {
 
   it('o reparo não repete no mesmo modelo', async () => {
     const { chamadas } = await reparo({ [MODELO_A]: { status: 500, body: '{}' } }, 0);
-    expect(chamadas).toHaveLength(1);
+    // `allowSameModelRetry: false` no reparo — o reparo JÁ é a segunda geração.
+    // O teto de dois modelos (`maxModels`) continua valendo, e é o que a linha
+    // seguinte mede: um passo adiante, não uma segunda chamada ao mesmo.
+    expect(chamadas.filter((c) => c.modelId === MODELO_A)).toHaveLength(1);
   });
 });
 

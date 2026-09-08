@@ -4,4 +4,5 @@ export { AIActionReviewSheet, type ActionVisibility } from './AIActionReviewShee
 export { ChecklistActionPreview } from './ChecklistActionPreview';
 export { ExpenseActionPreview } from './ExpenseActionPreview';
 export { ItineraryActionPreview } from './ItineraryActionPreview';
+export { JournalActionPreview } from './JournalActionPreview';
 export { BudgetActionPreview, GoalActionPreview } from './SimpleActionPreview';

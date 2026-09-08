@@ -93,7 +93,16 @@ jest.mock('@/providers/AuthProvider', () => ({
 
 jest.mock('@/services/ai', () => ({
   aiService: { kind: 'gemini', send: () => mockAiSend() },
-  buildTripContext: () => ({}),
+  /*
+   * O contexto é um stub, mas `trip.today` NÃO é opcional nele.
+   *
+   * `AITripContext.trip.today` é o hoje do destino, e o hook o repassa a
+   * `parseAIActions` para que `journal.add` saiba separar plano de relato. Um
+   * `{}` aqui devolvia `undefined` num campo que o tipo declara obrigatório —
+   * o stub mentia sobre o contrato, e a mentira só apareceu quando alguém
+   * passou a ler o campo.
+   */
+  buildTripContext: () => ({ trip: { today: '2026-09-17' } }),
   AI_SUGGESTIONS: [],
 }));
 

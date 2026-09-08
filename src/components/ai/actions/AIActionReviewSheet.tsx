@@ -21,6 +21,7 @@ import { useTheme } from '@/theme';
 import { ChecklistActionPreview } from './ChecklistActionPreview';
 import { ExpenseActionPreview } from './ExpenseActionPreview';
 import { ItineraryActionPreview } from './ItineraryActionPreview';
+import { JournalActionPreview } from './JournalActionPreview';
 import { BudgetActionPreview, GoalActionPreview } from './SimpleActionPreview';
 
 /**
@@ -103,6 +104,16 @@ export function AIActionReviewSheet({
     itinerary: groups.some((group) => group.enabled && group.action.type === 'itinerary.add'),
     checklist: groups.some((group) => group.enabled && group.action.type === 'checklist.add'),
     expense: groups.some((group) => group.enabled && group.action.type === 'expenses.add'),
+    /*
+     * `journal` NÃO entra aqui, e a ausência é a decisão.
+     *
+     * Diário nasce privado e é gravado privado — sem seletor. Oferecer a
+     * escolha transformaria "publicar o próprio diário para a viagem" num
+     * toque no fim de uma folha longa, sobre um texto que a IA acabou de
+     * escrever. A `JournalActionPreview` declara a visibilidade em vez de
+     * perguntá-la; quem quiser compartilhar faz isso depois, na tela do
+     * Diário, com a entrada à vista.
+     */
   };
   const warned = groups.some((group) => group.items.some((item) => item.warnings.length > 0));
 
@@ -300,6 +311,16 @@ function ActionGroupPreview({
     case 'goal.add':
       return (
         <GoalActionPreview
+          group={group}
+          expandedKey={expandedKey}
+          onToggleItem={onToggleItem}
+          onToggleExpanded={onToggleExpanded}
+          onEdit={onEdit}
+        />
+      );
+    case 'journal.add':
+      return (
+        <JournalActionPreview
           group={group}
           expandedKey={expandedKey}
           onToggleItem={onToggleItem}

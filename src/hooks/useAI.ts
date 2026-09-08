@@ -241,7 +241,15 @@ export function useAIConversation(trip: Trip | null) {
          * anterior à correção equivalente do servidor.
          */
         aiTrace('AI_PARSE_BEGIN', { size: reply.content.length });
-        const actions = parseAIActions(reply.actions, trip);
+        /*
+         * `context.trip.today` é o hoje do DESTINO, e não o do aparelho.
+         *
+         * Só `journal.add` o usa, para separar plano de relato: quem está em
+         * São Paulo às 22h do dia 17 planejando o dia 18 em Tóquio já está no
+         * dia 18 lá. Usar a data local marcaria como "planejado" um dia que,
+         * no lugar sobre o qual a pessoa escreve, já começou.
+         */
+        const actions = parseAIActions(reply.actions, trip, context.trip.today);
         const coherent = enforceAIActionPromiseCoherence(reply.content, actions.length);
 
         aiTrace('AI_PARSE_RESULT', {

@@ -66,6 +66,10 @@ export function useAIActionRunner(trip: Trip | null) {
       queryClient.invalidateQueries({ queryKey: queryKeys.trip(trip.id) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.trips(user.id) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.goals(user.id) }),
+      // O diário entrou na lista quando `journal.add` passou a existir: sem
+      // esta linha, abrir Roteiro › Diário logo depois de confirmar mostraria o
+      // cache anterior, e a entrada recém-gravada pareceria não ter entrado.
+      queryClient.invalidateQueries({ queryKey: queryKeys.journal(trip.id) }),
     ]);
 
     const failed = results.filter((result) => result.status === 'rejected').length;

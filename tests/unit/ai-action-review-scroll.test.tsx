@@ -192,3 +192,132 @@ describe('a folha de revisão rola', () => {
     expect(view.getByText('Adicionar 10 itens')).toBeTruthy();
   });
 });
+
+/* ========================================================================== */
+/* journal.add na mesma folha — o sexto tipo não pode quebrar o quinto        */
+/* ========================================================================== */
+
+const DIARIO = {
+  type: 'journal.add',
+  label: 'Adicionar ao diário',
+  journal: {
+    entryDate: '2026-08-23',
+    content: 'Está previsto abrir o dia em Asakusa e terminar vendo Shibuya do alto.',
+    placeName: 'Asakusa',
+  },
+};
+
+const DESPESAS = {
+  type: 'expenses.add',
+  label: 'Adicionar às despesas',
+  items: [
+    { description: 'Transporte do aeroporto', transactionDate: '2026-08-22', amount: 150, category: 'transporte' },
+    { description: 'Alimentação do dia', transactionDate: '2026-08-23', amount: 200, category: 'alimentacao' },
+    { description: 'Ingressos', transactionDate: '2026-08-23', amount: 90, category: 'lazer' },
+  ],
+};
+
+/** Antes da viagem: o dia 23 ainda é plano. */
+const ANTES_DA_VIAGEM = '2026-08-01';
+
+const abrirCom = (raw: unknown[], today = ANTES_DA_VIAGEM) => {
+  const onConfirm = jest.fn();
+  const onCancel = jest.fn();
+  const view = render(
+    <AIActionReviewSheet
+      visible
+      actions={parseAIActions(raw, toquio, today)}
+      trip={toquio}
+      itinerary={[]}
+      checklist={[]}
+      pending={false}
+      isShared
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />,
+  );
+  return { view, onConfirm, onCancel };
+};
+
+describe('a folha revisa uma entrada de diário', () => {
+  it('mostra data, texto e visibilidade — e o rodapé conta o item', () => {
+    const { view } = abrirCom([DIARIO]);
+
+    // O texto inteiro fica à vista SEM abrir a edição: confirmar sem ter lido
+    // o que será escrito no diário da pessoa seria o pior tipo de confirmação
+    // às cegas.
+    expect(view.getByText(DIARIO.journal.content)).toBeTruthy();
+    expect(view.getByText(/Visibilidade: Somente eu/)).toBeTruthy();
+    expect(view.getByText(/A IA não lê o seu diário/)).toBeTruthy();
+    expect(view.getByText('Adicionar 1 item')).toBeTruthy();
+    expect(view.getByText('Cancelar')).toBeTruthy();
+  });
+
+  it('uma data que ainda não chegou é anunciada como plano, não como lembrança', () => {
+    const { view } = abrirCom([DIARIO]);
+    expect(view.getByText(/Este dia ainda não aconteceu/)).toBeTruthy();
+  });
+
+  it('uma data já vivida não ganha o aviso de plano', () => {
+    const { view } = abrirCom([DIARIO], '2026-09-30');
+    expect(view.queryByText(/Este dia ainda não aconteceu/)).toBeNull();
+  });
+
+  it('NÃO existe seletor de visibilidade para o diário, nem em viagem compartilhada', () => {
+    /*
+     * Roteiro, checklist e despesa oferecem a escolha quando a viagem tem mais
+     * de um viajante. O diário não: ele nasce privado e assim é gravado.
+     * Oferecer o seletor transformaria "publicar o próprio diário" num toque no
+     * fim de uma folha longa, sobre um texto que a IA acabou de escrever.
+     */
+    const { view } = abrirCom([DIARIO]);
+    expect(view.queryByText(/Visibilidade dos itens de roteiro/)).toBeNull();
+    expect(view.queryByText(/Visibilidade das despesas/)).toBeNull();
+    // A folha DECLARA a visibilidade em vez de perguntá-la.
+    expect(view.getByText(/Visibilidade: Somente eu/)).toBeTruthy();
+  });
+
+  it('desmarcar a entrada zera o botão — e cancelar não confirma nada', () => {
+    const { view, onConfirm, onCancel } = abrirCom([DIARIO]);
+
+    fireEvent.press(view.getByRole('checkbox', { name: /Está previsto|agosto|Asakusa/ }));
+    expect(view.getByText('Nada selecionado')).toBeTruthy();
+
+    fireEvent.press(view.getByText('Cancelar'));
+    expect(onCancel).toHaveBeenCalled();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('confirmar devolve a entrada — e só ela', () => {
+    const { view, onConfirm } = abrirCom([DIARIO]);
+
+    fireEvent.press(view.getByText('Adicionar 1 item'));
+
+    const [actions] = onConfirm.mock.calls[0];
+    expect(actions).toHaveLength(1);
+    expect(actions[0].type).toBe('journal.add');
+    expect(actions[0].journal.entryDate).toBe('2026-08-23');
+    expect(actions[0].journal.planned).toBe(true);
+  });
+
+  it('diário + roteiro + despesas na MESMA folha, com uma área rolável só', () => {
+    const { view } = abrirCom([
+      { type: 'itinerary.add', label: 'Roteiro', items: [{ title: TITULOS[0], date: '2026-08-23' }] },
+      DESPESAS,
+      DIARIO,
+    ]);
+
+    expect(areasRolaveis(view)).toHaveLength(1);
+    expect(view.getByText(TITULOS[0])).toBeTruthy();
+    expect(view.getByText('Transporte do aeroporto')).toBeTruthy();
+    expect(view.getByText(DIARIO.journal.content)).toBeTruthy();
+    // 1 roteiro + 3 despesas + 1 diário.
+    expect(view.getByText('Adicionar 5 itens')).toBeTruthy();
+  });
+
+  it('com despesas na folha, a estimativa é dita antes de qualquer confirmação', () => {
+    const { view } = abrirCom([DESPESAS]);
+    expect(view.getByText(/Valores marcados como estimativa/)).toBeTruthy();
+    expect(view.getByText(/Total estimado/)).toBeTruthy();
+  });
+});

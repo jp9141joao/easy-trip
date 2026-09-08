@@ -39,7 +39,7 @@
 import { z } from 'zod';
 
 import { createId } from '@/lib/id';
-import { isValidISODate } from '@/lib/date';
+import { isValidISODate, todayISO } from '@/lib/date';
 import {
   CHECKLIST_CATEGORIES,
   CURRENCIES,
@@ -77,6 +77,15 @@ export const AI_ACTION_LIMITS = {
   maxAmount: 1_000_000,
   maxBudget: 100_000_000,
   maxGoalTarget: 100_000_000,
+  /**
+   * O texto de uma entrada de diário. Mesmo número do servidor (`LIMITS`).
+   *
+   * `maxText` (400) é a medida de um item de roteiro; um dia contado em um ou
+   * dois parágrafos não cabe nele, e cortar pela metade devolveria à pessoa um
+   * registro truncado. `journal_entries.content` é `text` e não impõe teto —
+   * então o teto é este.
+   */
+  maxJournalContent: 1_500,
 } as const;
 
 export const AI_ACTION_TYPES = [
@@ -85,6 +94,7 @@ export const AI_ACTION_TYPES = [
   'expenses.add',
   'budget.update',
   'goal.add',
+  'journal.add',
 ] as const;
 
 export type AIActionType = (typeof AI_ACTION_TYPES)[number];
@@ -171,12 +181,55 @@ export interface AddGoalAction extends AIActionBase {
   goal: AIGoalProposal;
 }
 
+/**
+ * Uma entrada de diário proposta — os campos REAIS de `journal_entries`.
+ *
+ * NÃO HÁ TÍTULO, e a ausência é a parte importante. `JournalEntry` tem
+ * `entry_date`, `content`, `place_name`, coordenadas e visibilidade; não tem
+ * título, e o formulário do Diário também não pede um. Um campo `title` aqui
+ * seria um dado que a IA produz, a revisão mostra e o INSERT joga fora — a
+ * mesma armadilha que a nota de `estimated` descreve para a despesa.
+ *
+ * Coordenadas ficam de fora por outro motivo: latitude e longitude são o que o
+ * aparelho MEDIU quando a pessoa estava lá. Um modelo que as preenchesse
+ * estaria afirmando uma presença física que não houve.
+ */
+export interface AIJournalProposal {
+  entryDate: string;
+  content: string;
+  placeName?: string;
+  /**
+   * A data ainda não chegou — então isto é um PLANO, não um relato.
+   *
+   * `true` = a entrada descreve um dia que ainda está por vir; `false` = a
+   * data já passou.
+   *
+   * **Não vem do modelo e não é coluna do banco.** É derivado aqui, de
+   * `entryDate` contra o hoje do fuso da viagem, justamente porque um modelo
+   * que se declarasse "retrospectivo" seria acreditado. A distinção existe
+   * porque um diário afirma vivência: "visitei o Fushimi Inari" escrito antes
+   * da viagem é uma memória que ninguém teve.
+   *
+   * Como `estimated` na despesa, o sinal vive só na proposta — a tela o usa
+   * para rotular, e o executor o converte no que o modelo de dados comporta:
+   * o prefixo `Planejado — ` no texto, que persiste (§19 do contrato de
+   * despesas, mesmo raciocínio).
+   */
+  planned: boolean;
+}
+
+export interface AddJournalAction extends AIActionBase {
+  type: 'journal.add';
+  journal: AIJournalProposal;
+}
+
 export type AITripAction =
   | AddItineraryAction
   | AddChecklistAction
   | AddExpensesAction
   | UpdateBudgetAction
-  | AddGoalAction;
+  | AddGoalAction
+  | AddJournalAction;
 
 /* -------------------------------- schemas --------------------------------- */
 
@@ -248,6 +301,19 @@ const expenseProposalItemSchema = z.object({
   estimated: z.boolean().optional().default(true).catch(true),
 });
 
+/**
+ * Só os três campos que a tabela guarda. Nada de `title`, nada de coordenada.
+ *
+ * `planned` **não** está aqui de propósito: ele não vem da rede. É derivado
+ * depois, em `parseAction`, comparando a data com o hoje da viagem — um modelo
+ * que se declarasse retrospectivo não pode ser acreditado sobre isso.
+ */
+const journalProposalSchema = z.object({
+  entryDate: isoDate,
+  content: text(2, AI_ACTION_LIMITS.maxJournalContent),
+  placeName: loose(text(1, 200)),
+});
+
 const goalProposalSchema = z.object({
   title: text(2, AI_ACTION_LIMITS.maxTitle),
   goalType: looseWithDefault(GOAL_TYPES, 'economia'),
@@ -264,7 +330,24 @@ const DEFAULT_LABEL: Record<AIActionType, string> = {
   'expenses.add': 'Adicionar às despesas',
   'budget.update': 'Atualizar orçamento',
   'goal.add': 'Criar meta',
+  'journal.add': 'Adicionar ao diário',
 };
+
+/**
+ * A data ainda não chegou?
+ *
+ * Comparação de string ISO, que ordena como data — e o `today` recebido é o do
+ * fuso do DESTINO, não o do aparelho: alguém em São Paulo planejando o dia 18
+ * em Tóquio está atrás do calendário do lugar sobre o qual escreve.
+ *
+ * O dia de HOJE conta como planejado. Às nove da manhã, "hoje" ainda é quase
+ * todo futuro, e chamar de relato o que não aconteceu é o erro que importa
+ * evitar; o inverso custa um rótulo a mais.
+ */
+export function isPlannedEntryDate(entryDate: string, today: string): boolean {
+  if (!isValidISODate(entryDate) || !isValidISODate(today)) return true;
+  return entryDate >= today;
+}
 
 /* -------------------------------- parsing --------------------------------- */
 
@@ -283,7 +366,7 @@ function collect<T>(raw: unknown, schema: z.ZodType<T>): T[] {
   return kept;
 }
 
-function parseAction(entry: unknown, trip: Trip): AITripAction | null {
+function parseAction(entry: unknown, trip: Trip, today: string): AITripAction | null {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
   const raw = entry as Record<string, unknown>;
 
@@ -316,12 +399,14 @@ function parseAction(entry: unknown, trip: Trip): AITripAction | null {
     }
 
     case 'expenses.add': {
-      const items = collect(raw.items, expenseProposalItemSchema).map((item) => ({
-        ...item,
-        // Moeda ausente é a da viagem — não um palpite. Converter só acontece
-        // depois, com cotação real, no executor (§20).
-        currency: item.currency ?? trip.budgetCurrency,
-      }));
+      const items = dedupeExpenses(
+        collect(raw.items, expenseProposalItemSchema).map((item) => ({
+          ...item,
+          // Moeda ausente é a da viagem — não um palpite. Converter só acontece
+          // depois, com cotação real, no executor (§20).
+          currency: item.currency ?? trip.budgetCurrency,
+        })),
+      );
       if (items.length === 0) return null;
       return { ...base, type: actionType, items };
     }
@@ -337,7 +422,51 @@ function parseAction(entry: unknown, trip: Trip): AITripAction | null {
       if (!parsed.success) return null;
       return { ...base, type: actionType, goal: parsed.data };
     }
+
+    case 'journal.add': {
+      // `journal` é o campo do contrato; `items[0]` é a mesma tolerância que o
+      // servidor tem, para o caso de o modelo repetir a forma dos outros tipos.
+      const payload =
+        raw.journal ?? (Array.isArray(raw.items) ? raw.items[0] : undefined);
+      const parsed = journalProposalSchema.safeParse(payload);
+      if (!parsed.success) return null;
+      return {
+        ...base,
+        type: actionType,
+        journal: {
+          ...parsed.data,
+          // Derivado, nunca lido do payload: ver `AIJournalProposal.planned`.
+          planned: isPlannedEntryDate(parsed.data.entryDate, today),
+        },
+      };
+    }
   }
+}
+
+/**
+ * Duas linhas idênticas na MESMA proposta são o modelo se repetindo (§15).
+ *
+ * O critério é exato — mesma descrição normalizada, mesma data, mesmo valor —
+ * e não o `looksLikeSame` do roteiro. Dois almoços de ¥ 1.500 no dia 18 podem
+ * ser dois almoços de verdade; "Almoço" e "Almoço" com o mesmo centavo no mesmo
+ * dia é uma repetição. Errar para o lado de manter as duas é barato: a revisão
+ * mostra as duas e a pessoa desmarca uma.
+ *
+ * Isto NÃO compara com as despesas já gravadas na viagem — quem faz esse
+ * recorte é o contexto enviado ao modelo (regra 20 do prompt) e, na tela, a
+ * revisão. Uma varredura de duplicata contra o banco inteiro é o "sistema
+ * enorme" que o §15 pede para não construir.
+ */
+function dedupeExpenses(items: AIExpenseProposalItem[]): AIExpenseProposalItem[] {
+  const seen = new Set<string>();
+  const kept: AIExpenseProposalItem[] = [];
+  for (const item of items) {
+    const key = `${normalizeForCompare(item.description)}|${item.transactionDate}|${item.amount}|${item.currency}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(item);
+  }
+  return kept;
 }
 
 /**
@@ -346,7 +475,19 @@ function parseAction(entry: unknown, trip: Trip): AITripAction | null {
  * Só isto: converter e descartar. Nada aqui grava, e o retorno ainda **não** é
  * autorização nenhuma — é o que a tela tem permissão para *mostrar*.
  */
-export function parseAIActions(raw: unknown, trip: Trip): AITripAction[] {
+export function parseAIActions(
+  raw: unknown,
+  trip: Trip,
+  /**
+   * O hoje do DESTINO, `AAAA-MM-DD` — o mesmo `trip.today` que vai no contexto
+   * do modelo. Só o diário o usa, para separar plano de relato.
+   *
+   * O padrão é a data do aparelho: serve a testes e a qualquer chamador que
+   * não tenha o fuso à mão, e erra no máximo por um dia — para o lado de
+   * chamar de planejado o que já passou, que é o lado inofensivo.
+   */
+  today: string = todayISO(),
+): AITripAction[] {
   if (!Array.isArray(raw)) return [];
 
   const actions: AITripAction[] = [];
@@ -354,7 +495,7 @@ export function parseAIActions(raw: unknown, trip: Trip): AITripAction[] {
 
   for (const entry of raw) {
     if (actions.length >= AI_ACTION_LIMITS.maxActions) break;
-    const action = parseAction(entry, trip);
+    const action = parseAction(entry, trip, today);
     if (!action) continue;
     // Uma proposta por tipo. Dois `itinerary.add` na mesma resposta são um
     // modelo se repetindo, e a tela de revisão não teria como distingui-los.
@@ -405,6 +546,24 @@ const ACTION_PROMISE_PATTERNS = [
   /\b(implementar|implemente|implemento|aplicar|aplique|aplico)\b/i,
   /\bpropost[ao]\b[^.!?\n]{0,40}\bpront[ao]\b/i,
   /\bpront[ao]\b[^.!?\n]{0,40}\b(propost|sugest|roteiro)/i,
+  /*
+   * Espelho das linhas equivalentes do servidor: a promessa que se nomeia pelo
+   * CONTEÚDO ("preparei um diário", "montei as despesas") não usa as palavras
+   * "proposta" nem "sugestão", e com zero actions aponta para um card ausente.
+   * Os verbos de execução vêm junto porque afirmam uma gravação que não houve.
+   */
+  /\b(preparei|montei|escrevi|criei|gerei|deixei|fiz)\b[^.!?\n]{0,40}\b(di(?:á|a)rio|entrada de di(?:á|a)rio|registro)\b/i,
+  /\b(preparei|montei|criei|gerei|lancei|lan(?:ç|c)ei|listei|fiz)\b[^.!?\n]{0,40}\b(despesas?|gastos?|previs(?:ão|ao) de (?:despesas?|gastos?))\b/i,
+  /*
+   * "abaixo" NÃO entra aqui, e a ausência é deliberada.
+   *
+   * "Suas despesas estão abaixo do orçamento" é a resposta CERTA para "estou
+   * gastando demais?" — uma pergunta de leitura, que corretamente não traz
+   * action. Um padrão com "abaixo" apagaria justamente a resposta boa. A frase
+   * que promete um card ("a proposta abaixo") já é pega pelo padrão de
+   * `proposta|sugestão` acima, que exige o substantivo.
+   */
+  /\b(di(?:á|a)rio|despesas?|gastos?)\b[^.!?\n]{0,40}\bpront[ao]s?\b/i,
 ];
 
 /**
@@ -523,6 +682,7 @@ export function countActionItems(action: AITripAction): number {
       return action.items.length;
     case 'budget.update':
     case 'goal.add':
+    case 'journal.add':
       return 1;
   }
 }
@@ -540,6 +700,8 @@ export function describeAction(action: AITripAction): string {
       return 'Novo orçamento';
     case 'goal.add':
       return 'Nova meta';
+    case 'journal.add':
+      return action.journal.planned ? 'Registro planejado' : 'Nova entrada de diário';
   }
 }
 
@@ -616,6 +778,28 @@ export function describeExpenseDescription(item: AIExpenseProposalItem): string 
     return item.description;
   }
   return `${ESTIMATE_PREFIX}${item.description}`;
+}
+
+/**
+ * O mesmo mecanismo do `ESTIMATE_PREFIX`, para o diário.
+ *
+ * `journal_entries` não tem coluna para "isto ainda não aconteceu", e criar uma
+ * exigiria migration — que o §30 do pedido proíbe e que, de todo modo, seria
+ * uma coluna nova no banco para carregar um aviso. O aviso é texto, e texto é o
+ * que a tabela guarda.
+ *
+ * A linha entra ANTES do conteúdo e sobrevive à edição na revisão: quem reler a
+ * entrada em dezembro precisa saber que ela foi escrita em setembro, sobre um
+ * dia que ainda não tinha chegado.
+ */
+export const PLANNED_JOURNAL_PREFIX = 'Planejado — ';
+
+export function describeJournalContent(journal: AIJournalProposal): string {
+  if (!journal.planned) return journal.content;
+  if (normalizeForCompare(journal.content).startsWith(normalizeForCompare(PLANNED_JOURNAL_PREFIX))) {
+    return journal.content;
+  }
+  return `${PLANNED_JOURNAL_PREFIX}${journal.content}`;
 }
 
 /* --------------------------- confirmação em texto -------------------------- */

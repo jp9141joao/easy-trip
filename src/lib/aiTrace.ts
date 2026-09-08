@@ -182,6 +182,9 @@ export const AI_FAILURE_MESSAGE: Readonly<Record<string, string>> = {
     'será restabelecido após a renovação dos limites do provedor.',
   GEMINI_MODELS_UNAVAILABLE:
     'O assistente está temporariamente indisponível. Tente novamente mais tarde.',
+  GEMINI_ALL_MODELS_UNAVAILABLE:
+    'O provedor da inteligência artificial está instável neste momento. ' +
+    'Nenhum limite seu foi atingido — tente novamente em alguns instantes.',
 };
 
 export const AI_GENERIC_FAILURE_MESSAGE =

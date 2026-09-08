@@ -123,6 +123,8 @@ describe('trava da aplicação', () => {
     });
 
     expect(received).toBe(report);
-    expect(warning).toHaveBeenCalledWith('AI_ACTION_CACHE_INVALIDATION_FAILED', { failed: 6 });
+    // Sete queries: roteiro, checklist, gastos, viagem, viagens, metas e —
+    // desde `journal.add` — o diário.
+    expect(warning).toHaveBeenCalledWith('AI_ACTION_CACHE_INVALIDATION_FAILED', { failed: 7 });
   });
 });

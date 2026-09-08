@@ -32,6 +32,7 @@
 import {
   countActionItems,
   describeExpenseDescription,
+  describeJournalContent,
   type AITripAction,
   type AIActionType,
 } from '@/domain/aiActions';
@@ -70,7 +71,7 @@ export interface AIActionContext {
 
 /** Um registro que este executor criou — a matéria-prima do "Desfazer". */
 export interface AICreatedRecord {
-  kind: 'itinerary' | 'checklist' | 'expense' | 'goal';
+  kind: 'itinerary' | 'checklist' | 'expense' | 'goal' | 'journal';
   id: string;
 }
 
@@ -145,6 +146,10 @@ function rejectionReason(action: AITripAction, trip: Trip): string | null {
         : 'A meta não tem um valor válido.';
     case 'checklist.add':
       return action.items.length > 0 ? null : 'Não há itens para adicionar.';
+    case 'journal.add':
+      return isValidISODate(action.journal.entryDate) && action.journal.content.trim().length > 0
+        ? null
+        : 'A entrada de diário não tem data ou texto válidos.';
   }
 }
 
@@ -173,7 +178,8 @@ type AIActionRepositoryOperation =
   | 'checklist.create'
   | 'expenses.create'
   | 'trips.update'
-  | 'goals.create';
+  | 'goals.create'
+  | 'journal.create';
 
 /** Diagnóstico estrutural; nunca inclui label, payload, ids ou contexto. */
 export interface AIActionErrorDiagnostic {
@@ -498,6 +504,63 @@ async function runGoal(
 }
 
 /**
+ * A entrada de diário — a única ação cuja visibilidade NÃO é uma escolha.
+ *
+ * As outras três oferecem o seletor na folha de revisão. Esta não, e a
+ * assimetria é deliberada: `DEFAULT_VISIBILITY.journal` é `private` porque o
+ * diário é o dado mais sensível do produto — a policy da 0009 não tem sequer
+ * exceção de dono, e o `rls_collaboration` existe principalmente por causa
+ * disso. Um seletor aqui transformaria "compartilhar o próprio diário com a
+ * viagem" numa escolha de um toque, feita no fim de uma folha longa, sobre um
+ * texto que a IA acabou de escrever. Quem quiser compartilhar uma entrada faz
+ * isso depois, na tela do Diário, com a entrada à vista.
+ *
+ * Note também o que NÃO é lido aqui: nenhuma entrada existente. Este executor
+ * só chama `create`. Não há `listByTrip` de diário em lugar nenhum do caminho
+ * da IA — nem para deduplicar, nem para ordenar, nem para conferir.
+ */
+async function runJournal(
+  action: Extract<AITripAction, { type: 'journal.add' }>,
+  ctx: Required<AIActionContext>,
+  created: AICreatedRecord[],
+): Promise<AIActionOutcome> {
+  try {
+    const record = await ctx.source.journal.create({
+      tripId: ctx.trip.id,
+      userId: ctx.userId,
+      entryDate: action.journal.entryDate,
+      // O "isto ainda não aconteceu" viaja no texto porque é onde o modelo de
+      // dados atual comporta essa informação — mesmo raciocínio do prefixo de
+      // estimativa na despesa.
+      content: describeJournalContent(action.journal),
+      placeName: action.journal.placeName,
+      visibility: DEFAULT_VISIBILITY.journal,
+    });
+    created.push({ kind: 'journal', id: record.id });
+    return {
+      actionId: action.id,
+      type: action.type,
+      ok: true,
+      succeeded: 1,
+      failed: [],
+      summary: action.journal.planned
+        ? 'Registro planejado adicionado ao diário'
+        : 'Entrada adicionada ao diário',
+    };
+  } catch (error) {
+    logAIActionError(action.type, 'journal.create', error);
+    return {
+      actionId: action.id,
+      type: action.type,
+      ok: false,
+      succeeded: 0,
+      failed: [actionFailure('Diário', error)],
+      summary: 'A entrada não foi adicionada ao diário',
+    };
+  }
+}
+
+/**
  * Aplica as ações já revisadas e confirmadas pelo usuário.
  *
  * Recebe as ações **como a revisão as deixou** — itens desmarcados já saíram,
@@ -554,6 +617,9 @@ export async function executeAIActions(
       case 'goal.add':
         outcomes.push(await runGoal(action, ctx, created));
         break;
+      case 'journal.add':
+        outcomes.push(await runJournal(action, ctx, created));
+        break;
     }
   }
 
@@ -599,6 +665,9 @@ export async function undoAIActions(
           break;
         case 'goal':
           await source.goals.remove(record.id);
+          break;
+        case 'journal':
+          await source.journal.remove(record.id);
           break;
       }
       removed += 1;
