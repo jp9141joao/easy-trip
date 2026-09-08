@@ -1,6 +1,6 @@
 import { Info } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { View } from 'react-native';
 
 import { AppText, BottomSheet, Button, ButtonRow, InlineNotice } from '@/components/ui';
 import {
@@ -121,12 +121,22 @@ export function AIActionReviewSheet({
           </InlineNotice>
         ) : null}
 
-        <ScrollView
-          style={{ maxHeight: 420 }}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ gap: theme.spacing.xl, paddingBottom: theme.spacing.sm }}
-        >
+        {/*
+          A lista NÃO tem rolagem própria — de propósito.
+
+          O DEFEITO: aqui havia um `ScrollView` com `maxHeight: 420` dentro do
+          `ScrollView` que a própria `BottomSheet` já monta. Dois problemas de
+          uma vez. No Android, `nestedScrollEnabled` é `false` por padrão: o
+          `ScrollView` de fora fica com o gesto vertical e o de dentro nunca o
+          recebe. E 420dp é um número fixo — cabem cerca de três cartões em
+          qualquer tela. O resultado era um roteiro de dez itens do qual só se
+          via os três primeiros, sem gesto nenhum que alcançasse o resto.
+
+          A folha inteira é uma área rolável só, que é como todas as outras
+          folhas do app funcionam. A altura quem limita é a `BottomSheet`, em
+          fração da tela (§7), e não um pixel escolhido à mão.
+        */}
+        <View style={{ gap: theme.spacing.xl }}>
           {groups.map((group) => (
             <View key={group.actionId} style={{ gap: theme.spacing.md }}>
               <View
@@ -167,7 +177,7 @@ export function AIActionReviewSheet({
               )}
             </View>
           ))}
-        </ScrollView>
+        </View>
 
         {/*
           Os seletores ficam no fim, depois da lista: a pergunta "quem vê isto"

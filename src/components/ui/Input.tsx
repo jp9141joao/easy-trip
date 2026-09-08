@@ -388,6 +388,31 @@ export function SelectField<T extends string>({
 
 /* -------------------------------- DateField ------------------------------- */
 
+/**
+ * O SELETOR NATIVO NÃO TEM MAIS UM `onChange` SÓ (§15).
+ *
+ * `@react-native-community/datetimepicker` 9 depreciou o retorno único, que
+ * multiplexava três desfechos diferentes num `event.type` — `set`,
+ * `dismissed` e `neutralButtonPressed` — e avisava a cada abertura:
+ * "DateTimePicker: `onChange` is deprecated".
+ *
+ * A migração não é textual. Cada desfecho vira um retorno próprio, e a
+ * diferença que importa está no Android, onde o diálogo é imperativo:
+ *
+ *  - `onValueChange` só é chamado quando há data escolhida, e a data vem
+ *    garantida — o `if (date)` que existia deixa de ter o que testar;
+ *  - `onDismiss` é o cancelamento. Ele PRECISA fechar o campo: quem controla
+ *    a abertura é o estado `open` deste componente, e um cancelamento que não
+ *    o zere deixa o efeito do pacote reabrindo o diálogo;
+ *  - `onNeutralButtonPress` não tem botão configurado hoje, e é justamente
+ *    por isso que ele fecha e não faz mais nada: era o terceiro ramo do
+ *    `event.type` antigo, e sem ele um botão neutro adicionado no futuro
+ *    prenderia o campo aberto sem ninguém entender por quê.
+ *
+ * No iOS o seletor é renderizado dentro do `BottomSheet`, que já tem o
+ * próprio fechamento — por isso lá só `onValueChange` é necessário.
+ */
+
 export function DateField({
   label,
   value,
@@ -442,9 +467,7 @@ export function DateField({
               locale="pt-BR"
               minimumDate={minimumDate}
               maximumDate={maximumDate}
-              onChange={(_event, date) => {
-                if (date) onChange(toISODate(date));
-              }}
+              onValueChange={(_event, date) => onChange(toISODate(date))}
             />
           </BottomSheet>
         ) : (
@@ -454,10 +477,12 @@ export function DateField({
             display="default"
             minimumDate={minimumDate}
             maximumDate={maximumDate}
-            onChange={(event, date) => {
+            onValueChange={(_event, date) => {
               setOpen(false);
-              if (event.type === 'set' && date) onChange(toISODate(date));
+              onChange(toISODate(date));
             }}
+            onDismiss={() => setOpen(false)}
+            onNeutralButtonPress={() => setOpen(false)}
           />
         )
       ) : null}
@@ -525,7 +550,7 @@ export function TimeField({
               display="spinner"
               locale="pt-BR"
               is24Hour
-              onChange={(_e, date) => handle(date)}
+              onValueChange={(_event, date) => handle(date)}
             />
           </BottomSheet>
         ) : (
@@ -534,10 +559,12 @@ export function TimeField({
             mode="time"
             display="default"
             is24Hour
-            onChange={(event, date) => {
+            onValueChange={(_event, date) => {
               setOpen(false);
-              if (event.type === 'set') handle(date);
+              handle(date);
             }}
+            onDismiss={() => setOpen(false)}
+            onNeutralButtonPress={() => setOpen(false)}
           />
         )
       ) : null}

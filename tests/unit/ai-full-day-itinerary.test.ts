@@ -878,6 +878,26 @@ describe('resolução da data-alvo', () => {
     expect(resolveFullDayDate('Tokyo dia 18 de setembro', [], janelaTokyo)).toBe('2026-09-18');
   });
 
+  it('"Monte um roteiro para hoje", com a viagem em andamento, resolve o dia de hoje NO DESTINO',
+    () => {
+      /*
+       * O pedido do teste em aparelho: Paris, 07 a 15/09, e a pessoa em Paris
+       * no dia 07. "Hoje" tem uma leitura só — e ela vem de `trip.today`, que
+       * o aplicativo calcula no fuso do DESTINO. Usar o relógio do servidor
+       * aqui erraria o dia para metade do planeta.
+       */
+      const paris = { today: '2026-09-07', startDate: '2026-09-07', endDate: '2026-09-15' };
+
+      expect(resolveFullDayDate('Monte um roteiro para hoje', [], paris)).toBe('2026-09-07');
+      expect(resolveFullDayDate('Monte um roteiro para amanhã', [], paris)).toBe('2026-09-08');
+    },
+  );
+
+  it('"hoje" fora do período não é resolvido — a viagem ainda não começou', () => {
+    // Mesma regra do "amanhã": data fora da viagem se diz, não se ajusta.
+    expect(resolveFullDayDate('Monte um roteiro para hoje', [], janelaTokyo)).toBeNull();
+  });
+
   it('H — "Pode ser para o dia 18 na vdd", depois da oferta de 18/09 → 18/09', () => {
     const oferta = [
       {

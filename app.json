@@ -7,7 +7,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "easytrip",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
 
     "ios": {
       "supportsTablet": true,
@@ -25,7 +24,6 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "edgeToEdgeEnabled": true,
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",

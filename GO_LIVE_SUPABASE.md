@@ -243,8 +243,13 @@ No `.env` (nunca commitado):
 ```
 EXPO_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
 EXPO_PUBLIC_SUPABASE_ANON_KEY=<chave PÚBLICA: anon / sb_publishable_...>
-EXPO_PUBLIC_BFF_URL=https://<ref>.functions.supabase.co
 ```
+
+`EXPO_PUBLIC_BFF_URL` não entra aqui: num projeto hospedado o aplicativo deduz
+`https://<ref>.supabase.co/functions/v1` da URL acima. Defina-a apenas para
+instância própria, domínio na frente das Functions ou `supabase functions
+serve` (`http://127.0.0.1:54321/functions/v1`) — nesses casos ela vence a
+dedução. Ajustes mostra qual das duas origens está em uso.
 
 ⚠️ A chave publicável e a secreta ficam lado a lado no painel e se parecem. O
 aplicativo **detecta e recusa** uma chave `service_role`/`sb_secret_` colada aí

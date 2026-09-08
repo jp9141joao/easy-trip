@@ -62,6 +62,7 @@ import {
   formatAIFailure,
   type AITraceFields,
 } from '@/lib/aiTrace';
+import { aiBackendState } from '@/lib/config';
 import { markdownToPlainText } from '@/lib/markdown';
 import { AI_SUGGESTIONS } from '@/services/ai';
 import { useTheme } from '@/theme';
@@ -690,11 +691,24 @@ function AITab() {
           gap: theme.spacing.md,
         }}
       >
-        {/* Honest about which engine is answering (§1, §118). */}
+        {/*
+          Honest about which engine is answering (§1, §118) — e sobre POR QUE.
+
+          As duas frases existem porque as duas situações são opostas e tinham
+          o mesmo texto. "Modo demonstração" é a verdade quando ninguém
+          configurou backend nenhum: a resposta local é a resposta certa, e
+          não há defeito a corrigir. Já um aplicativo CONECTADO respondendo
+          localmente é instalação pela metade — e chamar isso de demonstração
+          escondia justamente a variável que faltava.
+        */}
         {kind === 'local' ? (
-          <InlineNotice icon={Info} tone="warning">
-            Modo demonstração: as respostas são geradas localmente a partir dos dados reais da sua
-            viagem. Configure o BFF (EXPO_PUBLIC_BFF_URL) para conversar com o Gemini.
+          <InlineNotice
+            icon={Info}
+            tone={aiBackendState === 'unreachable' ? 'error' : 'warning'}
+          >
+            {aiBackendState === 'unreachable'
+              ? 'O aplicativo está conectado ao backend, mas o endereço das Edge Functions não pôde ser resolvido — o Gemini não está sendo chamado. Defina EXPO_PUBLIC_BFF_URL. Enquanto isso, as respostas abaixo são geradas localmente a partir dos dados reais da sua viagem.'
+              : 'Modo demonstração: nenhum backend está configurado, então as respostas são geradas localmente a partir dos dados reais da sua viagem. Defina EXPO_PUBLIC_SUPABASE_URL e EXPO_PUBLIC_SUPABASE_ANON_KEY para conversar com o Gemini.'}
           </InlineNotice>
         ) : null}
 

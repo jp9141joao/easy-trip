@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { DefaultTheme } from '@react-navigation/native';
+import { DefaultTheme } from 'expo-router/react-navigation';
 import { Pressable, Text } from 'react-native';
 import * as SystemUI from 'expo-system-ui';
 

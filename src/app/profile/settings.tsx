@@ -36,7 +36,7 @@ import {
 } from '@/components/ui';
 import { AuroraBackground } from '@/components/ui/Surface';
 import { traceAuth } from '@/lib/authTrace';
-import { config, configIssues } from '@/lib/config';
+import { aiBackendState, bffSource, config, configIssues } from '@/lib/config';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
 import { AccountDeletionBlockedError } from '@/repositories/auth';
 import { useAuth } from '@/providers/AuthProvider';
@@ -183,10 +183,26 @@ export default function SettingsScreen() {
                     : 'Local no dispositivo'
                 }
               />
+              {/*
+                Três estados, e não dois.
+
+                "Geração local (demonstração)" era dito também quando o
+                aplicativo estava conectado e só o endereço das Functions
+                faltava — o que descrevia o SINTOMA e escondia a causa. A
+                linha agora nomeia a variável que resolve.
+              */}
               <InfoRow
                 icon={ShieldCheck}
                 label="Assistente de IA"
-                value={aiService.kind === 'gemini' ? 'Gemini via BFF' : 'Geração local (demonstração)'}
+                value={
+                  aiService.kind === 'gemini'
+                    ? bffSource === 'derived'
+                      ? 'Gemini pelas Edge Functions do projeto'
+                      : 'Gemini via BFF'
+                    : aiBackendState === 'unreachable'
+                      ? 'Indisponível — defina EXPO_PUBLIC_BFF_URL'
+                      : 'Geração local (demonstração)'
+                }
               />
               <InfoRow
                 icon={Info}

@@ -2,7 +2,7 @@ import {
   JetBrainsMono_500Medium,
   JetBrainsMono_700Bold,
 } from '@expo-google-fonts/jetbrains-mono';
-import { ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
+import { ThemeProvider as NavigationThemeProvider } from 'expo-router/react-navigation';
 import { Outfit_600SemiBold, Outfit_700Bold } from '@expo-google-fonts/outfit';
 import {
   PlusJakartaSans_400Regular,
@@ -204,6 +204,22 @@ function RootNavigator() {
           manual, e listas manuais são esquecidas: `tests/unit/route-guard.test.ts`
           lê o diretório `src/app` e falha se aparecer uma rota nova que ninguém
           classificou.
+
+          O NOME AQUI É O NOME DA ROTA, NÃO O DO DIRETÓRIO.
+
+          Um diretório só vira um nó de rota quando tem `_layout.tsx`. Sem ele,
+          os arquivos de dentro sobem para ESTE navegador com o caminho inteiro
+          no nome — `trips/new`, `utilities/map`, `profile/settings`. Era essa a
+          diferença por trás dos avisos `[Layout children]: No route named "trip"`,
+          `"trips"` e `"utilities"`: os três diretórios não têm layout e não têm
+          `index`, então os três nomes não casavam com nada.
+
+          E o aviso era a metade visível do problema. `<Stack.Screen name="X" />`
+          casa com `X` **ou** com `X/index`, então `name="profile"` prendia
+          `profile/index` e deixava `profile/settings` e `profile/sync` FORA do
+          bloco protegido — registradas, navegáveis, sem guarda. O mesmo valia
+          para `community/[articleId]`, `offers/[offerId]` e `places/[placeId]`.
+          Por isso a lista enumera cada rota real, e o teste exige nome exato.
         */}
         <Stack.Screen name="index" />
 
@@ -218,13 +234,31 @@ function RootNavigator() {
             name="alerts"
             options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
           />
-          <Stack.Screen name="trip" />
-          <Stack.Screen name="trips" />
-          <Stack.Screen name="profile" />
-          <Stack.Screen name="utilities" />
-          <Stack.Screen name="community" />
-          <Stack.Screen name="offers" />
-          <Stack.Screen name="places" />
+
+          {/* A viagem e a criação de viagem. */}
+          <Stack.Screen name="trip/[tripId]" />
+          <Stack.Screen name="trips/new" />
+
+          {/* Conta, ajustes e sincronização. */}
+          <Stack.Screen name="profile/index" />
+          <Stack.Screen name="profile/settings" />
+          <Stack.Screen name="profile/sync" />
+
+          {/* Utilitários de viagem — nenhum deles tem layout próprio. */}
+          <Stack.Screen name="utilities/map" />
+          <Stack.Screen name="utilities/sos" />
+          <Stack.Screen name="utilities/timezone" />
+          <Stack.Screen name="utilities/weather" />
+
+          {/* Conteúdo editorial: a RLS só o serve a quem tem sessão. */}
+          <Stack.Screen name="community/index" />
+          <Stack.Screen name="community/[articleId]" />
+          <Stack.Screen name="offers/index" />
+          <Stack.Screen name="offers/[offerId]" />
+          <Stack.Screen name="places/index" />
+          <Stack.Screen name="places/[placeId]" />
+
+          {/* `admin/_layout.tsx` existe, então a área inteira é um nó só. */}
           <Stack.Screen name="admin" />
         </Stack.Protected>
       </Stack>

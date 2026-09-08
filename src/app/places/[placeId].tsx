@@ -52,6 +52,7 @@ import { useCurrentTrip } from '@/hooks/useTrips';
 import { formatMoney } from '@/lib/currency';
 import { externalLinkLabel, normalizeExternalUrl } from '@/lib/url';
 import { PLACE_TYPE_LABEL } from '@/lib/labels';
+import { aiBackendState } from '@/lib/config';
 import { aiService } from '@/services/ai';
 import { useTheme } from '@/theme';
 
@@ -326,7 +327,19 @@ export default function PlaceDetailScreen() {
           <View>
             <SectionHeader
               title="Pergunte ao assistente"
-              subtitle={aiService.kind === 'gemini' ? 'Gemini via backend' : 'Modo demonstração'}
+              /*
+                Mesma distinção da aba de IA: "modo demonstração" só descreve
+                quem não configurou backend nenhum. Conectado e respondendo
+                localmente é instalação incompleta, e dizer isso é o que leva
+                a pessoa à variável que falta em vez de a um recurso inexistente.
+              */
+              subtitle={
+                aiService.kind === 'gemini'
+                  ? 'Gemini via backend'
+                  : aiBackendState === 'unreachable'
+                    ? 'Assistente indisponível nesta instalação'
+                    : 'Modo demonstração'
+              }
             />
             <View style={{ marginHorizontal: -theme.spacing.screen, paddingLeft: theme.spacing.screen }}>
               <ChipRow>

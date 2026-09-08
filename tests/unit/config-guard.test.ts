@@ -111,16 +111,84 @@ describe('configuração pela metade', () => {
 
     expect(config.config.mode).toBe('demo');
     expect(config.configIssues).toEqual([]);
+    // Sem backend, a resposta local É a resposta certa — e a tela pode dizer
+    // "modo demonstração" sem estar escondendo defeito nenhum.
+    expect(config.aiBackendState).toBe('demo');
   });
+});
 
-  it('BFF ausente é funcionalidade desligada, não defeito de instalação', () => {
+/**
+ * O ENDEREÇO DAS EDGE FUNCTIONS.
+ *
+ * O defeito que estes testes prendem: com Supabase configurado e
+ * `EXPO_PUBLIC_BFF_URL` em branco, o aplicativo conectava no banco,
+ * autenticava, sincronizava — e o assistente respondia LOCALMENTE, rotulado
+ * como modo demonstração. Um aplicativo em produção não está em demonstração,
+ * e a única pista que a pessoa tinha era a frase "Resposta gerada localmente"
+ * no meio da conversa.
+ */
+describe('endereço das Edge Functions', () => {
+  it('deduz as Functions do próprio projeto quando a URL é hospedada', () => {
     const config = loadConfig({
       EXPO_PUBLIC_SUPABASE_URL: URL,
       EXPO_PUBLIC_SUPABASE_ANON_KEY: 'sb_publishable_abc123',
       EXPO_PUBLIC_BFF_URL: '',
     });
 
-    expect(config.hasBff).toBe(false);
+    expect(config.hasBff).toBe(true);
+    expect(config.bffSource).toBe('derived');
+    expect(config.config.bffUrl).toBe('https://projeto.supabase.co/functions/v1');
+    // O que o teste está protegendo de verdade: modo conectado usa a IA real.
+    expect(config.aiBackendState).toBe('backend');
     expect(config.configIssues).toEqual([]);
+  });
+
+  it('não duplica a barra quando a URL do projeto vem com uma', () => {
+    const config = loadConfig({
+      EXPO_PUBLIC_SUPABASE_URL: `${URL}/`,
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: 'sb_publishable_abc123',
+    });
+
+    expect(config.config.bffUrl).toBe('https://projeto.supabase.co/functions/v1');
+  });
+
+  it('a variável explícita vence a dedução', () => {
+    // É ela que atende `supabase functions serve` e qualquer proxy à frente.
+    const config = loadConfig({
+      EXPO_PUBLIC_SUPABASE_URL: URL,
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: 'sb_publishable_abc123',
+      EXPO_PUBLIC_BFF_URL: 'http://127.0.0.1:54321/functions/v1',
+    });
+
+    expect(config.bffSource).toBe('env');
+    expect(config.config.bffUrl).toBe('http://127.0.0.1:54321/functions/v1');
+  });
+
+  it('não deduz endereço para instância própria — e PEDE a variável', () => {
+    /*
+     * Chutar aqui mandaria a requisição, com o JWT do usuário, para um host
+     * que talvez não seja nosso. O caminho honesto é não deduzir e dizer o
+     * que falta — e isto é defeito de instalação, não modo demonstração.
+     */
+    const config = loadConfig({
+      EXPO_PUBLIC_SUPABASE_URL: 'https://supabase.empresa.com.br',
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: 'sb_publishable_abc123',
+      EXPO_PUBLIC_BFF_URL: '',
+    });
+
+    expect(config.hasBff).toBe(false);
+    expect(config.bffSource).toBe('none');
+    expect(config.aiBackendState).toBe('unreachable');
+    expect(config.configIssues.join(' ')).toMatch(/EXPO_PUBLIC_BFF_URL/);
+  });
+
+  it('sem chave pública não deduz nada — não haveria sessão para autenticar', () => {
+    const config = loadConfig({
+      EXPO_PUBLIC_SUPABASE_URL: URL,
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: '',
+    });
+
+    expect(config.hasBff).toBe(false);
+    expect(config.aiBackendState).toBe('demo');
   });
 });

@@ -98,7 +98,13 @@ Somente `EXPO_PUBLIC_*` chega ao bundle. Veja `.env.example`.
 | --- | --- | --- |
 | `EXPO_PUBLIC_SUPABASE_URL` | não | URL do projeto Supabase. Vazio ⇒ modo demonstração. |
 | `EXPO_PUBLIC_SUPABASE_ANON_KEY` | não | Chave anônima. É pública por design; a autorização real é feita por RLS. |
-| `EXPO_PUBLIC_BFF_URL` | não | URL das Edge Functions. Vazio ⇒ assistente em modo local rotulado. |
+| `EXPO_PUBLIC_BFF_URL` | não | URL das Edge Functions. Num projeto hospedado (`https://<ref>.supabase.co`) ela é **deduzida** da URL acima e não precisa ser definida; defina-a para instância própria, domínio na frente das Functions ou `supabase functions serve`. |
+
+Com Supabase configurado, o assistente usa o Gemini pelas Edge Functions do
+próprio projeto. A resposta local rotulada existe para o modo demonstração —
+nenhum backend configurado. Se o backend estiver ligado e o endereço das
+Functions não puder ser deduzido, Ajustes mostra o defeito de instalação e
+nomeia `EXPO_PUBLIC_BFF_URL`, em vez de chamar isso de demonstração.
 
 **Nunca** no aplicativo: `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
 `TRIP_DAILY_BRIEFING_CRON_SECRET` ou qualquer segredo. Eles vivem apenas no
