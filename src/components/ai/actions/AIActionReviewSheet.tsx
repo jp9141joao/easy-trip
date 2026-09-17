@@ -1,5 +1,5 @@
 import { Info } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { View } from 'react-native';
 
 import { AppText, BottomSheet, Button, ButtonRow, InlineNotice } from '@/components/ui';
@@ -83,14 +83,19 @@ export function AIActionReviewSheet({
     DEFAULT_VISIBILITY.expense,
   );
 
-  useEffect(() => {
-    if (!visible) return;
-    setGroups(buildReviewGroups(actions, { trip, itinerary, checklist }));
-    setExpandedKey(null);
-    // Reabrir a folha refaz a revisão do zero — inclusive as conferências de
-    // duplicata, que dependem do que já existe na viagem *agora*.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  // Reabrir a folha refaz a revisão do zero — inclusive as conferências de
+  // duplicata, que dependem do que já existe na viagem *agora*. A abertura é
+  // percebida no próprio render (o padrão do React para estado que depende de
+  // uma entrada), e a folha já abre com os grupos montados, sem um commit vazio
+  // antes.
+  const [openedFor, setOpenedFor] = useState(false);
+  if (openedFor !== visible) {
+    setOpenedFor(visible);
+    if (visible) {
+      setGroups(buildReviewGroups(actions, { trip, itinerary, checklist }));
+      setExpandedKey(null);
+    }
+  }
 
   const selected = countSelected(groups);
 

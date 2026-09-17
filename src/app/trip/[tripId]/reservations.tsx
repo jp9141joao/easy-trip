@@ -229,7 +229,7 @@ export default function ReservationsScreen() {
               <EmptyState
                 icon={FileText}
                 title="Nenhuma reserva salva"
-                message="Guarde voos, hospedagens, carros e ingressos aqui — com localizador, horários e o documento anexado."
+                message="Guarde voos, hospedagens, carros e ingressos aqui — com horários e o documento anexado."
                 actionLabel={permissions.canEdit ? 'Adicionar reserva' : undefined}
                 onAction={permissions.canEdit ? () => setCreatingType('flight') : undefined}
               />
@@ -526,9 +526,6 @@ function ReservationViewerSheet({
               value={reservation.provider}
             />
           ) : null}
-          {reservation.confirmationCode ? (
-            <InfoRow label="Localizador" value={reservation.confirmationCode} />
-          ) : null}
           {timeLabels.start && formatInstant(reservation.startAt) ? (
             <InfoRow label={timeLabels.start} value={formatInstant(reservation.startAt)!} />
           ) : null}
@@ -800,7 +797,6 @@ function ReservationEditorSheet({
       type: reservation?.type ?? initialType,
       title: reservation?.title ?? '',
       provider: reservation?.provider,
-      confirmationCode: reservation?.confirmationCode,
       origin: reservation?.origin,
       destination: reservation?.destination,
       address: reservation?.address,
@@ -918,7 +914,6 @@ function ReservationEditorSheet({
         type,
         title: values.title,
         provider: values.provider,
-        confirmationCode: values.confirmationCode,
         origin: values.origin,
         destination: values.destination,
         address: values.address,
@@ -1030,21 +1025,6 @@ function ReservationEditorSheet({
               value={field.value}
               onChangeText={field.onChange}
               error={fieldState.error?.message}
-            />
-          )}
-        />
-
-        <Controller
-          control={control}
-          name="confirmationCode"
-          render={({ field, fieldState }) => (
-            <TextField
-              label="Localizador"
-              placeholder="Código da reserva"
-              value={field.value}
-              onChangeText={field.onChange}
-              error={fieldState.error?.message}
-              autoCapitalize="characters"
             />
           )}
         />

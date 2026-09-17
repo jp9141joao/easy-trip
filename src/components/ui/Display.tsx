@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react-native';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Animated, Pressable, ScrollView, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { clampPercent } from '@/domain/selectors';
@@ -216,13 +216,44 @@ export function StatCard({
     <View
       style={[
         {
+          /*
+           * O PISO DE LARGURA SAIU, E ERA ELE QUE CORTAVA O TERCEIRO CARTÃO.
+           *
+           * Era `minWidth: 140` junto de `flex: 1`. Num contêiner `row` sem
+           * `flexWrap`, `minWidth` é um limite que o encolhimento NÃO pode
+           * ultrapassar: o Yoga distribui a largura disponível, bate no piso e
+           * transborda em vez de repartir. Com três cartões num aparelho de
+           * 360dp a conta não fechava por muito —
+           *
+           *   360 − 2×20 (margem da tela) = 320 de largura útil
+           *   320 − 2×12 (os dois vãos)   = 296 para repartir
+           *   3 × 140                     = 420 exigidos
+           *
+           * — e os 124dp de sobra saíam pela direita, levando o cartão
+           * "Economizado" com eles. Em Perfil, que usa duas colunas, o piso
+           * cabia com 14dp de folga (2×140 + 12 = 292 ≤ 320) e o defeito ficava
+           * invisível: a mesma causa esperando uma terceira coluna.
+           *
+           * `flex: 1` já é a resposta certa para "reparta igualmente", e
+           * `minWidth: 0` torna o encolhimento realmente possível. A largura
+           * passa a vir da tela, sem número de aparelho nenhum escrito aqui —
+           * duas colunas continuam largas, três colunas ficam estreitas e
+           * inteiras, e um tablet dá espaço de sobra às duas.
+           */
           flex: 1,
-          minWidth: 140,
+          minWidth: 0,
           backgroundColor: theme.colors.surface,
           borderRadius: theme.radius.smallCard,
           borderWidth: 1,
           borderColor: theme.colors.border,
-          padding: theme.spacing.lg,
+          /*
+           * Vertical continua `lg`; horizontal desce para `md` porque é o eixo
+           * disputado. Numa coluna de ~99dp, 2×16 de recuo consumiam um terço
+           * do cartão e empurravam "Economizado" para uma segunda linha antes
+           * do necessário. Tipografia, ícone, cor e raio ficam como estavam.
+           */
+          paddingVertical: theme.spacing.lg,
+          paddingHorizontal: theme.spacing.md,
           gap: 4,
         },
         style,
@@ -359,7 +390,9 @@ export function FadeIn({
   duration?: number;
   style?: StyleProp<ViewStyle>;
 }) {
-  const opacity = useRef(new Animated.Value(0)).current;
+  // Criado uma vez, no primeiro render, e estável dali em diante — sem ler
+  // `ref.current` durante o render.
+  const [opacity] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     const animation = Animated.timing(opacity, {

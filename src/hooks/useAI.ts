@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import {
   enforceAIActionPromiseCoherence,
@@ -7,6 +7,7 @@ import {
   parseAIActions,
   type AITripAction,
 } from '@/domain/aiActions';
+import { allowsAIMutation } from '@/domain/aiIntent';
 import { AIRequestError, aiTrace } from '@/lib/aiTrace';
 /*
  * Anti-spam do lado do cliente (§10).
@@ -87,6 +88,29 @@ export function resetAIClientRateLimitForTests(): void {
  * Sem viagem selecionada não há conversa e `send` recusa — é isso que garante
  * que nenhuma pergunta saia sem contexto.
  */
+/**
+ * A proposta aberta de uma conversa: percorre as mensagens da mais recente para
+ * a mais antiga e devolve a primeira com propostas ainda não aplicadas nem
+ * descartadas. Função pura, fora do hook, para que a memoização em
+ * `useAIConversation` seja só a de entrada e saída.
+ */
+function findPendingProposal(
+  messages: readonly { id: string }[],
+  actionsByMessage: Record<string, AITripAction[]>,
+  appliedActionIds: readonly string[],
+  dismissedMessageIds: readonly string[],
+): { messageId: string; actions: AITripAction[] } | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const messageId = messages[index].id;
+    if (dismissedMessageIds.includes(messageId)) continue;
+    const actions = actionsByMessage[messageId] ?? [];
+    if (actions.length === 0) continue;
+    if (actions.every((action) => appliedActionIds.includes(action.id))) continue;
+    return { messageId, actions };
+  }
+  return null;
+}
+
 export function useAIConversation(trip: Trip | null) {
   const { user, session, profile } = useAuth();
   const queryClient = useQueryClient();
@@ -125,6 +149,26 @@ export function useAIConversation(trip: Trip | null) {
    */
   const [appliedActionIds, setAppliedActionIds] = useState<string[]>([]);
 
+  /** Propostas explicitamente descartadas pelo usuário nesta sessão. */
+  const [dismissedMessageIds, setDismissedMessageIds] = useState<string[]>([]);
+
+  // Trocar de viagem é trocar de conversa: a escolha manual não pode sobreviver
+  // à troca, ou o chat de Tóquio continuaria escrevendo na thread de Paris.
+  // As propostas vão junto — uma sugestão de roteiro para Paris não pode
+  // sobreviver à troca para Tóquio nem como botão na tela (§14).
+  //
+  // O ajuste acontece no próprio render em que a troca é percebida (o padrão do
+  // React para estado que depende de uma entrada), e não num efeito: assim nem
+  // um commit mostra a proposta de Paris com a viagem já em Tóquio.
+  const [sessionTripId, setSessionTripId] = useState(trip?.id);
+  if (sessionTripId !== trip?.id) {
+    setSessionTripId(trip?.id);
+    setOpenedConversationId(null);
+    setActionsByMessage({});
+    setAppliedActionIds([]);
+    setDismissedMessageIds([]);
+  }
+
   const rateLimitKey = user?.id ?? 'anonymous';
 
   const recentSends = useCallback((now: number) => {
@@ -140,16 +184,6 @@ export function useAIConversation(trip: Trip | null) {
     },
     [recentSends],
   );
-
-  // Trocar de viagem é trocar de conversa: a escolha manual não pode sobreviver
-  // à troca, ou o chat de Tóquio continuaria escrevendo na thread de Paris.
-  // As propostas vão junto — uma sugestão de roteiro para Paris não pode
-  // sobreviver à troca para Tóquio nem como botão na tela (§14).
-  useEffect(() => {
-    setOpenedConversationId(null);
-    setActionsByMessage({});
-    setAppliedActionIds([]);
-  }, [trip?.id]);
 
   const conversationQuery = useQuery({
     queryKey: queryKeys.aiConversation(user?.id ?? 'anonymous', trip?.id),
@@ -249,7 +283,33 @@ export function useAIConversation(trip: Trip | null) {
          * dia 18 lá. Usar a data local marcaria como "planejado" um dia que,
          * no lugar sobre o qual a pessoa escreve, já começou.
          */
-        const actions = parseAIActions(reply.actions, trip, context.trip.today);
+        const validated = parseAIActions(reply.actions, trip, context.trip.today);
+
+        /*
+         * A ÚLTIMA BARREIRA CONTRA UMA PROPOSTA QUE NINGUÉM PEDIU.
+         *
+         * O servidor já descarta actions quando o pedido é de leitura
+         * (`gateActionsByIntent`). Esta camada existe porque a Edge Function
+         * publicada pode estar numa versão anterior a essa correção — e nesse
+         * intervalo "liste meu roteiro do dia 18" ainda voltaria com um dia
+         * montado e o cartão de revisão. Uma consulta nunca pode abrir uma
+         * gravação, nem contra um servidor desatualizado.
+         *
+         * `allowsAIMutation` é conservador de propósito: só barra o que é
+         * leitura COMPROVADA. Um "pode ser" respondendo a "posso montar o
+         * roteiro?" não tem verbo nenhum e chega aqui como ambíguo — quem sabe
+         * que aquilo é um aceite é o servidor, que tem o histórico. Barrar na
+         * dúvida aqui apagaria a proposta certa logo depois de um "sim".
+         */
+        const mutationAllowed = allowsAIMutation(prompt);
+        const actions = mutationAllowed ? validated : [];
+        if (!mutationAllowed && validated.length > 0) {
+          aiTrace('AI_ACTION_COUNT', {
+            actionCount: 0,
+            code: 'READ_ONLY_INTENT',
+          });
+        }
+
         const coherent = enforceAIActionPromiseCoherence(reply.content, actions.length);
 
         aiTrace('AI_PARSE_RESULT', {
@@ -368,13 +428,6 @@ export function useAIConversation(trip: Trip | null) {
     setAppliedActionIds((current) => current.filter((id) => !removed.has(id)));
   }, []);
 
-  /** Propostas explicitamente descartadas pelo usuário nesta sessão. */
-  const [dismissedMessageIds, setDismissedMessageIds] = useState<string[]>([]);
-
-  useEffect(() => {
-    setDismissedMessageIds([]);
-  }, [trip?.id]);
-
   /**
    * A proposta aberta — a mais recente ainda não aplicada nem descartada.
    *
@@ -382,18 +435,12 @@ export function useAIConversation(trip: Trip | null) {
    * respostas: é a ordem que o usuário vê na tela, e "a proposta" para quem
    * está conversando é a última que apareceu.
    */
-  const pendingProposal = useMemo(() => {
-    const messages = messagesQuery.data ?? [];
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const messageId = messages[index].id;
-      if (dismissedMessageIds.includes(messageId)) continue;
-      const actions = actionsByMessage[messageId] ?? [];
-      if (actions.length === 0) continue;
-      if (actions.every((action) => appliedActionIds.includes(action.id))) continue;
-      return { messageId, actions };
-    }
-    return null;
-  }, [messagesQuery.data, actionsByMessage, appliedActionIds, dismissedMessageIds]);
+  const messageList = messagesQuery.data;
+  const pendingProposal = useMemo(
+    () =>
+      findPendingProposal(messageList ?? [], actionsByMessage, appliedActionIds, dismissedMessageIds),
+    [messageList, actionsByMessage, appliedActionIds, dismissedMessageIds],
+  );
 
   const dismissProposal = useCallback((messageId: string) => {
     setDismissedMessageIds((current) => [...new Set([...current, messageId])]);

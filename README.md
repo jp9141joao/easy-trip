@@ -24,6 +24,7 @@ consultoria humana e um assistente contextual.
 - [Arquitetura](#arquitetura)
 - [Testes](#testes)
 - [Decisões de compatibilidade com Expo Go](#decisões-de-compatibilidade-com-expo-go)
+- [Documentação de Engenharia de Software](#documentação-de-engenharia-de-software)
 - [Documentação complementar](#documentação-complementar)
 
 ---
@@ -318,6 +319,24 @@ continuam funcionando normalmente no Expo Go, porque não passam pelo push. Em
 *development build*, APK/AAB ou *build* do EAS o push remoto é carregado e o
 fluxo completo (permissão, token, registro, *deep link*) segue como implementado.
 Isso é limitação do ambiente de desenvolvimento, não do produto instalado.
+
+---
+
+## Documentação de Engenharia de Software
+
+A modelagem da versão avaliada — casos de uso, requisitos e rastreabilidade —
+está versionada em [`docs/modelagem/`](docs/modelagem/README.md). É
+documentação **retrospectiva**: os requisitos foram recuperados a partir do
+sistema implementado, não elicitados com usuários antes dele.
+
+| Documento | O que traz |
+|---|---|
+| [Índice da modelagem](docs/modelagem/README.md) | Natureza da documentação, fonte de verdade, formatos e divergências conhecidas |
+| [Casos de uso](docs/modelagem/CASOS_DE_USO.md) | 41 casos (UC01–UC41) com fluxos, atores, papéis e evidência no repositório |
+| [Requisitos funcionais](docs/modelagem/REQUISITOS_FUNCIONAIS.md) | 105 requisitos (RF01–RF105) com evidência e estado |
+| [Requisitos não funcionais](docs/modelagem/REQUISITOS_NAO_FUNCIONAIS.md) | 62 requisitos (RNF01–RNF62) pela ISO/IEC 25010, com força da evidência |
+| [Matriz de rastreabilidade](docs/modelagem/MATRIZ_RASTREABILIDADE.md) | RF → caso de uso → rota → código → persistência → teste |
+| [Diagramas](docs/modelagem/diagramas/) | Casos de uso (PlantUML), DER simplificado e completo (Mermaid), arquitetura (Mermaid), fluxo da IA (PlantUML) |
 
 ---
 

@@ -204,14 +204,24 @@ export type ExpenseInput = z.infer<typeof expenseSchema>;
  * coluna e mora neste schema; o que é específico é `details` e mora lá.
  *
  * Quase tudo é opcional de propósito. Uma reserva anotada às pressas no
- * aeroporto — título e localizador, nada mais — é um registro legítimo e útil;
- * exigir dez campos faria a pessoa desistir e guardar o print na galeria.
+ * aeroporto — só o título — é um registro legítimo e útil; exigir dez campos
+ * faria a pessoa desistir e guardar o print na galeria.
+ *
+ * `confirmationCode` NÃO está aqui, e a ausência é o contrato novo: o
+ * localizador saiu da experiência de Reservas, então o formulário não o coleta
+ * e este schema não o aceita. Não foi trocado por um valor vazio nem por um
+ * campo oculto — simplesmente não faz parte da entrada.
+ *
+ * O domínio continua tendo `Reservation.confirmationCode`, e a coluna
+ * `reference` (0011) continua no banco: reserva antiga com localizador salvo
+ * continua sendo lida sem perda. Como `toRow` descarta `undefined`, editar uma
+ * reserva dessas pelo formulário novo não toca a coluna — o valor legado
+ * sobrevive à edição em vez de ser sobrescrito com vazio.
  */
 export const reservationSchema = z.object({
   type: z.enum(RESERVATION_TYPES),
   title: z.string().trim().min(2, 'Informe um título'),
   provider: z.string().trim().max(120).optional(),
-  confirmationCode: z.string().trim().max(120).optional(),
   origin: z.string().trim().max(120).optional(),
   destination: z.string().trim().max(120).optional(),
   address: z.string().trim().max(240).optional(),

@@ -555,6 +555,16 @@ const ACTION_PROMISE_PATTERNS = [
   /\b(preparei|montei|escrevi|criei|gerei|deixei|fiz)\b[^.!?\n]{0,40}\b(di(?:á|a)rio|entrada de di(?:á|a)rio|registro)\b/i,
   /\b(preparei|montei|criei|gerei|lancei|lan(?:ç|c)ei|listei|fiz)\b[^.!?\n]{0,40}\b(despesas?|gastos?|previs(?:ão|ao) de (?:despesas?|gastos?))\b/i,
   /*
+   * A promessa com o substantivo do ROTEIRO — a que aparece quando uma
+   * consulta é respondida com um dia montado e o portão de intenção descarta
+   * a proposta. Sem esta linha, "preparei 5 atividades para o dia 18" fica no
+   * histórico apontando para um cartão que não existe.
+   *
+   * Exige um verbo de PRODUÇÃO: "você possui 7 atividades no dia 18" descreve
+   * o que já existe, não casa aqui, e é a resposta certa para uma consulta.
+   */
+  /\b(preparei|montei|criei|gerei|organizei|planejei|fiz|deixei)\b[^.!?\n]{0,40}\b(atividades?|paradas?|roteiro|itiner(?:á|a)rio|programa(?:ç|c)(?:ão|ao)|checklist|itens?|metas?|or(?:ç|c)amento)\b/i,
+  /*
    * "abaixo" NÃO entra aqui, e a ausência é deliberada.
    *
    * "Suas despesas estão abaixo do orçamento" é a resposta CERTA para "estou

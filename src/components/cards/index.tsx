@@ -434,8 +434,13 @@ const RESERVATION_ICON: Record<ReservationType, LucideIcon> = {
  * Uma reserva na lista (§23, §24).
  *
  * O que aparece no card é o que identifica a reserva de relance no aeroporto:
- * título, fornecedor, localizador em monoespaçada — porque é um código que se
- * digita — e as etiquetas de anexo e visibilidade.
+ * título, fornecedor e as etiquetas de anexo e visibilidade.
+ *
+ * O LOCALIZADOR SAIU DO CARD, e não só do formulário. Ele deixou de ser campo
+ * da experiência de Reservas; mantê-lo desenhado aqui mostraria um código que
+ * não se pode mais informar nem corrigir em lugar nenhum. A coluna `reference`
+ * continua no banco e `Reservation.confirmationCode` continua no domínio — o
+ * dado antigo não foi apagado, apenas não é mais exibido.
  *
  * A visibilidade só aparece em viagem compartilhada (`showVisibility`). Numa
  * viagem individual toda linha seria "Compartilhado", e uma etiqueta presente
@@ -491,11 +496,6 @@ export function ReservationCard({
           {reservation.provider ? (
             <AppText variant="caption" color="secondary" numberOfLines={1}>
               {reservation.provider}
-            </AppText>
-          ) : null}
-          {reservation.confirmationCode ? (
-            <AppText variant="caption" color="tertiary" mono numberOfLines={1}>
-              {reservation.confirmationCode}
             </AppText>
           ) : null}
         </View>

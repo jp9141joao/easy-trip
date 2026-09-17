@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -36,8 +37,6 @@ interface TripSelectionValue {
 const TripSelectionContext = createContext<TripSelectionValue | null>(null);
 
 export function TripSelectionProvider({ children }: { children: ReactNode }) {
-  const [currentTripId, setCurrentTripIdState] = useState<string | null>(null);
-  const [restoring, setRestoring] = useState(false);
   const restoreGeneration = useRef(0);
 
   /*
@@ -50,23 +49,48 @@ export function TripSelectionProvider({ children }: { children: ReactNode }) {
    */
   const { user } = useAuth();
   const ownerId = user?.id ?? null;
+
+  const [currentTripId, setCurrentTripIdState] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(ownerId !== null);
+
+  /*
+   * A troca de dono zera a seleção NO PRÓPRIO RENDER em que é percebida.
+   *
+   * É o padrão do React para "ajustar estado quando uma entrada muda": o render
+   * é descartado e refeito com o estado já zerado antes de chegar aos filhos.
+   * Assim nenhuma tela de B chega a ver, nem por um commit, a viagem de A — o
+   * que zerar dentro do efeito permitia — e o efeito abaixo fica só com a
+   * leitura assíncrona do disco.
+   */
+  const [selectionOwnerId, setSelectionOwnerId] = useState(ownerId);
+  if (selectionOwnerId !== ownerId) {
+    setSelectionOwnerId(ownerId);
+    setCurrentTripIdState(null);
+    setRestoring(ownerId !== null);
+  }
+
+  /*
+   * O dono vigente para quem chega atrasado — callbacks e leituras assíncronas.
+   * Gravado num efeito de layout, e não durante o render: roda antes dos
+   * efeitos passivos e de qualquer evento do commit novo, e o render continua
+   * puro.
+   */
   const activeOwnerId = useRef<string | null>(ownerId);
-  activeOwnerId.current = ownerId;
+  useLayoutEffect(() => {
+    activeOwnerId.current = ownerId;
+  }, [ownerId]);
 
   useEffect(() => {
     let active = true;
     const bornAt = restoreGeneration.current + 1;
     restoreGeneration.current = bornAt;
-    setCurrentTripIdState(null);
 
     if (!ownerId) {
-      setRestoring(false);
       return () => {
         active = false;
       };
     }
 
-    setRestoring(true);
     (async () => {
       const stored = await readTripSelection(ownerId);
       // The legacy bare string has no owner and is never applied. Removing it

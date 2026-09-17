@@ -742,6 +742,15 @@ export const supabaseDataSource: DataSource = {
       const result = await db().from('trips').insert(fromTrip(input)).select().single();
       return toTrip(unwrap<Row>(result));
     },
+    /**
+     * `unwrapWithCapability` e não `unwrap`: a meta diária e a capa própria são
+     * colunas da 0013, e um servidor sem ela recusa este `update` com
+     * `42703 column trips.daily_spending_goal does not exist`. Classificado como
+     * erro comum, isso chegava à Carteira como "Não foi possível salvar a meta
+     * diária." — a tela repetindo o sintoma enquanto a causa (migration não
+     * publicada) morria aqui. A promoção é condicional: um erro de RLS ou de
+     * rede continua sendo o que é, com code/details/hint intactos.
+     */
     async update(tripId, patch) {
       const result = await db()
         .from('trips')
@@ -749,7 +758,14 @@ export const supabaseDataSource: DataSource = {
         .eq('id', tripId)
         .select()
         .single();
-      return withCoverUrl(toTrip(unwrap<Row>(result)));
+      return withCoverUrl(
+        toTrip(
+          unwrapWithCapability<Row>(result, 'MISSING_TRIP_GOAL_SCHEMA', {
+            operation: 'update',
+            relation: 'trips',
+          }),
+        ),
+      );
     },
     async remove(tripId) {
       // O caminho é lido ANTES: depois do delete a linha não existe mais e o

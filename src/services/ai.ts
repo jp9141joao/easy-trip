@@ -24,6 +24,7 @@ import type {
   TripStatus,
 } from '@/domain/types';
 import { AIRateLimitError } from '@/domain/aiRateLimit';
+import { allowsAIMutation } from '@/domain/aiIntent';
 import { config } from '@/lib/config';
 import { formatMoney } from '@/lib/currency';
 import { formatShortDate, formatWeekdayDate } from '@/lib/date';
@@ -319,7 +320,17 @@ class LocalAIService implements AIService {
     return {
       content: `${body}\n\n${LOCAL_NOTICE}`,
       local: true,
-      actions: localActions(intent, context),
+      /*
+       * O MODO DEMONSTRAÇÃO OBEDECE À MESMA REGRA DO REMOTO.
+       *
+       * `detectIntent` responde ASSUNTO ("isto é sobre checklist"), e assunto
+       * nunca autorizou gravação nenhuma: "o que falta no checklist?" caía em
+       * `checklist` e voltava propondo itens novos — a mesma confusão entre
+       * consultar e criar que o servidor tinha. `allowsAIMutation` responde a
+       * outra pergunta, a única que decide: a pessoa PEDIU que algo fosse
+       * criado?
+       */
+      actions: allowsAIMutation(prompt) ? localActions(intent, context) : [],
     };
   }
 }

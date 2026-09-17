@@ -28,6 +28,7 @@ import {
   TEXT_MODEL_CHAIN,
   buildRepairInstruction,
   classifyItineraryRequest,
+  classifyRequestIntent,
   createRateLimiter,
   describeUpstreamFailure,
   discloseIncompleteItinerary,
@@ -36,6 +37,7 @@ import {
   classifyUpstreamResponse,
   countCandidates,
   enforcePromiseCoherence,
+  gateActionsByIntent,
   hasRenderableText,
   itineraryItemCount,
   joinCandidateText,
@@ -47,6 +49,7 @@ import {
   resolveFullDayDate,
   runModelChain,
   type AIModelConfig,
+  type RequestIntent,
   type TripWindow,
   type ModelAttemptLog,
   type ModelCallResult,
@@ -189,7 +192,45 @@ Deno.serve(async (req) => {
         .slice(-12)
     : [];
 
+  /*
+   * A INTENÇÃO, LIDA ANTES DE QUALQUER COISA CARA.
+   *
+   * Ela decide três coisas nesta requisição, nesta ordem:
+   *   1. a instrução de modo que acompanha a pergunta (camada de prompt);
+   *   2. se `expectsFullDay` pode sequer ligar (uma consulta não paga uma
+   *      segunda geração para "completar" um dia que ninguém mandou montar);
+   *   3. o portão determinístico que descarta actions no fim.
+   *
+   * É dado do usuário e nunca vira comando: o resultado é um enum de três
+   * valores que só liga ou desliga capacidades DESTE servidor.
+   */
+  const intent: RequestIntent = classifyRequestIntent(prompt, history);
+
+  /**
+   * O MODO DESTA PERGUNTA, DITO AO MODELO EM UMA LINHA.
+   *
+   * O `SYSTEM_PROMPT` já explica a diferença entre consultar e criar (regra
+   * 10), e o portão do fim já descarta o que não foi pedido. Esta linha é a
+   * camada do meio: ela evita que o modelo ESCREVA uma resposta de criação que
+   * depois teria de ser cortada, o que produziria um texto mutilado em vez de
+   * uma consulta bem respondida.
+   *
+   * Não é a barreira — é a orientação. A barreira é `gateActionsByIntent`.
+   */
+  const MODE_INSTRUCTION: Record<string, string> = {
+    read:
+      'Modo desta pergunta: SOMENTE LEITURA. Responda usando apenas os dados do ' +
+      'contexto acima. Devolva "actions": [] e não prometa nenhuma aplicação, ' +
+      'proposta ou revisão. Se não houver registro para o que foi perguntado, ' +
+      'diga isso claramente em vez de sugerir algo novo.',
+    ambiguous:
+      'Modo desta pergunta: INTENÇÃO NÃO CONFIRMADA. Responda com o que já existe ' +
+      'no contexto, devolva "actions": [] e pergunte, em uma linha, se a pessoa ' +
+      'quer apenas a análise do que existe ou a preparação de itens novos.',
+  };
+
   // --------------------------- Build the request ----------------------------
+  const modeInstruction = MODE_INSTRUCTION[intent.operation];
   const contents = [
     ...history.map((message) => ({
       role: message.role === 'assistant' ? 'model' : 'user',
@@ -199,9 +240,10 @@ Deno.serve(async (req) => {
       role: 'user',
       parts: [
         {
-          text: context
-            ? `Contexto da viagem ativa (dados reais do sistema, em JSON):\n${JSON.stringify(context)}\n\nPergunta do usuário:\n${prompt}`
-            : prompt,
+          text:
+            (context
+              ? `Contexto da viagem ativa (dados reais do sistema, em JSON):\n${JSON.stringify(context)}\n\nPergunta do usuário:\n${prompt}`
+              : prompt) + (modeInstruction ? `\n\n${modeInstruction}` : ''),
         },
       ],
     },
@@ -215,7 +257,7 @@ Deno.serve(async (req) => {
    * restaurante" produzem respostas com um item cada — e só a primeira está
    * errada.
    */
-  const itineraryRequest = classifyItineraryRequest(prompt, history);
+  const itineraryRequest = classifyItineraryRequest(prompt, history, intent);
 
   /**
    * A DATA QUE ESTE PEDIDO TEM — quando ela é uma só.
@@ -726,16 +768,46 @@ Deno.serve(async (req) => {
       return json({ error: 'O assistente não retornou resposta.', code, stage: 'UPSTREAM' }, 502);
     }
 
-    // Só depois do reparo: honestidade sobre o que sobrou, e então o corte das
-    // promessas que a contagem final de actions não sustenta.
-    const disclosed = discloseIncompleteItinerary(
-      output.content,
-      itineraryRequest,
-      output.actions,
-    );
-    const coherent = enforcePromiseCoherence(disclosed, output.actions.length);
+    /*
+     * O PORTÃO DE MUTABILIDADE — a última palavra sobre gravação.
+     *
+     * Vem ANTES da divulgação e do corte de promessas, e a ordem é o conserto
+     * inteiro. Se a pessoa pediu para LISTAR, a proposta morre aqui; e como a
+     * coerência roda logo depois com a contagem final, o texto que dizia
+     * "preparei 5 atividades" é cortado junto. Cortar na outra ordem deixaria
+     * a frase viva apontando para um cartão que não existe mais — que é
+     * exatamente o defeito de coerência que este arquivo já resolvia para
+     * actions inválidas, agora estendido a actions não pedidas.
+     *
+     * `validateActions` pergunta "isto é bem formado?". Isto aqui pergunta
+     * "isto foi pedido?". São perguntas diferentes e as duas precisam passar.
+     */
+    const gated = gateActionsByIntent(output.actions, intent);
+    const actions = gated.actions;
+
+    if (gated.discarded > 0) {
+      // Só números e rótulos fechados: nenhum prompt, nenhum texto, nenhum
+      // dado da viagem. É o que permite ver, em produção, quantas propostas
+      // não pedidas o modelo ainda tenta devolver.
+      console.log(
+        'ai_chat_intent_gate',
+        diagnostics('INTENT_GATE', {
+          operation: intent.operation,
+          explicitReadOnly: intent.explicitReadOnly,
+          explicitWrite: intent.explicitWrite,
+          readSignal: intent.readSignal,
+          promoted: intent.promoted,
+          domains: intent.domains,
+          discardedActions: gated.discarded,
+        }),
+      );
+    }
+
+    // Só depois do reparo e do portão: honestidade sobre o que sobrou, e então
+    // o corte das promessas que a contagem final de actions não sustenta.
+    const disclosed = discloseIncompleteItinerary(output.content, itineraryRequest, actions);
+    const coherent = enforcePromiseCoherence(disclosed, actions.length);
     const content = coherent.content;
-    const actions = output.actions;
 
     /*
      * A bolha do "•" morre AQUI, e não na tela.

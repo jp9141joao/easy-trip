@@ -3,6 +3,12 @@
   "compilerOptions": {
     "strict": true,
     "types": ["jest", "node"],
+    // Os testes importam `supabase/functions/**/protocol.ts` direto, e esses
+    // módulos importam os irmãos com a extensão `.ts` porque é o que o Deno
+    // exige. Sem esta linha, o `tsc` do aplicativo reprova o import de um
+    // arquivo que ele só enxerga por causa dos testes. Nada em `src/` usa
+    // extensão em import — a permissão existe para a fronteira, não para o app.
+    "allowImportingTsExtensions": true,
     "paths": {
       "@/*": ["./src/*"],
       "@/assets/*": ["./assets/*"]

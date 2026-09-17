@@ -65,7 +65,6 @@ export function LocationPicker({
 }) {
   const theme = useTheme();
   const toast = useToast();
-  const [resolving, setResolving] = useState(false);
 
   /*
    * Uma resolução por ponto, e só depois que o dedo para.
@@ -81,18 +80,23 @@ export function LocationPicker({
   const latitude = value?.latitude;
   const longitude = value?.longitude;
   const jaResolvido = value?.address !== undefined;
+  /*
+   * "Procurando endereço…" é derivado, e não estado: há um ponto e ele ainda
+   * não passou pelo geocoder. A resposta (mesmo vazia, `''`) preenche
+   * `address`, e o aviso some no mesmo render — sem um `setState` síncrono no
+   * efeito para ligar e outro para desligar.
+   */
+  const resolving = latitude !== undefined && longitude !== undefined && !jaResolvido;
 
   useEffect(() => {
     if (latitude === undefined || longitude === undefined || jaResolvido) return;
 
     const id = pedido.current + 1;
     pedido.current = id;
-    setResolving(true);
 
     const timer = setTimeout(() => {
       void reverseGeocode(latitude, longitude).then((resolvido) => {
         if (pedido.current !== id) return;
-        setResolving(false);
         // `address` vira string vazia quando não deu: é o registro de que a
         // tentativa aconteceu e não achou nada — diferente de "ainda não
         // tentei" —, e impede que a próxima renderização peça de novo.
@@ -105,10 +109,7 @@ export function LocationPicker({
       });
     }, DEBOUNCE_MS);
 
-    return () => {
-      clearTimeout(timer);
-      setResolving(false);
-    };
+    return () => clearTimeout(timer);
     // `onChange` fora das dependências de propósito: ele costuma ser recriado a
     // cada render do formulário, e incluí-lo reiniciaria o debounce sem fim.
     // eslint-disable-next-line react-hooks/exhaustive-deps

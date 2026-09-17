@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 import { useNotificationRealtime, useTripRealtime } from '@/hooks/useTripRealtime';
 import { CHANNEL_LINGER_MS, closeSharedRealtimeChannels } from '@/lib/realtimeChannel';
@@ -184,7 +184,11 @@ let abrirOutraTela: (tripId: string | null) => void = () => undefined;
 function ArvoreAutenticada() {
   const { isAuthenticated } = useAuth();
   const [outra, setOutra] = useState<string | null>(null);
-  abrirOutraTela = setOutra;
+  // Exposto ao teste depois da montagem — o setter do `useState` é estável, e
+  // reatribuir a variável do módulo durante o render o tornaria impuro.
+  useEffect(() => {
+    abrirOutraTela = setOutra;
+  }, []);
   if (!isAuthenticated) return null;
   return (
     <>

@@ -17,6 +17,7 @@ import {
 import { getDailyGoalStatus, getDailySpend } from '@/domain/selectors';
 import type { Expense, Trip } from '@/domain/types';
 import { useUpdateTrip } from '@/hooks/useTrips';
+import { describeBackendCapability } from '@/repositories/backendCapabilities';
 import { formatWeekdayDate, todayISO } from '@/lib/date';
 import { formatMoney } from '@/lib/currency';
 import { useTheme } from '@/theme';
@@ -92,8 +93,8 @@ export function DailyGoalCard({
       await updateTrip.mutateAsync({ tripId: trip.id, patch: { dailySpendingGoal: draft } });
       setEditing(false);
       toast.success('Meta diária salva');
-    } catch {
-      toast.error('Não foi possível salvar a meta diária.');
+    } catch (error) {
+      toast.error(describeBackendCapability(error) ?? 'Não foi possível salvar a meta diária.');
     }
   };
 
@@ -104,8 +105,8 @@ export function DailyGoalCard({
       setEditing(false);
       setDraft(undefined);
       toast.success('Meta diária removida');
-    } catch {
-      toast.error('Não foi possível remover a meta diária.');
+    } catch (error) {
+      toast.error(describeBackendCapability(error) ?? 'Não foi possível remover a meta diária.');
     }
   };
 

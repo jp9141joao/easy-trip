@@ -61,6 +61,7 @@ export function useSuggestions(
 ) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const userId = user?.id;
   const key = queryKeys.suggestions(tripId ?? 'none');
 
   const load = useCallback(async () => {
@@ -76,16 +77,16 @@ export function useSuggestions(
     try {
       const data = await dataSource.suggestions.ensure(tripId!);
       if (!antes || data.length !== antes.length) {
-        await invalidateAfterClaim(queryClient, tripId!, user?.id);
+        await invalidateAfterClaim(queryClient, tripId!, userId);
       }
       return data;
     } catch (error) {
       if (error instanceof SuggestionGenerationError) {
-        await invalidateAfterClaim(queryClient, tripId!, user?.id);
+        await invalidateAfterClaim(queryClient, tripId!, userId);
       }
       throw error;
     }
-  }, [access.canEdit, key, queryClient, tripId, user?.id]);
+  }, [access.canEdit, key, queryClient, tripId, userId]);
 
   return useQuery({
     queryKey: key,

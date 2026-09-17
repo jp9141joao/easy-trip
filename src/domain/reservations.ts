@@ -79,8 +79,8 @@ const note = z.string().trim().max(400);
 /**
  * Cada schema descreve só o que aquela modalidade acrescenta. Todos os campos
  * são opcionais de propósito: uma reserva registrada às pressas no aeroporto,
- * com título e localizador e mais nada, é um registro legítimo e útil. O que
- * não pode é o campo existir com valor inventado.
+ * com o título e mais nada, é um registro legítimo e útil. O que não pode é o
+ * campo existir com valor inventado.
  */
 export const flightDetailsSchema = z.object({
   flightNumber: shortText.optional(),
@@ -169,7 +169,15 @@ export interface Reservation {
   title: string;
   /** Companhia aérea, rede hoteleira, locadora, operadora ferroviária. */
   provider?: string;
-  /** Localizador / código de confirmação. Coluna `reference` no banco. */
+  /**
+   * Localizador / código de confirmação. Coluna `reference` no banco.
+   *
+   * LEGADO, SOMENTE LEITURA. O campo saiu da experiência de Reservas: não é
+   * coletado pelo formulário (`reservationSchema` não o tem) nem desenhado na
+   * lista ou nos detalhes. Continua aqui — e a coluna continua no banco —
+   * porque reserva antiga tem valor gravado, e apagá-lo seria destruir dado de
+   * quem já usava o aplicativo.
+   */
   confirmationCode?: string;
   startAt?: ISODateTime;
   endAt?: ISODateTime;

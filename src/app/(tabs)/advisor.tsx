@@ -380,11 +380,14 @@ function AITab() {
   const [result, setResult] = useState<{ messageId: string; report: AIActionReport } | null>(null);
 
   // Trocar a viagem invalida qualquer proposta aberta: a revisão na tela é de
-  // Paris, e a viagem agora é outra.
-  useEffect(() => {
+  // Paris, e a viagem agora é outra. A troca é percebida no próprio render —
+  // nem um commit mostra a revisão de Paris com a viagem já trocada.
+  const [reviewTripId, setReviewTripId] = useState(trip?.id);
+  if (reviewTripId !== trip?.id) {
+    setReviewTripId(trip?.id);
     setReview(null);
     setResult(null);
-  }, [trip?.id]);
+  }
 
   /**
    * Aplica uma proposta já resolvida.

@@ -14,7 +14,7 @@
  *     antes de qualquer leitura do disco.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import type { Trip } from '@/domain/types';
 import { readAITripContext, writeAITripContext } from '@/lib/aiTripContext';
@@ -34,25 +34,48 @@ export function useAITripContext(
 ): AITripContextValue {
   const [tripId, setTripId] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(true);
-  const owner = useRef<string | null>(null);
+  const [owner, setOwner] = useState<string | null>(null);
+  /** Uma referência órfã a apagar do disco — nova identidade a cada pedido. */
+  const [orphanCleanup, setOrphanCleanup] = useState<{ userId: string } | null>(null);
 
-  // Restauração: uma vez por conta.
-  useEffect(() => {
-    if (owner.current === userId) return;
-    owner.current = userId;
-    // A troca de dono zera antes de ler: o contexto do USER_A não pode
-    // aparecer, nem por um quadro, dentro da sessão do USER_B.
+  // A troca de dono zera NO PRÓPRIO RENDER em que é percebida, antes de ler:
+  // o contexto do USER_A não pode aparecer, nem por um quadro, dentro da
+  // sessão do USER_B. É o padrão do React para ajustar estado quando uma
+  // entrada muda — o render é refeito com o estado zerado antes do commit.
+  if (owner !== userId) {
+    setOwner(userId);
     setTripId(null);
+    setRestoring(userId !== null);
+  }
 
-    if (!userId) {
-      setRestoring(false);
-      return;
-    }
+  // Validação contra a lista real do usuário. Só depois de a lista ter
+  // carregado — antes disso "não está na lista" significa "a lista ainda não
+  // chegou", e derrubar a seleção aqui apagaria o contexto a cada abertura.
+  // A seleção cai no mesmo render; apagar a preferência do disco é efeito
+  // externo, e fica para o efeito abaixo.
+  const orphan =
+    owner === userId &&
+    !restoring &&
+    tripsLoaded &&
+    tripId !== null &&
+    !trips.some((trip) => trip.id === tripId);
+  if (orphan) {
+    setTripId(null);
+    if (userId) setOrphanCleanup({ userId });
+  }
+
+  useEffect(() => {
+    if (orphanCleanup) void writeAITripContext(orphanCleanup.userId, null);
+  }, [orphanCleanup]);
+
+  // Restauração: uma vez por conta. `active` cai quando a conta muda (ou a
+  // tela desmonta), e uma leitura atrasada da conta anterior é descartada.
+  useEffect(() => {
+    if (!userId) return;
 
     let active = true;
-    setRestoring(true);
     void readAITripContext(userId).then((stored) => {
-      if (!active || owner.current !== userId) return;
+      if (!active) return;
       setTripId(stored);
       setRestoring(false);
     });
@@ -60,16 +83,6 @@ export function useAITripContext(
       active = false;
     };
   }, [userId]);
-
-  // Validação contra a lista real do usuário. Só depois de a lista ter
-  // carregado — antes disso "não está na lista" significa "a lista ainda não
-  // chegou", e derrubar a seleção aqui apagaria o contexto a cada abertura.
-  useEffect(() => {
-    if (restoring || !tripsLoaded || !tripId) return;
-    if (trips.some((trip) => trip.id === tripId)) return;
-    setTripId(null);
-    if (userId) void writeAITripContext(userId, null);
-  }, [restoring, tripsLoaded, tripId, trips, userId]);
 
   const select = useCallback(
     (next: string) => {

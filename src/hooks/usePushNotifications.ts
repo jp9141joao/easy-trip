@@ -72,18 +72,19 @@ export function usePushNotifications() {
   const router = useRouter();
   /** Decidido num lugar só (`services/notificationsModule`), lido em vários. */
   const supported = isRemotePushSupported();
-  const [permission, setPermission] = useState<PushPermission>('undetermined');
+  const [devicePermission, setPermission] = useState<PushPermission>('undetermined');
+  // Sem push remoto neste ambiente, a resposta é 'unavailable' desde o primeiro
+  // render — derivada, e não escrita por um efeito: não há o que esperar.
+  const permission: PushPermission = supported ? devicePermission : 'unavailable';
   const [enabled, setEnabled] = useState(false);
   const registeredToken = useRef<string | null>(null);
   const previousUser = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!supported) {
-      // Sem push remoto neste ambiente: não há handler, canal nem permissão a
-      // preparar. O estado fica explícito, e nenhuma exceção é levantada.
-      setPermission('unavailable');
-      return;
-    }
+    // Sem push remoto neste ambiente: não há handler, canal nem permissão a
+    // preparar. O estado já é explícito (`permission` acima), e nenhuma exceção
+    // é levantada.
+    if (!supported) return;
     configureForegroundBehavior();
     void ensureAndroidChannel();
     void currentPushPermission().then(setPermission);

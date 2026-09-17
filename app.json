@@ -7,7 +7,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "easytrip",
     "userInterfaceStyle": "automatic",
-
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
@@ -16,7 +15,6 @@
         "NSLocationWhenInUseUsageDescription": "O Easy Trip usa sua localização para mostrar o mapa e lugares próximos ao seu destino."
       }
     },
-
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0EA5E9",
@@ -30,12 +28,10 @@
         "POST_NOTIFICATIONS"
       ]
     },
-
     "web": {
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
-
     "plugins": [
       "expo-router",
       [
@@ -71,9 +67,10 @@
       ],
       "expo-secure-store",
       "expo-localization",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-image",
+      "expo-sharing"
     ],
-
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true

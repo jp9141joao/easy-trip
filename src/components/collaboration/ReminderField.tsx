@@ -1,5 +1,5 @@
 import { Bell, BellOff } from 'lucide-react-native';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { AppText, Button, InlineNotice, TextField } from '@/components/ui';
@@ -48,12 +48,22 @@ export function ReminderField({
   const [customOpen, setCustomOpen] = useState(false);
   const [customMinutes, setCustomMinutes] = useState('');
   const [customError, setCustomError] = useState<string>();
+  // O relógio lido pelo render. `Date.now()` direto no corpo do componente
+  // tornaria o render impuro (dois renders do mesmo estado discordariam); aqui
+  // o instante é estado, renovado a cada minuto e no toque que abre as opções —
+  // que é quando "já passou" e os intervalos oferecidos precisam estar certos.
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Sem data não há âncora, e um seletor de "quanto tempo antes" sem "antes de
   // quê" é um controle que não pode funcionar. Ele some em vez de dar erro.
   if (!anchorAt) return null;
 
-  const isPast = new Date(anchorAt).getTime() <= Date.now();
+  const isPast = new Date(anchorAt).getTime() <= now;
   const active = Boolean(reminder);
   const currentOffset = reminder ? offsetMinutesBetween(reminder.remindAt, anchorAt) : undefined;
   const currentIsCustom =
@@ -92,7 +102,10 @@ export function ReminderField({
   return (
     <View style={{ gap: theme.spacing.sm }}>
       <Pressable
-        onPress={() => setExpanded((open) => !open)}
+        onPress={() => {
+          setNow(Date.now());
+          setExpanded((open) => !open);
+        }}
         disabled={isPast && !active}
         accessibilityRole="button"
         accessibilityState={{ expanded, disabled: isPast && !active }}
@@ -128,7 +141,7 @@ export function ReminderField({
             {REMINDER_OFFSETS.filter(
               // Uma opção que cairia no passado não é oferecida: escolhê-la
               // produziria um erro que a pessoa não tem como prever olhando.
-              (option) => new Date(anchorAt).getTime() - option.minutes * 60_000 > Date.now(),
+              (option) => new Date(anchorAt).getTime() - option.minutes * 60_000 > now,
             ).map((option) => {
               const selected = currentOffset === option.minutes;
               return (

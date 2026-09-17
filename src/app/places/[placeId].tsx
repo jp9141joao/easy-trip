@@ -303,22 +303,52 @@ export default function PlaceDetailScreen() {
             <View>
               <SectionHeader title="Horários" />
               <GlassCard>
-                <View style={{ gap: theme.spacing.sm }}>
-                  {place.openingHours.map((hours) => (
-                    <View
-                      key={hours}
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}
-                    >
-                      <Clock size={14} color={theme.colors.textTertiary} />
-                      <AppText variant="bodySmall" color="secondary">
-                        {hours}
-                      </AppText>
-                    </View>
-                  ))}
+                {/*
+                  O AVISO PRECISA DE UM VÃO, E ELE NÃO EXISTIA.
+
+                  A lista de horários e o `InlineNotice` eram dois irmãos
+                  diretos dentro do card, sem `gap` entre eles e sem margem
+                  própria — o `padding` do `GlassCard` separa o conteúdo das
+                  bordas, não um filho do outro. O resultado é a caixa amarela
+                  encostada na última linha de horário, como se fizesse parte
+                  dela.
+
+                  Este contêiner é a correção, e é local de propósito: mexer no
+                  `InlineNotice` acrescentaria margem às dezenas de outros
+                  lugares que já resolvem o espaçamento no contêiner deles —
+                  este é justamente o que esquecia. O mesmo padrão do
+                  `DailyGoalCard`, que já embrulha os filhos num `gap`.
+
+                  `lg` (16) e não `md`: o aviso é um bloco com fundo próprio, e
+                  precisa de mais respiro do que duas linhas de texto entre si
+                  para ler como um bloco à parte em vez de continuação. O respiro
+                  inferior é o `padding: xl` (20) do próprio card, que já existe
+                  e não foi tocado.
+                */}
+                <View style={{ gap: theme.spacing.lg }}>
+                  <View style={{ gap: theme.spacing.sm }}>
+                    {place.openingHours.map((hours) => (
+                      <View
+                        key={hours}
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}
+                      >
+                        <Clock size={14} color={theme.colors.textTertiary} />
+                        {/*
+                          `flex: 1` para o texto poder quebrar em vez de esticar
+                          a linha: "Seg–Sex 12:00–14:30, 19:00–23:00" não cabe
+                          em uma linha num aparelho estreito, e sem isto a linha
+                          empurraria a largura do card.
+                        */}
+                        <AppText variant="bodySmall" color="secondary" style={{ flex: 1 }}>
+                          {hours}
+                        </AppText>
+                      </View>
+                    ))}
+                  </View>
+                  <InlineNotice tone="warning">
+                    Horários podem mudar sem aviso. Confirme com o estabelecimento antes de ir.
+                  </InlineNotice>
                 </View>
-                <InlineNotice tone="warning">
-                  Horários podem mudar sem aviso. Confirme com o estabelecimento antes de ir.
-                </InlineNotice>
               </GlassCard>
             </View>
           ) : null}

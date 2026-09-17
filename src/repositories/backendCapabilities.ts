@@ -12,6 +12,7 @@ export const BACKEND_CAPABILITY_CODES = [
   'MISSING_RESERVATIONS_SCHEMA',
   'MISSING_SUGGESTIONS_SCHEMA',
   'MISSING_PUSH_TOKENS',
+  'MISSING_TRIP_GOAL_SCHEMA',
 ] as const;
 
 export type BackendCapabilityCode = (typeof BACKEND_CAPABILITY_CODES)[number];
@@ -70,6 +71,29 @@ const EXPECTED_IDENTIFIERS: Record<BackendCapabilityCode, readonly string[]> = {
     'suggestions_attempt_at',
     'settle_trip_suggestion_refresh',
   ],
+  /*
+   * As duas colunas da 0013 — meta de gasto diário e capa própria da viagem.
+   *
+   * POR QUE ESTA CAPACIDADE EXISTE.
+   *
+   * `trips.update` classificava qualquer recusa do PostgREST como erro comum, e
+   * a tela traduzia isso em "Não foi possível salvar a meta diária." — uma
+   * mensagem que descreve o sintoma e esconde a única informação útil: o
+   * servidor não tem a coluna. Medido contra o projeto remoto, o `update` da
+   * meta responde `42703 column trips.daily_spending_goal does not exist`, e
+   * esse código já estava em `MISSING_OBJECT_CODES` sem nenhuma capacidade que
+   * o reivindicasse.
+   *
+   * As duas colunas dividem a MESMA capacidade porque dividem a mesma
+   * migration: um servidor que tem uma tem a outra, e separá-las criaria dois
+   * códigos que nunca aparecem sozinhos.
+   *
+   * O bucket `trip-covers` NÃO está nesta lista. Ele também nasce na 0013, mas
+   * a recusa dele vem do Storage e não do PostgREST — chega por outro caminho,
+   * com outro formato, e não passa por `toBackendCapabilityError`. Listá-lo aqui
+   * sugeriria uma classificação que não acontece.
+   */
+  MISSING_TRIP_GOAL_SCHEMA: ['daily_spending_goal', 'cover_image_path'],
 };
 
 /** PostgREST/Postgres codes that mean an expected table, function or column is absent. */
@@ -81,6 +105,53 @@ const MISSING_OBJECT_CODES = new Set([
   '42703', // undefined_column
   '42883', // undefined_function
 ]);
+
+/**
+ * Códigos de AUTORIZAÇÃO — o pedido chegou, foi entendido e foi recusado.
+ *
+ * São o oposto de uma capacidade ausente: o objeto existe no servidor, e quem
+ * chamou é que não podia chamar (ou chamou sem sessão válida). Distinguir os
+ * dois importa porque a resposta do produto é diferente — capacidade ausente
+ * pede publicação de migration, recusa de autorização pede sessão.
+ *
+ *   42501      insufficient_privilege — inclui o `raise ... using errcode`
+ *              que as funções da 0010 usam para "Sessão obrigatória."
+ *   PGRST301   JWT ausente, expirado ou inválido.
+ *   PGRST302   credencial anônima onde se exige autenticação.
+ */
+const AUTHORIZATION_CODES = new Set(['42501', 'PGRST301', 'PGRST302']);
+
+/**
+ * Uma recusa do backend que NÃO é incompatibilidade de schema — com o
+ * diagnóstico preservado.
+ *
+ * POR QUE ESTA CLASSE EXISTE.
+ *
+ * O caminho de fallback de `throwBackendError` fazia `new Error(message)`, e
+ * isso apagava `code`, `details`, `hint` e `status`. O efeito foi medido: o
+ * aviso `REMINDER_DELIVERY_FAILED {"kind":"Error"}` do Android é literalmente
+ * o `name` desse `Error` genérico — um log incapaz de nomear a própria causa,
+ * porque a causa tinha sido descartada uma camada antes.
+ *
+ * O erro do PostgREST chega como OBJETO SIMPLES, e não como `Error`: com
+ * `shouldThrowOnError` desligado (que é como todo este repositório o usa),
+ * `postgrest-js` devolve `JSON.parse` do corpo. Por isso o `instanceof Error`
+ * logo abaixo não pegava esses casos, e por isso eles caíam no `new Error`.
+ *
+ * A mensagem continua idêntica — quem só lê `error.message` não muda de
+ * comportamento.
+ */
+export class BackendRequestError extends Error {
+  readonly name = 'BackendRequestError';
+
+  constructor(
+    message: string,
+    readonly backend?: BackendErrorDetails,
+  ) {
+    super(message);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
 
 export class BackendCapabilityError extends Error {
   readonly name = 'BackendCapabilityError';
@@ -161,7 +232,10 @@ export function throwBackendError(
 
   if (error instanceof Error) throw error;
   const backend = errorDetails(error);
-  throw new Error(backend?.message || fallback);
+  // `BackendRequestError`, e não `Error`: ver a nota da classe. O diagnóstico
+  // do PostgREST é justamente o que permite separar "sem sessão" de "objeto
+  // ausente" de "defeito nosso" — e ele morria exatamente aqui.
+  throw new BackendRequestError(backend?.message || fallback, backend);
 }
 
 export function isBackendCapabilityError(error: unknown): error is BackendCapabilityError {
@@ -188,5 +262,32 @@ export function describeBackendCapability(error: unknown): string | undefined {
       // entrega pelo sistema operacional. A mensagem diz isso, e não "as
       // notificações não funcionam".
       return 'Os avisos fora do aplicativo ainda não estão disponíveis neste servidor. As notificações continuam aparecendo na Central.';
+    case 'MISSING_TRIP_GOAL_SCHEMA':
+      // O que a pessoa precisa saber é que não errou o valor e que tentar de
+      // novo não vai ajudar. O nome da coluna fica no diagnóstico de DEV.
+      return 'A meta de gasto diário e a capa própria da viagem ainda não estão disponíveis neste servidor. O valor informado não foi salvo; a equipe precisa atualizar o backend.';
   }
+}
+
+/** O código que o backend devolveu, quando ele sobreviveu até aqui. */
+export function readBackendErrorCode(error: unknown): string | undefined {
+  if (error instanceof BackendCapabilityError) return error.backend?.code;
+  if (error instanceof BackendRequestError) return error.backend?.code;
+  return errorDetails(error)?.code;
+}
+
+/**
+ * A recusa é de autorização/sessão?
+ *
+ * Separada de `isBackendCapabilityError` de propósito. As duas descrevem
+ * situações esperadas e não-defeituosas, mas por motivos opostos: aquela diz
+ * "este servidor ainda não tem o recurso", esta diz "este chamador não podia
+ * chamar agora". Confundi-las mandaria procurar o problema no lugar errado.
+ */
+export function isBackendAuthorizationError(error: unknown): boolean {
+  if (error instanceof BackendCapabilityError) return false;
+  const code = readBackendErrorCode(error);
+  if (code && AUTHORIZATION_CODES.has(code)) return true;
+  const status = error instanceof BackendRequestError ? error.backend?.status : undefined;
+  return status === 401 || status === 403;
 }

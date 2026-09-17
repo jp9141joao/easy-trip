@@ -66,9 +66,18 @@ export default function AdminAdvisorFormScreen() {
     },
   });
 
+  // A imagem pendente pertence ao registro que estava na tela: quando outro
+  // registro chega (ou a query devolve uma versão nova), ela é descartada no
+  // próprio render. Só semear o formulário — que vive no `react-hook-form`,
+  // fora do estado do React — fica para o efeito.
+  const [seededFrom, setSeededFrom] = useState(existing);
+  if (existing && existing !== seededFrom) {
+    setSeededFrom(existing);
+    setPendingImage(undefined);
+  }
+
   useEffect(() => {
     if (!existing) return;
-    setPendingImage(undefined);
     reset({
       name: existing.name,
       specialty: existing.specialty,

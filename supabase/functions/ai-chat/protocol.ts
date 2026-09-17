@@ -1,11 +1,18 @@
 /**
  * O protocolo da Easy Trip IA: o que se pede ao modelo e o que se aceita de volta.
  *
- * Este arquivo é **puro** — sem `Deno`, sem `fetch`, sem import nenhum. Não é
+ * Este arquivo é **puro** — sem `Deno`, sem `fetch`, e com um único import, que
+ * é outro módulo puro deste mesmo diretório (`./intent.ts`). Não é
  * organização: é o que permite que a mesma lógica que roda na Edge Function
  * seja exercitada pelo Jest do aplicativo, com respostas reais do Gemini
  * gravadas como fixture. A rodada anterior mostrou o custo de não ter isso —
  * a função foi declarada pronta com base em testes que não tocavam nela.
+ *
+ * INTENÇÃO É AUTORIDADE SUPERIOR À ACTION DO MODELO
+ *
+ * `classifyRequestIntent` decide, a partir do PEDIDO, se esta requisição pode
+ * gerar gravação. Se não pode, nenhuma action sobrevive — mesmo que o Gemini
+ * devolva uma `itinerary.add` perfeitamente formada. Consultar não é criar.
  *
  * DUAS SAÍDAS, NÃO UMA
  *
@@ -22,6 +29,15 @@
  * Por isso tudo passa por `validateActions` aqui, e passa **de novo** no
  * cliente (`src/domain/aiActions.ts`) antes de qualquer gravação.
  */
+
+import {
+  analyzeIntent,
+  type AIIntentDomain,
+  type AIIntentOperation,
+  type IntentAnalysis,
+} from './intent.ts';
+
+export type { AIIntentDomain, AIIntentOperation, IntentAnalysis };
 
 /* --------------------------------- prompt --------------------------------- */
 
@@ -166,9 +182,46 @@ Regras absolutas sobre actions:
    nota, promoção, número de voo, companhia ou localizador. Um bilhete de
    verdade é um documento que a pessoa anexa; uma sugestão sua não é bilhete.
 
-10. Perguntas de leitura ("quanto já gastei?", "como está meu checklist?") NÃO
-    levam action. Deixe "actions" vazio — e, nesse caso, também não prometa
-    aplicação nenhuma no texto (regra 2).
+10. CONSULTAR NÃO É CRIAR. Esta é a regra mais importante deste bloco.
+
+    Citar "roteiro", "despesa", "checklist", "meta" ou "diário" diz apenas do
+    QUE a pessoa está falando. Não diz que ela quer criar coisa alguma.
+
+    LEITURA (sempre "actions": []):
+      "liste", "mostre", "veja", "verifique", "confira", "consulte", "resuma",
+      "me diga", "quais são", "o que tenho", "quanto tenho", "o que falta",
+      "o que está planejado", "o que já foi adicionado".
+      Exemplos: "Liste meu roteiro do dia 18", "O que tenho planejado amanhã?",
+      "Verifique meu orçamento", "Quais metas eu tenho?".
+      Responda com os dados que estão no contexto e mais nada.
+
+    ESCRITA (aí sim, com action):
+      "crie", "monte", "adicione", "insira", "registre", "gere", "atualize",
+      "defina", "altere".
+      Exemplos: "Monte um roteiro para amanhã", "Adicione R$ 100 de
+      transporte", "Crie uma meta para economizar R$ 500".
+
+    "PLANEJADO" É ESTADO, NÃO ORDEM. "o que tenho planejado" pergunta pelo
+    planejamento que já existe; não pede um plano novo.
+
+    NEGAÇÃO VENCE TUDO. "Não crie nada, só me mostre o roteiro" contém "crie"
+    e continua sendo leitura. "sem criar", "não adicione", "não altere",
+    "somente liste", "apenas verifique" proíbem qualquer action, mesmo que a
+    frase também traga "monte" ou "roteiro".
+
+    NA DÚVIDA, NÃO ESCREVA. "Me ajuda com meu roteiro de amanhã" não autoriza
+    nada: responda com o que existe e pergunte se a pessoa quer que você
+    apenas analise o roteiro atual ou prepare atividades novas para adicionar.
+
+    QUANDO NÃO HÁ NADA REGISTRADO, DIGA ISSO. Um dia sem atividades no
+    contexto se responde com "você ainda não tem atividades planejadas para
+    esse dia" — o vazio não é convite para inventar um roteiro.
+
+    O QUE VOCÊ NÃO ENXERGA. O contexto NÃO traz as entradas de diário nem as
+    metas já existentes: elas são privadas e nunca chegam até você. Se a
+    pergunta for de leitura sobre o diário, diga que, por privacidade, o
+    assistente não lê as entradas existentes — e não invente conteúdo. Criar
+    uma entrada NOVA a pedido continua permitido (journal.add).
 
 11. Se a pessoa pedir ajuste em uma sugestão anterior ("troca o Louvre para a
     tarde", "só os dois primeiros"), devolva uma proposta NOVA e completa. Você
@@ -185,10 +238,15 @@ Regras absolutas sobre actions:
 
 === ROTEIRO DE DIA INTEIRO ===
 
-14. Quando a pessoa pedir um ROTEIRO — "monte um roteiro", "roteiro para
-    amanhã", "monte meu dia", "o que faço no dia 12", "planeje o dia" ou
-    equivalente —, o padrão é de 3 a 6 atividades para aquele dia, em ordem
-    cronológica, com 'startTime' preenchido em cada uma.
+14. Quando a pessoa pedir que você MONTE um roteiro — "monte um roteiro",
+    "roteiro para amanhã", "monte meu dia", "o que faço no dia 12", "planeje o
+    dia" ou equivalente —, o padrão é de 3 a 6 atividades para aquele dia, em
+    ordem cronológica, com 'startTime' preenchido em cada uma.
+
+    ISTO VALE SÓ PARA O PEDIDO DE MONTAR. "Liste meu roteiro do dia 18",
+    "o que vou fazer no dia 18" e "verifique meu roteiro completo de amanhã"
+    são leitura (regra 10): responda com as atividades que JÁ estão no
+    contexto, sem completar o dia e sem propor nada.
 
     Um dia inteiro tem manhã, almoço, tarde e noite. Devolver UMA atividade
     para um pedido de dia inteiro não é um roteiro: é uma sugestão solta, e a
@@ -1073,6 +1131,21 @@ const PROMISE_PATTERNS = [
   /\b(preparei|montei|escrevi|criei|gerei|deixei|fiz)\b[^.!?\n]{0,40}\b(di(?:á|a)rio|entrada de di(?:á|a)rio|registro)\b/i,
   /\b(preparei|montei|criei|gerei|lancei|lan(?:ç|c)ei|listei|fiz)\b[^.!?\n]{0,40}\b(despesas?|gastos?|previs(?:ão|ao) de (?:despesas?|gastos?))\b/i,
   /*
+   * A PROMESSA COM O SUBSTANTIVO DO ROTEIRO — e a que o corte de leitura mais
+   * encontra.
+   *
+   * Quando uma CONSULTA é respondida com um roteiro novo, a action é
+   * descartada pelo portão de intenção e o texto fica sozinho dizendo
+   * "preparei 5 atividades para o dia 18". A frase aponta para um cartão que
+   * não existe, e ainda faz a pessoa acreditar que o dia foi planejado.
+   *
+   * O contraste do §14 do pedido está preservado: isto exige um VERBO DE
+   * PRODUÇÃO na frase. "Você possui 7 atividades no dia 18" descreve o que já
+   * existe, não casa com nada aqui, e é exatamente a resposta certa para uma
+   * consulta.
+   */
+  /\b(preparei|montei|criei|gerei|organizei|planejei|fiz|deixei)\b[^.!?\n]{0,40}\b(atividades?|paradas?|roteiro|itiner(?:á|a)rio|programa(?:ç|c)(?:ão|ao)|checklist|itens?|metas?|or(?:ç|c)amento)\b/i,
+  /*
    * "abaixo" NÃO entra aqui, e a ausência é deliberada.
    *
    * "Suas despesas estão abaixo do orçamento" é a resposta CERTA para "estou
@@ -1193,6 +1266,30 @@ export function enforcePromiseCoherence(
       'Me diga a data e os lugares (ou o valor, no caso de um gasto) e eu preparo.',
     stripped,
   };
+}
+
+/* --------------------------- portão de mutabilidade ------------------------ */
+
+/**
+ * A AÇÃO DO MODELO NÃO É AUTORIDADE (§12 do pedido).
+ *
+ * Se o pedido foi classificado como leitura — ou ficou ambíguo —, nenhuma
+ * action passa, por melhor formada que esteja. O Gemini responde a um texto
+ * livre e pode "ajudar demais"; a intenção de quem perguntou é o que decide, e
+ * ela é lida por código determinístico, não pelo modelo.
+ *
+ * Isto NÃO substitui `validateActions`: aquilo checa se a proposta é bem
+ * formada, isto checa se ela foi pedida. Uma proposta pode ser perfeita e
+ * ainda assim não ter sido pedida — foi exatamente o defeito relatado.
+ *
+ * Devolve a contagem descartada para o diagnóstico, que é só número.
+ */
+export function gateActionsByIntent(
+  actions: readonly unknown[],
+  intent: { allowsMutation: boolean },
+): { actions: unknown[]; discarded: number } {
+  if (intent.allowsMutation) return { actions: [...actions], discarded: 0 };
+  return { actions: [], discarded: actions.length };
 }
 
 /* ------------------------------- leitura final ----------------------------- */
@@ -1348,21 +1445,18 @@ const DATE_ONLY_REQUEST = [
   /\bprimeiro dia da viagem\b/,
 ];
 
-/**
- * O que NÃO é pedido de roteiro, mesmo nomeando um dia.
+/*
+ * A LISTA DE "ISTO É CONSULTA" SAIU DAQUI.
  *
- * "Quanto gastei no dia 18?" cita a data e é leitura — devolver um roteiro
- * seria responder outra pergunta. A lista é de intenção de CONSULTA, e ela
- * vence o gatilho de data.
+ * Ela vivia como `READ_INTENT_PATTERNS` e só era consultada para desligar o
+ * gatilho de DATA — "quanto gastei no dia 18" não virava roteiro, mas "liste
+ * meu roteiro do dia 18" virava, porque a palavra `roteiro` entrava por outro
+ * caminho (`FULL_DAY_PATTERNS`) que ninguém filtrava. Era o defeito relatado.
+ *
+ * Quem responde "isto é leitura?" agora é `./intent.ts`, uma vez só, para o
+ * pedido inteiro — e o resultado governa TODOS os gatilhos, inclusive o da
+ * palavra `roteiro`.
  */
-const READ_INTENT_PATTERNS = [
-  /\b(quanto|quantos|quantas|qual|quais|quando|cade|tem|teria)\b/,
-  /\b(gastei|gasto|gastos|gastou|custou|custa|paguei|sobrou|resta|restou|falta|faltam)\b/,
-  /\b(orcamento|saldo|extrato|despesa|despesas|checklist|lista de compras)\b/,
-  /\b(previsao|clima|tempo|temperatura|cambio|cotacao)\b/,
-  /\b(ja (tenho|esta|estao|adicionei|coloquei))\b/,
-  /\bo que (ja|eu ja)\b/,
-];
 
 /**
  * PEDIR UM DIÁRIO **A PARTIR DO** ROTEIRO NÃO É PEDIR UM ROTEIRO.
@@ -1566,53 +1660,106 @@ function lastAssistantTurn(history: readonly ChatTurn[]): string {
 }
 
 /**
- * O que este pedido espera de volta.
+ * A INTENÇÃO DESTE PEDIDO — a autoridade sobre gravação.
  *
- * Roda no servidor porque é o servidor que decide se vale gastar uma segunda
- * chamada ao Gemini para completar o roteiro. Não interpreta a resposta do
- * modelo — interpreta o PEDIDO, que é dado do usuário e nunca vira comando:
- * o resultado só liga ou desliga uma exigência de quantidade.
+ * `analyzeIntent` lê a última mensagem sozinha. Duas coisas ele não tem como
+ * ver, e as duas são resolvidas aqui, onde o histórico existe:
+ *
+ *   ACEITE  "pode ser" depois de "posso montar o roteiro do primeiro dia?" é
+ *           uma escrita, e a frase em si não tem verbo nenhum.
+ *
+ *   DATA NUA  "Tokyo dia 18 de setembro" não tem verbo tampouco, e é um pedido
+ *           de dia inteiro — decisão de produto que veio de um caso real no
+ *           aparelho. A promoção só acontece a partir de `ambiguous`: quem
+ *           escreveu "liste meu roteiro do dia 18" é leitura e continua sendo,
+ *           porque leitura nunca é promovida.
+ *
+ * `explicitReadOnly` não é promovido por nada. "Não crie nada, só me mostre o
+ * roteiro do dia 18" nomeia a data, e continua sendo consulta.
  */
-export function classifyItineraryRequest(
+export interface RequestIntent extends IntentAnalysis {
+  /** Isto é um "pode ser" respondendo a uma oferta concreta da mensagem anterior. */
+  acceptsPriorOffer: boolean;
+  /** A operação virou escrita por aceite ou por data nua, e não pelo texto. */
+  promoted: boolean;
+}
+
+export function classifyRequestIntent(
   prompt: string,
   history: readonly ChatTurn[] = [],
-): ItineraryRequest {
+): RequestIntent {
+  const analysis = analyzeIntent(prompt);
   const folded = fold(prompt);
   const previous = lastAssistantTurn(history);
 
   const acceptsPriorOffer =
     isAcceptance(prompt) && OFFER_PATTERNS.some((pattern) => pattern.test(previous));
 
+  const namedDate = DATE_ONLY_REQUEST.some((pattern) => pattern.test(folded));
+
+  const promoted =
+    analysis.operation === 'ambiguous' && !analysis.explicitReadOnly && (acceptsPriorOffer || namedDate);
+
+  const operation: AIIntentOperation = promoted ? 'write' : analysis.operation;
+
+  return {
+    ...analysis,
+    operation,
+    allowsMutation: operation === 'write',
+    acceptsPriorOffer,
+    promoted,
+  };
+}
+
+/**
+ * O que este pedido espera de volta.
+ *
+ * Roda no servidor porque é o servidor que decide se vale gastar uma segunda
+ * chamada ao Gemini para completar o roteiro. Não interpreta a resposta do
+ * modelo — interpreta o PEDIDO, que é dado do usuário e nunca vira comando:
+ * o resultado só liga ou desliga uma exigência de quantidade.
+ *
+ * ROTEIRO DE DIA INTEIRO É UMA EXIGÊNCIA DE ESCRITA (§16 do pedido).
+ *
+ * `expectsFullDay` liga o piso de 3 paradas, a segunda geração de reparo e a
+ * ressalva de "não consegui montar o dia". Nada disso faz sentido numa
+ * consulta: "liste meu roteiro completo de amanhã" pede o que existe, e o
+ * servidor gastava uma chamada paga tentando completar um dia que ninguém
+ * mandou completar. Por isso o gatilho inteiro passou a depender de
+ * `intent.allowsMutation` — a palavra `roteiro` deixou de bastar.
+ */
+export function classifyItineraryRequest(
+  prompt: string,
+  history: readonly ChatTurn[] = [],
+  intent: RequestIntent = classifyRequestIntent(prompt, history),
+): ItineraryRequest {
+  const folded = fold(prompt);
+  const previous = lastAssistantTurn(history);
+
   const singleItem = SINGLE_ITEM_PATTERNS.some((pattern) => pattern.test(folded));
   const partialPeriod = PARTIAL_PERIOD_PATTERNS.some((pattern) => pattern.test(folded));
 
-  // O aceite herda a intenção da oferta: quem respondeu "pode ser" a "posso
-  // montar para o primeiro dia?" pediu um roteiro, mesmo sem escrever a
-  // palavra. É o caso que voltava genérico no aparelho.
-  const readIntent = READ_INTENT_PATTERNS.some((pattern) => pattern.test(folded));
-
-  /*
-   * Nomear a data conta como pedido — salvo quando a frase é consulta.
-   * `readIntent` é o que separa "Tokyo dia 18 de setembro" de "quanto gastei
-   * no dia 18": os dois citam o dia, só um pede um roteiro.
-   */
-  const namedDate = !readIntent && DATE_ONLY_REQUEST.some((pattern) => pattern.test(folded));
-
+  const namedDate = DATE_ONLY_REQUEST.some((pattern) => pattern.test(folded));
   const askedNow = FULL_DAY_PATTERNS.some((pattern) => pattern.test(folded)) || namedDate;
-  const askedBefore = acceptsPriorOffer && FULL_DAY_PATTERNS.some((p) => p.test(previous));
+  const askedBefore =
+    intent.acceptsPriorOffer && FULL_DAY_PATTERNS.some((p) => p.test(previous));
 
   /*
-   * O pedido de diário vence o gatilho de roteiro, como `readIntent` vence o
-   * gatilho de data: os dois citam o roteiro, só um pede que ele seja montado.
+   * O pedido de diário vence o gatilho de roteiro: os dois citam o roteiro, só
+   * um pede que ele seja montado.
    */
   const journalRequest = JOURNAL_REQUEST_PATTERNS.some((pattern) => pattern.test(folded));
 
   return {
     expectsFullDay:
-      (askedNow || askedBefore) && !singleItem && !partialPeriod && !journalRequest,
+      intent.allowsMutation &&
+      (askedNow || askedBefore) &&
+      !singleItem &&
+      !partialPeriod &&
+      !journalRequest,
     singleItem,
     partialPeriod,
-    acceptsPriorOffer,
+    acceptsPriorOffer: intent.acceptsPriorOffer,
   };
 }
 

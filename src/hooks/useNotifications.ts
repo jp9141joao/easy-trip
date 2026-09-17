@@ -8,7 +8,11 @@ import { purgeTripMirrors } from '@/lib/fileMirror';
 import { useAuth } from '@/providers/AuthProvider';
 import { useTripSelection } from '@/providers/TripSelectionProvider';
 import { dataSource } from '@/repositories';
-import { isBackendCapabilityError } from '@/repositories/backendCapabilities';
+import {
+  isBackendAuthorizationError,
+  isBackendCapabilityError,
+  readBackendErrorCode,
+} from '@/repositories/backendCapabilities';
 import { queryKeys } from './queryKeys';
 
 /**
@@ -75,6 +79,68 @@ export function useNotificationMutations() {
 }
 
 /**
+ * POR QUE ESTA ENTREGA FALHA — e por que nem toda falha dela é um defeito.
+ *
+ * O sintoma no Android era `REMINDER_DELIVERY_FAILED {"kind":"Error"}`, uma
+ * linha que não conseguia nomear a própria causa: o erro do PostgREST chega
+ * como objeto simples, `throwBackendError` o trocava por um `new Error(...)`
+ * genérico, e o que sobrava para logar era o `name` desse Error. O diagnóstico
+ * foi restaurado em `backendCapabilities.ts`; aqui ele é usado.
+ *
+ * A entrega de lembretes é um esforço de melhor tentativa na abertura do
+ * aplicativo. Duas categorias de falha são ESPERADAS e não são defeito:
+ *
+ *   CAPACIDADE AUSENTE   a 0010 ainda não foi publicada neste servidor. Os
+ *                        lembretes simplesmente não são entregues, e a Central
+ *                        já explica isso na tela.
+ *
+ *   AUTORIZAÇÃO/SESSÃO   a chamada saiu sem JWT válido (token ainda não
+ *                        anexado na abertura, expirado, ou revogado). O
+ *                        Postgres responde 42501 — é a própria trava da função
+ *                        funcionando, não um erro de programação.
+ *
+ * Nenhuma das duas merece `console.warn`: em DEV isso abre o LogBox amarelo em
+ * cima do aplicativo a cada abertura, e um alarme que toca sempre deixa de ser
+ * alarme. Elas saem por `console.log`, no mesmo padrão de diagnóstico
+ * estruturado de `aiTrace` — visível para quem procura, silencioso para quem
+ * não está.
+ *
+ * Qualquer outra falha CONTINUA em `console.warn`. Nada é silenciado de forma
+ * ampla, e `LogBox.ignoreLogs` não é usado em lugar nenhum: esconder a
+ * categoria inteira apagaria justamente o caso que precisa ser visto.
+ *
+ * O que sai no log são só rótulos — categoria, código do PostgREST, nome da
+ * classe. Nunca payload, identificador de usuário, token ou conteúdo.
+ */
+export function reportReminderDeliveryFailure(error: unknown): void {
+  if (process.env.NODE_ENV === 'production') return;
+
+  if (isBackendCapabilityError(error)) {
+    console.log(
+      'REMINDER_DELIVERY_SKIPPED',
+      JSON.stringify({ reason: 'CAPABILITY_UNAVAILABLE', capability: error.code }),
+    );
+    return;
+  }
+
+  if (isBackendAuthorizationError(error)) {
+    console.log(
+      'REMINDER_DELIVERY_SKIPPED',
+      JSON.stringify({ reason: 'NOT_AUTHORIZED', backendCode: readBackendErrorCode(error) }),
+    );
+    return;
+  }
+
+  console.warn(
+    'REMINDER_DELIVERY_FAILED',
+    JSON.stringify({
+      kind: error instanceof Error ? error.name : 'unknown',
+      backendCode: readBackendErrorCode(error) ?? null,
+    }),
+  );
+}
+
+/**
  * Entrega os lembretes vencidos quando o aplicativo abre.
  *
  * ISTO NÃO É PUSH, e não finge ser (§33). Sem notificação do sistema
@@ -86,13 +152,33 @@ export function useNotificationMutations() {
  * que re-renderiza a cada navegação: sem ele, cada troca de tela dispararia uma
  * chamada — e a função no Postgres, apesar de idempotente, não precisa ser
  * chamada trinta vezes para não fazer nada.
+ *
+ * UMA TENTATIVA RECUSADA POR SESSÃO NÃO PODE VALER PELA VIAGEM INTEIRA.
+ *
+ * `deliver_due_reminders` roda como `security definer` e recusa com 42501
+ * quando `auth.uid()` é nulo — é a trava da própria função, e ela dispara se a
+ * chamada sair antes de o JWT estar anexado, ou com um token já expirado. Como
+ * a marca de tentativa era gravada ANTES da chamada e o efeito só dependia do
+ * `user.id`, um único instante ruim na abertura deixava os lembretes sem
+ * entrega até o aplicativo ser reiniciado.
+ *
+ * A correção tem duas metades, e as duas são necessárias:
+ *   - o efeito passou a observar também o token, que é o que muda quando a
+ *     sessão fica utilizável (`INITIAL_SESSION`, `TOKEN_REFRESHED`);
+ *   - uma recusa de autorização LIMPA a marca, para que a próxima sessão
+ *     válida possa tentar de novo.
+ *
+ * Isto não vira laço: um sucesso mantém a marca, e a RPC é idempotente pelo
+ * `sent_at` — uma segunda passagem no mesmo dia entrega zero e não duplica
+ * notificação nenhuma.
  */
 export function useReminderDelivery() {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const queryClient = useQueryClient();
   // Isto registra uma tentativa, não uma entrega. A entrega só é confirmada
   // pelo número devolvido pela RPC; uma rejeição nunca vira `0` nem sucesso.
   const attemptedFor = useRef<string | null>(null);
+  const accessToken = session?.accessToken;
 
   useEffect(() => {
     const userId = user?.id;
@@ -107,25 +193,23 @@ export function useReminderDelivery() {
         return queryClient.invalidateQueries({ queryKey: queryKeys.notifications(userId) });
       })
       // Falhar aqui não pode impedir o aplicativo de abrir. Também não pode
-      // fingir `0` entregas: a rejeição continua rejeição e fica observável em
-      // DEV com somente categoria/capability — nunca payload, usuário ou JWT.
-      // A Central também consulta `notifications` e mostra o capability error
-      // quando a própria 0010 está ausente.
+      // fingir `0` entregas: a rejeição continua rejeição, e o que ela vira em
+      // DEV é decidido por `reportReminderDeliveryFailure`.
       .catch((error: unknown) => {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn(
-            'REMINDER_DELIVERY_FAILED',
-            isBackendCapabilityError(error)
-              ? { capability: error.code }
-              : { kind: error instanceof Error ? error.name : 'unknown' },
-          );
+        // Recusa de autorização é a única que libera nova tentativa: ela
+        // costuma significar "ainda não" e não "nunca". Capacidade ausente e
+        // defeito real não melhoram com repetição, e repetir os dois só
+        // gastaria rede a cada renovação de token.
+        if (isBackendAuthorizationError(error) && attemptedFor.current === userId) {
+          attemptedFor.current = null;
         }
+        reportReminderDeliveryFailure(error);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [user?.id, queryClient]);
+  }, [user?.id, accessToken, queryClient]);
 }
 
 /**
@@ -189,9 +273,15 @@ export function useRevokedTripCleanup() {
    * Não entra nas dependências do efeito: se entrasse, trocar de viagem no meio
    * de uma verificação reiniciaria a verificação. E a decisão de limpar a
    * seleção precisa olhar o valor de AGORA, não o de quando o efeito montou.
+   *
+   * É atualizada num efeito sem dependências, e não durante o render: o render
+   * precisa ser puro, e a auditoria só termina de forma assíncrona, bem depois
+   * do commit — quando o efeito já gravou o valor confirmado.
    */
   const selection = useRef({ currentTripId, setCurrentTripId });
-  selection.current = { currentTripId, setCurrentTripId };
+  useEffect(() => {
+    selection.current = { currentTripId, setCurrentTripId };
+  });
 
   /**
    * Viagens cuja verificação já foi disparada nesta sessão.
@@ -209,12 +299,12 @@ export function useRevokedTripCleanup() {
    * O registro é por conta. A raiz do aplicativo não desmonta na troca de
    * usuário, e sem isto uma viagem já auditada para A seria pulada para B — que
    * pode ter sido removido da mesma viagem, por outro motivo, depois.
+   *
+   * A troca é detectada no início do efeito abaixo, que já depende de
+   * `user?.id` — e antes do retorno antecipado, para que `A → sem sessão → A`
+   * também comece do zero.
    */
   const auditedFor = useRef<string | null>(null);
-  if (auditedFor.current !== (user?.id ?? null)) {
-    auditedFor.current = user?.id ?? null;
-    audited.current = new Set<string>();
-  }
 
   const revokedTripIds = useMemo(
     () =>
@@ -228,6 +318,10 @@ export function useRevokedTripCleanup() {
 
   useEffect(() => {
     const userId = user?.id;
+    if (auditedFor.current !== (userId ?? null)) {
+      auditedFor.current = userId ?? null;
+      audited.current = new Set<string>();
+    }
     if (!userId || !revokedTripIds) return;
 
     const candidates = [...new Set(revokedTripIds.split(','))].filter(

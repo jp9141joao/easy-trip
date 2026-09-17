@@ -96,11 +96,35 @@ describe('modo Gemini', () => {
 });
 
 describe('modo local (demonstração)', () => {
-  it('propõe os essenciais que ainda faltam no checklist', async () => {
+  /*
+   * CONSULTAR NÃO É CRIAR — TAMBÉM NO MODO DEMONSTRAÇÃO.
+   *
+   * Estas duas asserções mudaram de propósito. "O que falta no meu checklist?"
+   * pedia a leitura de um checklist que já existe, e o modo local respondia com
+   * uma proposta de itens novos: `detectIntent` respondia ASSUNTO ("isto é
+   * sobre checklist") e o assunto era tratado como autorização. É a mesma
+   * confusão que o servidor tinha, e ela é corrigida nos dois lugares.
+   */
+  it('uma CONSULTA ao checklist não propõe item nenhum', async () => {
     const { aiService } = loadService(false);
 
     const reply = await aiService.send({
       prompt: 'O que falta no meu checklist?',
+      context: context(),
+      history: [],
+    });
+
+    expect(reply.local).toBe(true);
+    expect(reply.actions).toEqual([]);
+    // O texto da consulta continua sendo respondido — o que some é a proposta.
+    expect(reply.content).toMatch(/checklist/i);
+  });
+
+  it('propõe os essenciais que ainda faltam quando a pessoa PEDE que sejam criados', async () => {
+    const { aiService } = loadService(false);
+
+    const reply = await aiService.send({
+      prompt: 'Adicione ao meu checklist os itens essenciais que faltam.',
       context: context(),
       history: [],
     });
@@ -114,7 +138,7 @@ describe('modo local (demonstração)', () => {
     const { aiService } = loadService(false);
 
     const reply = await aiService.send({
-      prompt: 'O que falta no meu checklist?',
+      prompt: 'Adicione ao meu checklist os itens essenciais que faltam.',
       context: {
         ...context(),
         checklist: [

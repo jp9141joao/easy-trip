@@ -82,11 +82,20 @@ export default function AdminArticleFormScreen() {
       },
     });
 
+  // A imagem pendente pertence ao registro que estava na tela: quando outro
+  // registro chega (ou a query devolve uma versão nova), ela é descartada no
+  // próprio render. Só semear o formulário — que vive no `react-hook-form`,
+  // fora do estado do React — fica para o efeito.
+  const [seededFrom, setSeededFrom] = useState(existing);
+  if (existing && existing !== seededFrom) {
+    setSeededFrom(existing);
+    setPendingImage(undefined);
+  }
+
   // O artigo chega depois da primeira renderização (vem da query), então o
   // formulário é semeado quando ele aparece — e só então.
   useEffect(() => {
     if (!existing) return;
-    setPendingImage(undefined);
     reset({
       title: existing.title,
       category: existing.category,

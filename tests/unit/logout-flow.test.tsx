@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, waitFor, type RenderResult } from '@testing-library/react-native';
+import { useEffect } from 'react';
 import { Text, View } from 'react-native';
 import { SafeAreaProvider, type Metrics } from 'react-native-safe-area-context';
 
@@ -187,10 +188,14 @@ const authProbe = {
 function Probe() {
   const { currentTripId, setCurrentTripId, restoring } = useTripSelection();
   const { signIn } = useAuth();
-  probe.currentTripId = currentTripId;
-  probe.setCurrentTripId = setCurrentTripId;
-  probe.restoring = restoring;
-  authProbe.signIn = signIn;
+  // Publicado depois de cada commit, e não durante o render: o render precisa
+  // ser puro, e o que o teste lê é o estado já confirmado na árvore.
+  useEffect(() => {
+    probe.currentTripId = currentTripId;
+    probe.setCurrentTripId = setCurrentTripId;
+    probe.restoring = restoring;
+    authProbe.signIn = signIn;
+  });
   return null;
 }
 
