@@ -184,7 +184,7 @@ describe('IA acionável, do pedido ao registro', () => {
 
     const despesas = await db.expenses.listByTrip(paris.id);
     expect(despesas).toHaveLength(1);
-    expect(despesas[0].description).toBe('Passagem aérea');
+    expect(despesas[0].description).toBe('Estimativa — Passagem aérea');
     expect(despesas[0].amount).toBe(3200);
 
     // O orçamento restante sai dos seletores de sempre, sem nada específico da IA.
@@ -245,8 +245,8 @@ describe('IA acionável, do pedido ao registro', () => {
     // O que ficou desmarcado não entrou; o que era estimativa entrou rotulado.
     expect(despesas.map((expense) => expense.description).sort()).toEqual([
       'Estimativa — Ingresso',
+      'Estimativa — Passagem aérea',
       'Estimativa — Transporte',
-      'Passagem aérea',
     ]);
   });
 

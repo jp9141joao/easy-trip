@@ -308,6 +308,47 @@ describe('o aplicativo morre no meio de um envio', () => {
 });
 
 describe('sair da conta e trocar de conta', () => {
+  it.each([null, BENTO])('interrompe o envio quando a sessão muda para %s entre itens', async (nextUser) => {
+    const servidor = new Servidor();
+    servidor.online = true;
+    let activeUser: string | null = ALICE;
+    let fila = enqueue([], { id: 'q1', userId: ALICE, ...despesa() }, T0);
+    fila = enqueue(fila, { id: 'q2', userId: ALICE, ...despesa({ targetId: 'e2' }) }, T0);
+
+    const result = await drainQueue(servidor.source(), fila, ALICE, {
+      now: () => em(1),
+      canSync: () => activeUser === ALICE,
+      onProgress: async (q) => {
+        await gravar(ALICE, q);
+        if (servidor.criadas.length === 1) activeUser = nextUser;
+      },
+    });
+
+    expect(servidor.criadas.map((c) => c.id)).toEqual(['e1']);
+    expect(result.succeeded).toBe(1);
+    expect(await loadQueue(ALICE)).toEqual([fila[1]]);
+    expect(await loadQueue(BENTO)).toEqual([]);
+  });
+
+  it('reconfere a sessão após persistir syncing, antes da primeira escrita', async () => {
+    const servidor = new Servidor();
+    servidor.online = true;
+    let active = true;
+    const fila = enqueue([], { id: 'q1', userId: ALICE, ...despesa() }, T0);
+    const result = await drainQueue(servidor.source(), fila, ALICE, {
+      now: () => em(1),
+      canSync: () => active,
+      onProgress: async (q) => {
+        await gravar(ALICE, q);
+        active = false;
+      },
+    });
+
+    expect(servidor.criadas).toEqual([]);
+    expect(result.queue).toEqual(fila);
+    expect(await loadQueue(ALICE)).toEqual(fila);
+  });
+
   it('sair NÃO apaga o que ainda não subiu', async () => {
     // A escrita é da pessoa; sair do aplicativo não é desistir dela.
     await gravar(ALICE, enqueue([], { id: 'q1', userId: ALICE, ...despesa() }, T0));

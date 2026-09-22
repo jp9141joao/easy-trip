@@ -74,7 +74,7 @@ describe('parseAIActions — o que passa', () => {
     expect(action.items[0].currency).toBe('BRL');
   });
 
-  it('trata a despesa como estimativa quando o modelo não afirma o contrário', () => {
+  it('trata a despesa como estimativa mesmo quando o modelo afirma o contrário', () => {
     const [action] = parseAIActions(
       [
         {
@@ -95,9 +95,9 @@ describe('parseAIActions — o que passa', () => {
     );
 
     if (action.type !== 'expenses.add') throw new Error('tipo inesperado');
-    // Sem afirmação, é chute. Com afirmação explícita, é valor informado (§19).
+    // A afirmação do modelo não comprova a origem de um preço.
     expect(action.items[0].estimated).toBe(true);
-    expect(action.items[1].estimated).toBe(false);
+    expect(action.items[1].estimated).toBe(true);
   });
 
   it('aproveita os itens válidos e descarta só o item inválido', () => {
@@ -324,7 +324,7 @@ describe('datas e duplicatas', () => {
 });
 
 describe('estimativa na descrição', () => {
-  it('prefixa quando é estimativa e não prefixa quando é valor informado', () => {
+  it('preserva o rótulo de estimativa mesmo se a proposta revisada contém false', () => {
     expect(
       describeExpenseDescription({
         description: 'Alimentação',
@@ -345,7 +345,7 @@ describe('estimativa na descrição', () => {
         transactionDate: '2026-08-22',
         estimated: false,
       }),
-    ).toBe('Passagem aérea');
+    ).toBe('Estimativa — Passagem aérea');
   });
 
   it('não prefixa duas vezes', () => {

@@ -143,8 +143,8 @@ export interface AIExpenseProposalItem {
   currency: CurrencyCode;
   transactionDate: string;
   /**
-   * `true` = a IA chutou o valor; `false` = o usuário informou o valor na
-   * conversa ("minha passagem custou R$ 3.200").
+   * Toda despesa proposta pela IA é uma estimativa. O modelo não pode
+   * comprovar a origem de um valor enviando `estimated=false`.
    *
    * **Não é coluna do banco** — `expenses` não tem campo de estimativa, e
    * inventar um no TypeScript criaria um dado que não sobrevive ao INSERT
@@ -152,8 +152,7 @@ export interface AIExpenseProposalItem {
    * o converte em algo que o modelo atual comporta — o prefixo
    * `Estimativa — ` na descrição, que é texto de verdade e persiste.
    *
-   * O padrão é `true`: na dúvida, é estimativa. Chamar de fato um chute é o
-   * erro caro; chamar de estimativa um valor informado só custa um prefixo.
+   * O parser força `true`, inclusive para respostas de servidores antigos.
    */
   estimated: boolean;
 }
@@ -298,7 +297,7 @@ const expenseProposalItemSchema = z.object({
   amount: money(AI_ACTION_LIMITS.maxAmount),
   transactionDate: isoDate,
   currency: loose(enumOf(CURRENCIES)),
-  estimated: z.boolean().optional().default(true).catch(true),
+  estimated: z.boolean().optional().default(true).catch(true).transform(() => true),
 });
 
 /**
@@ -783,7 +782,6 @@ export function findChecklistDuplicate(
 export const ESTIMATE_PREFIX = 'Estimativa — ';
 
 export function describeExpenseDescription(item: AIExpenseProposalItem): string {
-  if (!item.estimated) return item.description;
   if (normalizeForCompare(item.description).startsWith(normalizeForCompare(ESTIMATE_PREFIX))) {
     return item.description;
   }

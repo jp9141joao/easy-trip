@@ -20,7 +20,7 @@
  * módulo, que só vê a última mensagem, não sabe. Descartar na dúvida aqui
  * apagaria a proposta certa depois de um "sim".
  *
- * `tests/unit/ai-intent-parity.test.ts` roda o mesmo corpus nos dois arquivos e
+ * `tests/unit/ai-intent.test.ts` roda o mesmo corpus nos dois arquivos e
  * reprova se a leitura divergir.
  */
 

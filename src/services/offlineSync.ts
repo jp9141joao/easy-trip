@@ -112,6 +112,8 @@ export async function drainQueue(
   options: {
     now?: () => string;
     onProgress?: (queue: OfflineQueue) => void | Promise<void>;
+    /** Guarda da sessão ativa; deve ser reavaliada após cada espera. */
+    canSync?: () => boolean;
   } = {},
 ): Promise<DrainResult> {
   const agora = options.now ?? (() => new Date().toISOString());
@@ -126,6 +128,7 @@ export async function drainQueue(
   const pendentes = drainableFor(atual, userId, agora());
 
   for (const item of pendentes) {
+    if (options.canSync && !options.canSync()) break;
     const executor = EXECUTORS[`${item.entity}:${item.operation}`];
     if (!executor) {
       // Entidade ou operação que este aplicativo não conhece — uma fila gravada
@@ -141,8 +144,17 @@ export async function drainQueue(
       continue;
     }
 
+    const antesDoEnvio = atual;
     atual = markSyncing(atual, item.id, agora());
     await options.onProgress?.(atual);
+
+    // A conta pode mudar enquanto o estado é gravado em disco. Não iniciar
+    // uma requisição com a identidade nova; preservar a pendência da antiga.
+    if (options.canSync && !options.canSync()) {
+      atual = antesDoEnvio;
+      await options.onProgress?.(atual);
+      break;
+    }
 
     try {
       await executor(source, item);

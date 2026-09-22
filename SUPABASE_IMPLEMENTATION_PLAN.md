@@ -1,5 +1,9 @@
 # Easy Trip — Plano de Implementação do Supabase
 
+> **Documento histórico das fases de agosto de 2026.** Versões, contagens e
+> pendências registram a evolução naquelas datas. Não substituem os 74 RF/70 RNF
+> do recorte formal do TCC nem o [relatório atual de alinhamento](docs/RELATORIO_ALINHAMENTO_CODIGO_TCC_FINAL.md).
+
 > Documento de auditoria. Nenhum arquivo do aplicativo foi alterado para produzi-lo.
 > Gerado a partir da leitura de 23.679 linhas em `src/`, das 3 migrations, das 3
 > Edge Functions e dos 26 arquivos de teste.

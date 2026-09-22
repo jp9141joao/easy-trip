@@ -38,7 +38,6 @@ import { AuroraBackground } from '@/components/ui/Surface';
 import { DockAwareColumn, useDockMetrics } from '@/components/navigation/DockMetrics';
 import { DOCK_CLEARANCE } from '@/constants/layout';
 import { useKeyboardVisible } from '@/hooks/useKeyboard';
-import { buildReviewGroups, reviewToActions } from '@/domain/aiActionReview';
 import { isApplyConfirmation, type AITripAction } from '@/domain/aiActions';
 import { consultationSchema, type ConsultationInput } from '@/domain/schemas';
 import type { Advisor } from '@/domain/types';
@@ -453,30 +452,10 @@ function AITab() {
     }
   };
 
-  /**
-   * "Implementar" abre a revisão ou aplica direto?
-   *
-   * Abre quando há mais de um bloco (um plano composto — §9 pede confirmação
-   * explícita para escolher o que entra) ou quando algum item veio marcado como
-   * possível duplicata ou fora do período da viagem. Nos dois casos existe uma
-   * decisão real a tomar, e tomá-la por conta própria seria gravar em silêncio.
-   *
-   * Aplica direto quando a proposta é um bloco só, limpo: o caso do "monte meu
-   * roteiro de amanhã" que volta com quatro itens dentro das datas certas. Aí a
-   * revisão seria uma confirmação sem conteúdo — e "Revisar" continua ao lado
-   * para quem quiser ajustar antes.
-   */
+  /** Toda proposta passa pela revisão visual antes da confirmação de escrita. */
   const implement = (messageId: string, actions: AITripAction[]) => {
     if (!trip) return;
-    const groups = buildReviewGroups(actions, { trip, itinerary, checklist });
-    const needsDecision =
-      actions.length > 1 || groups.some((group) => group.items.some((item) => item.warnings.length > 0));
-
-    if (needsDecision) {
-      setReview({ messageId, actions });
-      return;
-    }
-    void applyActions(messageId, reviewToActions(groups));
+    setReview({ messageId, actions });
   };
 
   const undoResult = async () => {

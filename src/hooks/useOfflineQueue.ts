@@ -15,7 +15,7 @@ import { createId } from '@/lib/id';
 import { clearQueue, loadQueue, saveQueue } from '@/lib/offlineQueue';
 import { useAuth } from '@/providers/AuthProvider';
 import { useConnectivity } from '@/providers/ConnectivityProvider';
-import { dataSource } from '@/repositories';
+import { authAdapter, dataSource } from '@/repositories';
 import { drainQueue } from '@/services/offlineSync';
 import { queryKeys } from './queryKeys';
 
@@ -71,22 +71,31 @@ export function useOfflineQueue() {
    * mesma mutação duas vezes, e um re-render entre a checagem e a marcação
    * abriria exatamente essa janela se o guarda fosse estado.
    */
-  const draining = useRef(false);
+  const draining = useRef(new Set<string>());
 
   const drain = useCallback(async () => {
-    if (!userId || draining.current) return;
-    draining.current = true;
+    if (!userId || draining.current.has(userId)) return;
+    draining.current.add(userId);
+    let sameSession = true;
+    const unsubscribe = authAdapter.onAuthStateChange((session) => {
+      // Uma drenagem cancelada não revive se a conta entrar novamente.
+      if (session?.user.id !== userId) sameSession = false;
+    });
     try {
+      const session = await authAdapter.restore();
+      if (!sameSession || session?.user.id !== userId) return;
       const atual = await loadQueue(userId);
-      if (atual.length === 0) return;
+      if (!sameSession || atual.length === 0) return;
 
       const resultado = await drainQueue(dataSource, atual, userId, {
         // Gravar a cada passo é o que dá durabilidade: um encerramento abrupto
         // no meio perde no máximo o resultado do item em curso, que será
         // reenviado e reconhecido como repetição.
         onProgress: (parcial) => saveQueue(userId, parcial),
+        canSync: () => sameSession,
       });
 
+      if (!sameSession) return;
       queryClient.setQueryData(QUEUE_KEY(userId), resultado.queue);
 
       // O que subiu mudou o servidor; as telas precisam reler. Só quando algo
@@ -96,7 +105,8 @@ export function useOfflineQueue() {
         await queryClient.invalidateQueries();
       }
     } finally {
-      draining.current = false;
+      unsubscribe();
+      draining.current.delete(userId);
     }
   }, [queryClient, userId]);
 

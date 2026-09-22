@@ -218,10 +218,15 @@ console.log('\n== §5-G / §47 arquivo de OUTRO usuário ==');
   check((await upload(B, 'attachments', pB, PDF, 'application/pdf')) === 200, '24: B sobe o próprio documento');
   check(await objectExists('attachments', pB), '25: o documento de B existe (senão o resto seria vácuo)');
 
-  // A grava na PRÓPRIA linha um caminho que é de B. A RLS deixa A apagar a
-  // linha dele; o que não pode é isso virar "apagar o arquivo de B".
-  const tk = (await rest(A, 'tickets', { method: 'POST', prefer: 'return=representation', body: {
-    trip_id: tripA.id, user_id: A.id, type: 'other', title: 'forjado', file_path: pB } })).body[0];
+  const forged = await rest(A, 'tickets', { method: 'POST', body: {
+    trip_id: tripA.id, user_id: A.id, type: 'other', title: 'forjado', file_path: pB } });
+  check(forged.status === 403 && forged.body?.code === '42501',
+    '25b: o banco recusa uma nova referência a arquivo de outro usuário');
+
+  // Simula dado legado anterior à 0018, com privilégio apenas na preparação.
+  // A defesa de exclusão continua necessária para essas referências antigas.
+  const tk = (await rest({ token: SERVICE }, 'tickets', { method: 'POST', prefer: 'return=representation', body: {
+    trip_id: tripA.id, user_id: A.id, created_by: A.id, type: 'other', title: 'forjado', file_path: pB } })).body[0];
 
   const r = await deleteWithFiles(A, 'attachments', [pB], 'tickets', tk.id);
   check(!r.ok, `26: a exclusão é interrompida (${r.motivo})`);
@@ -242,8 +247,8 @@ console.log('\n== §5-B falha parcial: o objeto não pode sair sem a linha ==');
   // Um caminho que A não consegue remover (é de B) preso a uma linha de A.
   const pB = `${B.id}/${tripB.id}/preso.pdf`;
   await upload(B, 'attachments', pB, PDF, 'application/pdf');
-  const tk = (await rest(A, 'tickets', { method: 'POST', prefer: 'return=representation', body: {
-    trip_id: tripA.id, user_id: A.id, type: 'other', title: 'preso', file_path: pB } })).body[0];
+  const tk = (await rest({ token: SERVICE }, 'tickets', { method: 'POST', prefer: 'return=representation', body: {
+    trip_id: tripA.id, user_id: A.id, created_by: A.id, type: 'other', title: 'preso', file_path: pB } })).body[0];
 
   const r = await deleteWithFiles(A, 'attachments', [pB], 'tickets', tk.id);
   check(!r.ok && (await rowExists('tickets', tk.id)),

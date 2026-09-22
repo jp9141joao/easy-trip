@@ -9,8 +9,8 @@
  *   1. **um toque de cada vez**: enquanto uma proposta está sendo aplicada,
  *      nenhuma outra começa, e a mesma não recomeça (§10, §32);
  *   2. **offline não finge**: sem rede a gravação nem é tentada, e a proposta
- *      continua na tela para ser aplicada depois. O projeto decidiu não ter
- *      fila offline de mutações — então o honesto é dizer que não deu (§32);
+ *      continua na tela para ser aplicada depois. Propostas da IA não entram
+ *      na fila offline dos cinco domínios operacionais (§32);
  *   3. **as telas reagem**: roteiro, checklist, gastos, orçamento e metas são
  *      invalidados depois da gravação, então abrir a aba Roteiro logo em
  *      seguida mostra os itens novos, não o cache anterior.

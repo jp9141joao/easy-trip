@@ -1,5 +1,12 @@
 # Go-live do Supabase remoto — runbook
 
+> **Snapshot histórico (fase F10, agosto de 2026).** As contagens, segredos
+> pendentes e Functions não publicadas abaixo descrevem aquela fase, não o
+> ambiente atual. Em 21/09/2026 o remoto tinha `0001`–`0012` e quatro Functions
+> publicadas; o repositório contém `0001`–`0018` e seis Functions. Consulte o
+> [relatório atual](docs/RELATORIO_ALINHAMENTO_CODIGO_TCC_FINAL.md) antes de
+> planejar uma publicação. Este roteiro não cobre sozinho o schema atual.
+
 Este arquivo é para ser **executado depois** da F10, com atenção e uma etapa por
 vez. Nada aqui foi executado durante a auditoria: o projeto remoto continua
 exatamente como estava.

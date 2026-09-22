@@ -207,7 +207,7 @@ describe('C. checklist e despesas', () => {
     expect(parsed[0].type === 'checklist.add' && parsed[0].items[0].category).toBe('mala');
   });
 
-  it('valor informado pela pessoa vira estimated=false', () => {
+  it('o modelo não pode declarar como comprovado um valor proposto', () => {
     const raw = JSON.stringify({
       content: 'Registrei o valor que você informou como proposta.',
       actions: [
@@ -228,8 +228,10 @@ describe('C. checklist e despesas', () => {
       ],
     });
 
-    const parsed = parseAIActions(readModelOutput(raw).actions, paris);
-    expect(parsed[0].type === 'expenses.add' && parsed[0].items[0].estimated).toBe(false);
+    const output = readModelOutput(raw);
+    expect(output.actions[0]).toMatchObject({ items: [{ estimated: true }] });
+    const parsed = parseAIActions(output.actions, paris);
+    expect(parsed[0].type === 'expenses.add' && parsed[0].items[0].estimated).toBe(true);
   });
 
   it('sem afirmação explícita, a despesa é estimativa', () => {

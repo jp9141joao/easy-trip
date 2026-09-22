@@ -15,18 +15,29 @@ source "$(dirname "${BASH_SOURCE[0]}")/e2e-env.sh"
 
 ONLY="${1:-}"
 REPORT="${E2E_REPORT:-$E2E_ROOT/.e2e-report.txt}"
-: > "$REPORT"
+: > "$REPORT" || exit 1
 
 cleanup() {
+  local rc=$?
+  trap - EXIT
   if [ "${E2E_KEEP:-0}" != "1" ]; then
-    "$E2E_ROOT/scripts/e2e/e2e-stop.sh" >/dev/null 2>&1 || true
+    if ! "$E2E_ROOT/scripts/e2e/e2e-stop.sh"; then
+      echo "✗ falha ao remover a pilha de teste" >&2
+      rc=1
+    fi
   else
     echo "→ E2E_KEEP=1: a pilha continua de pé em $E2E_API_URL"
   fi
+  exit "$rc"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-"$E2E_ROOT/scripts/e2e/e2e-start.sh"
+if ! "$E2E_ROOT/scripts/e2e/e2e-start.sh" 2>&1 | tee -a "$REPORT"; then
+  echo "✗ pilha indisponível; testes não executados" | tee -a "$REPORT"
+  exit 1
+fi
 e2e_export_keys || { echo "✗ chaves indisponíveis"; exit 1; }
 e2e_assert_local
 
@@ -59,7 +70,7 @@ for f in "$E2E_ROOT"/supabase/tests/*_e2e.mjs; do
     printf '  %-24s → NÃO EXECUTADA (ambiente)\n' "$name"
     NAO_EXECUTADAS+=("$name")
     FAILED=1
-  elif [ $rc -eq 0 ]; then
+  elif [ $rc -eq 0 ] && [ "$bad" -eq 0 ] && [ "$ok" -gt 0 ]; then
     printf '  %-24s → %3d ok, %3d falhas, %2ds\n' "$name" "$ok" "$bad" "$elapsed"
     EXECUTADAS+=("$name:$ok:$bad")
   else
@@ -68,6 +79,11 @@ for f in "$E2E_ROOT"/supabase/tests/*_e2e.mjs; do
     FAILED=1
   fi
 done
+
+if [ ${#EXECUTADAS[@]} -eq 0 ]; then
+  echo "✗ nenhuma suíte executada"
+  FAILED=1
+fi
 
 echo
 TOTAL_OK=0; TOTAL_BAD=0

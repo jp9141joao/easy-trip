@@ -66,9 +66,9 @@ Expo Go já embarca.
 
 ## Modos de operação
 
-O app funciona **completo nos dois modos**. A diferença está em *onde* os dados
-ficam — e a interface diz isso com todas as letras, nunca finge sincronização
-que não aconteceu.
+O app oferece uma fonte local para demonstração e uma fonte Supabase para
+operação conectada. Colaboração entre contas, Gemini e serviços agendados
+dependem do backend; a interface identifica as limitações do modo local.
 
 ### Modo demonstração (padrão, sem configuração)
 
@@ -127,14 +127,21 @@ Há um teste de segurança que verifica isso — veja [Testes](#testes).
 
 ## Backend (Supabase)
 
-> Para o **primeiro deploy num projeto hospedado**, siga
-> [`GO_LIVE_SUPABASE.md`](./GO_LIVE_SUPABASE.md): ele traz a ordem exata, as
-> verificações entre etapas e o que nunca deve ser executado no remoto.
+O repositório contém 18 migrations (`0001`–`0018`) e seis Edge Functions.
+As 17 primeiras correspondem ao conjunto medido no TCC; a `0018` acrescenta
+proteção contra referências forjadas a arquivos privados, encontrada na auditoria.
+Na consulta somente leitura de 21/09/2026, o remoto estava na `0012`, com
+quatro Functions publicadas. Isso confirma o snapshot remoto do TCC e não
+significa que todos os recursos locais estejam publicados. Veja o
+[relatório de alinhamento](docs/RELATORIO_ALINHAMENTO_CODIGO_TCC_FINAL.md).
+
+[`GO_LIVE_SUPABASE.md`](./GO_LIVE_SUPABASE.md) preserva o runbook histórico
+do primeiro deploy, limitado às migrations `0001`–`0007`. Para validação
+atual, os comandos abaixo usam ambientes locais descartáveis.
 
 ```bash
-# 1. Schema, políticas e buckets
-psql "$DATABASE_URL" -f supabase/migrations/0001_schema.sql
-psql "$DATABASE_URL" -f supabase/migrations/0002_rls.sql
+# 1. Aplicar todas as migrations e testar instalação limpa/upgrade local
+bash scripts/sql-test.sh
 
 # 2. Conteúdo editorial (gerado a partir de src/data/catalog.ts)
 npm run seed:generate         # regenera os dois seeds — sem rede
@@ -142,20 +149,14 @@ npm run seed:generate         # regenera os dois seeds — sem rede
 #                                   e ofertas com preço de exemplo). Só local.
 #   supabase/seed.production.sql  → PRODUÇÃO (artigos + lugares, sem dado
 #                                   inventado apresentável como real).
-psql "$DATABASE_URL" -f supabase/seed.sql            # ambiente LOCAL
-# psql "$SUPABASE_DB_URL" -f supabase/seed.production.sql   # ambiente REAL
 
 # 2b. Imagens editoriais (etapa separada: o seed do banco não baixa nada)
 #     Lê assets/content/ e envia para o bucket `content`. Só contra o Supabase
 #     local; falha listando os arquivos que faltarem.
 node scripts/seed-content-assets.mjs
 
-# 3. BFF
-supabase secrets set GEMINI_API_KEY=...
-supabase secrets set TRIP_DAILY_BRIEFING_CRON_SECRET=...
-supabase functions deploy ai-chat
-supabase functions deploy delete-account
-supabase functions deploy trip-daily-briefing
+# 3. Pilha local dedicada, incluindo Auth, Storage e Edge Functions
+bash scripts/e2e/e2e-run.sh
 ```
 
 Pontos importantes do schema:
@@ -165,7 +166,8 @@ Pontos importantes do schema:
   têm como divergir dos registros;
 - todo registro operacional carrega `trip_id` e cai junto com a viagem
   (`on delete cascade`);
-- buckets são **privados**; o app recebe URLs assinadas de curta duração;
+- avatars, anexos, diário e capas usam buckets **privados** e URLs assinadas;
+  somente `content`, de imagens editoriais, é público;
 - a autorização vem de `auth.uid()` no RLS — o `user_id` enviado pelo cliente
   nunca é usado para autorizar.
 
@@ -179,7 +181,7 @@ ela cumpre:
 | Recurso | Fonte | Chave? |
 | --- | --- | --- |
 | Clima | Open-Meteo | não |
-| Câmbio | Frankfurter (BCE) | não |
+| Câmbio | Frankfurter (BCE), com fallback ExchangeRate-API | não |
 | Geocodificação do destino | Open-Meteo Geocoding | não |
 | Fuso horário | `Intl.DateTimeFormat` (IANA) | — |
 | Mapa | `react-native-maps` | não |
@@ -267,12 +269,22 @@ Estado separado em três níveis (§11):
 ## Testes
 
 ```bash
-npm test          # 73 testes
-npm run typecheck # TypeScript strict
-npm run lint      # ESLint
+npm test -- --runInBand
+npm run typecheck
+npm run check:functions
+npm run lint
+bash scripts/sql-test.sh
+bash scripts/e2e/e2e-run.sh
+EVAL_STUB_EXPO=1 AI_EVAL_LIVE=0 node --experimental-strip-types --import ./scripts/alias-loader.mjs scripts/ai-eval/run.mjs
+npx expo-doctor
 ```
 
-Cobertura atual:
+Resultados de cada execução pertencem ao seu snapshot; as contagens atuais e
+os códigos de saída constam do [relatório](docs/RELATORIO_ALINHAMENTO_CODIGO_TCC_FINAL.md).
+SQL e E2E exigem Docker e criam ambientes descartáveis. A avaliação offline
+substitui apenas o gerador nativo de IDs e não chama o Gemini.
+
+Escopo dos testes:
 
 - **unitários** — status da viagem, contagem regressiva, soma de despesas,
   orçamento restante, estouro de orçamento, progresso de checklist e metas,
@@ -324,19 +336,18 @@ Isso é limitação do ambiente de desenvolvimento, não do produto instalado.
 
 ## Documentação de Engenharia de Software
 
-A modelagem da versão avaliada — casos de uso, requisitos e rastreabilidade —
-está versionada em [`docs/modelagem/`](docs/modelagem/README.md). É
-documentação **retrospectiva**: os requisitos foram recuperados a partir do
-sistema implementado, não elicitados com usuários antes dele.
+O TCC oficial avaliou **74 RF e 70 RNF** no recorte de **2/9/2026**.
+A recuperação dos requisitos foi retrospectiva, sem elicitação ou avaliação
+com usuários. A revalidação posterior e as execuções atuais são rodadas distintas.
+A Figura 2 preserva Expo 54/RN 0.81 históricos; o stack atual usa Expo 57/RN 0.86.
 
-| Documento | O que traz |
-|---|---|
-| [Índice da modelagem](docs/modelagem/README.md) | Natureza da documentação, fonte de verdade, formatos e divergências conhecidas |
-| [Casos de uso](docs/modelagem/CASOS_DE_USO.md) | 41 casos (UC01–UC41) com fluxos, atores, papéis e evidência no repositório |
-| [Requisitos funcionais](docs/modelagem/REQUISITOS_FUNCIONAIS.md) | 105 requisitos (RF01–RF105) com evidência e estado |
-| [Requisitos não funcionais](docs/modelagem/REQUISITOS_NAO_FUNCIONAIS.md) | 62 requisitos (RNF01–RNF62) pela ISO/IEC 25010, com força da evidência |
-| [Matriz de rastreabilidade](docs/modelagem/MATRIZ_RASTREABILIDADE.md) | RF → caso de uso → rota → código → persistência → teste |
-| [Diagramas](docs/modelagem/diagramas/) | Casos de uso (PlantUML), DER simplificado e completo (Mermaid), arquitetura (Mermaid), fluxo da IA (PlantUML) |
+Os artefatos anteriormente citados em `docs/modelagem/` não foram encontrados
+no workspace nem no histórico Git disponível. Portanto as antigas contagens
+105 RF, 62 RNF e 41 casos de uso não são apresentadas como inventário comprovado.
+Isso não altera funcionalidades nem substitui o recorte acadêmico.
+
+A evidência disponível está nos contratos em `src/repositories/types.ts`, nas
+migrations, nos testes e no [relatório de alinhamento](docs/RELATORIO_ALINHAMENTO_CODIGO_TCC_FINAL.md).
 
 ---
 
@@ -344,8 +355,9 @@ sistema implementado, não elicitados com usuários antes dele.
 
 | Documento | O que registra |
 |---|---|
-| [`GO_LIVE_SUPABASE.md`](GO_LIVE_SUPABASE.md) | Runbook do primeiro deploy remoto |
-| [`docs/PUBLICACAO_CONJUNTA_0017.md`](docs/PUBLICACAO_CONJUNTA_0017.md) | Ordem obrigatória de publicação da migration 0017 e da Function `trip-suggestions` |
+| [`GO_LIVE_SUPABASE.md`](GO_LIVE_SUPABASE.md) | Runbook histórico do primeiro deploy remoto |
+| [`0017_suggestion_generation_lease.sql`](supabase/migrations/0017_suggestion_generation_lease.sql) | Contrato de reserva atômica: aplicar a migration antes de publicar `trip-suggestions` |
+| [Alinhamento código × TCC](docs/RELATORIO_ALINHAMENTO_CODIGO_TCC_FINAL.md) | Auditoria atual, evidência remota somente leitura e resultados executados |
 | [`SECURITY_MASVS_ASSESSMENT.md`](SECURITY_MASVS_ASSESSMENT.md) | Avaliação interna orientada pelo OWASP MASVS 2.1.0 |
 | [`AI_QUALITY_EVALUATION.md`](AI_QUALITY_EVALUATION.md) | Avaliação das defesas da IA e rubrica para avaliação humana futura |
 | [`USER_EVALUATION_PROTOCOL.md`](USER_EVALUATION_PROTOCOL.md) | Protocolo de avaliação com usuários — preparado, não executado |

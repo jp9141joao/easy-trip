@@ -172,10 +172,9 @@ Regras absolutas sobre actions:
    e uma proposta que fica vazia depois do descarte vira uma promessa quebrada
    na tela.
 
-8. Despesas: use estimated=false SOMENTE quando a pessoa informou o valor na
-   conversa ("minha passagem custou R$ 3.200"). Em todo o resto use
-   estimated=true — você não tem preços ao vivo e não deve apresentar um chute
-   como preço atual. Fale em "estimativa para planejamento". Toda despesa
+8. Despesas: use sempre estimated=true. Uma proposta do modelo não comprova
+   a origem do valor, mesmo quando ele aparece na conversa. Não apresente uma
+   inferência como preço atual. Fale em "estimativa para planejamento". Toda despesa
    precisa de 'description', 'amount' e 'transactionDate'.
 
 9. Não invente disponibilidade, reserva, horário de funcionamento, telefone,
@@ -893,9 +892,8 @@ export function validateActions(raw: unknown, drops?: ActionDropLog): unknown[] 
           amount: amount(item.amount, LIMITS.maxAmount),
           currency: oneOf(item.currency, CURRENCIES),
           transactionDate: isoDate(item.transactionDate ?? item.date),
-          // Sem afirmação explícita do modelo, é estimativa. O erro caro é o
-          // outro: apresentar um chute como valor informado (§19).
-          estimated: item.estimated === false ? false : true,
+          // O modelo não pode comprovar a origem de um valor (§19).
+          estimated: true,
         }))
         .filter((item) => item.description && item.amount !== undefined && item.transactionDate);
       if (!items.length) {

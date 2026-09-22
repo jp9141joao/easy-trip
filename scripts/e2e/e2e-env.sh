@@ -21,7 +21,12 @@
 
 E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 E2E_PROJECT="easy-trip-e2e"
-E2E_WORKDIR="${E2E_WORKDIR:-$E2E_ROOT/.e2e}"
+# Este diretório é apagado: nunca aceite um caminho externo ou um symlink.
+if [ "${E2E_WORKDIR:-$E2E_ROOT/.e2e}" != "$E2E_ROOT/.e2e" ] || [ -L "$E2E_ROOT/.e2e" ]; then
+  echo "✗ E2E_WORKDIR deve ser $E2E_ROOT/.e2e e não pode ser um symlink" >&2
+  exit 2
+fi
+E2E_WORKDIR="$E2E_ROOT/.e2e"
 
 # Deslocamento de porta: o stack padrão ocupa 54320–54329.
 E2E_API_PORT=54421
@@ -34,17 +39,44 @@ E2E_ANALYTICS_PORT=54427
 
 E2E_API_URL="http://127.0.0.1:${E2E_API_PORT}"
 
-supa() { npx --no-install supabase --workdir "$E2E_WORKDIR" "$@"; }
+supa() (
+  # Configurações/chaves herdadas do terminal não podem redirecionar a pilha.
+  for name in ${!SUPABASE_@}; do unset "$name"; done
+  cd "$E2E_WORKDIR"
+  "$E2E_ROOT/node_modules/.bin/supabase" --workdir "$E2E_WORKDIR" "$@"
+)
+
+e2e_assert_docker_local() {
+  local endpoint
+  endpoint="${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}" || return 1
+  case "$endpoint" in
+    unix://*) ;;
+    *) echo "✗ E2E exige Docker local via socket Unix" >&2; return 2 ;;
+  esac
+  # DOCKER_CONTEXT tem precedência sobre DOCKER_HOST.
+  if [ -n "${DOCKER_CONTEXT:-}" ]; then
+    endpoint="$(docker context inspect "$DOCKER_CONTEXT" --format '{{.Endpoints.docker.Host}}')" || return 1
+    [[ "$endpoint" == unix://* ]] || return 2
+  fi
+  docker info >/dev/null
+}
+
+e2e_remove_workdir() {
+  if [ -d "$E2E_WORKDIR" ]; then
+    rm -rf "$E2E_WORKDIR" 2>/dev/null || \
+      docker run --rm --network none --entrypoint /bin/sh \
+        -v "$E2E_WORKDIR:/cleanup" public.ecr.aws/supabase/postgres:17.6.1.155 \
+        -c 'find /cleanup -mindepth 1 -delete'
+    rmdir "$E2E_WORKDIR" 2>/dev/null || [ ! -e "$E2E_WORKDIR" ]
+  fi
+}
 
 # Monta o diretório de trabalho da pilha de teste a partir do repositório.
 e2e_materialize() {
   # O CLI grava segredos em `.temp/` como root (via contêiner), e um `rm -rf`
   # daqui esbarra em "permission denied" na segunda execução. Quem apaga é um
   # contêiner descartável, que roda como root e alcança o que criamos.
-  if [ -d "$E2E_WORKDIR" ]; then
-    rm -rf "$E2E_WORKDIR" 2>/dev/null || \
-      docker run --rm -v "$E2E_ROOT:/host" alpine rm -rf "/host/$(basename "$E2E_WORKDIR")" >/dev/null 2>&1
-  fi
+  e2e_remove_workdir
   mkdir -p "$E2E_WORKDIR/supabase"
   cp -r "$E2E_ROOT/supabase/migrations" "$E2E_WORKDIR/supabase/migrations"
   cp -r "$E2E_ROOT/supabase/functions"  "$E2E_WORKDIR/supabase/functions"
@@ -74,7 +106,8 @@ ENV
 import re, sys
 p = sys.argv[1]
 s = open(p).read()
-s = s.replace('project_id = "easy-trip"', 'project_id = "$E2E_PROJECT"')
+s, count = re.subn(r'^project_id = .*$', 'project_id = "$E2E_PROJECT"', s, flags=re.M)
+assert count == 1, 'project_id ausente ou ambíguo'
 for old, new in [
     ("54321", "$E2E_API_PORT"), ("54322", "$E2E_DB_PORT"),
     ("54320", "$E2E_SHADOW_PORT"), ("54323", "$E2E_STUDIO_PORT"),
@@ -84,18 +117,32 @@ for old, new in [
     s = re.sub(r'(?<![0-9])%s(?![0-9])' % old, new, s)
 # A semente do repositório é trocada pela mínima de teste.
 s = re.sub(r'^sql_paths = .*$', 'sql_paths = ["./seed.e2e.sql"]', s, flags=re.M)
+# Apenas infraestrutura de teste; não modifica a configuração do repositório.
+for section in ['analytics', 'studio', 'realtime', 'local_smtp', 'db.pooler']:
+    s = re.sub(r'(\[' + re.escape(section) + r'\]\s*\n)(.*?)(?=^\[|\Z)',
+               lambda m: m[1] + re.sub(r'^enabled = true$', 'enabled = false', m[2], flags=re.M),
+               s, flags=re.M | re.S)
 open(p, "w").write(s)
 PY
 }
 
 # Exporta as chaves da pilha de teste para o ambiente.
 e2e_export_keys() {
-  local status
-  status="$(supa status -o env 2>/dev/null)" || return 1
-  eval "$status"
+  local status keys
+  status="$(supa status -o json)" || return 1
+  keys="$(printf '%s' "$status" | node -e '
+    let input = "";
+    process.stdin.on("data", chunk => input += chunk);
+    process.stdin.on("end", () => {
+      const status = JSON.parse(input);
+      if (status.API_URL !== process.argv[1] || !status.ANON_KEY || !status.SERVICE_ROLE_KEY) process.exit(2);
+      console.log(status.ANON_KEY);
+      console.log(status.SERVICE_ROLE_KEY);
+    });
+  ' "$E2E_API_URL")" || return 1
   export SUPABASE_API_URL="$E2E_API_URL"
-  export SUPABASE_ANON_KEY="${ANON_KEY:-}"
-  export SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY:-}"
+  export SUPABASE_ANON_KEY="${keys%%$'\n'*}"
+  export SUPABASE_SERVICE_ROLE_KEY="${keys#*$'\n'}"
   # O mesmo segredo que a pilha instalou na função, para o teste poder exercitar
   # o caminho autorizado além dos caminhos recusados.
   export TRIP_DAILY_BRIEFING_CRON_SECRET="e2e-cron-secret-nao-usar-em-producao"

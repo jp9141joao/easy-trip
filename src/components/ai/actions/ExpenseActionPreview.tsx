@@ -14,9 +14,8 @@ import { ActionRow } from './ActionRow';
  *
  * DUAS COISAS QUE ESTA TELA NÃO PODE ERRAR
  *
- * **Estimativa não vira fato.** Cada linha diz de onde o número veio: o que a
- * pessoa informou na conversa aparece como valor informado; o que a IA calculou
- * aparece com a etiqueta "Estimativa", e é assim que ele será gravado — a
+ * **Estimativa não vira fato.** Toda proposta aparece com a etiqueta
+ * "Estimativa", e é assim que ela será gravada — a
  * descrição vai para o banco prefixada, porque `expenses` não tem coluna para
  * isso e inventar uma no TypeScript criaria um campo que morre no INSERT (§19).
  *
@@ -53,7 +52,7 @@ export function ExpenseActionPreview({
     totals.set(item.value.currency, (totals.get(item.value.currency) ?? 0) + item.value.amount);
   }
 
-  const anyEstimated = selected.some((item) => item.value.estimated);
+  const anyEstimated = selected.length > 0;
   const foreignCurrency = selected.some((item) => item.value.currency !== trip.budgetCurrency);
 
   return (
@@ -73,8 +72,8 @@ export function ExpenseActionPreview({
         >
           <View style={{ flexDirection: 'row' }}>
             <Badge
-              label={item.value.estimated ? 'Estimativa da IA' : 'Valor informado por você'}
-              tone={item.value.estimated ? 'warning' : 'success'}
+              label="Estimativa da IA"
+              tone="warning"
             />
           </View>
 

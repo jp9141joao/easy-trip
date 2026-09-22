@@ -92,7 +92,9 @@ docker run -d --name "$CONTAINER" -e POSTGRES_PASSWORD=postgres "$IMAGE" \
   postgres -D /etc/postgresql -c "cron.database_name=$CRON_DB" >/dev/null
 ok=0
 for _ in $(seq 1 120); do
-  if docker exec "$CONTAINER" psql -U supabase_admin -d postgres -tAc 'select 1' >/dev/null 2>&1; then
+  # O servidor temporário de inicialização só atende pelo socket Unix.
+  # TCP evita medir o schema antes do reinício final da imagem.
+  if docker exec "$CONTAINER" psql -h 127.0.0.1 -U supabase_admin -d postgres -tAc 'select 1' >/dev/null 2>&1; then
     ok=$((ok + 1)); [ $ok -ge 3 ] && break
   else ok=0; fi
   sleep 1

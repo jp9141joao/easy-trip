@@ -205,6 +205,34 @@ describe('B. "pode aplicar" com proposta aberta', () => {
     state.actions = { 'msg-1': [roteiro] };
   });
 
+  it('Implementar exige revisão e confirmação mesmo para um único bloco sem avisos', async () => {
+    const view = await abrirAbaIA();
+    expect(mockRun).not.toHaveBeenCalled();
+
+    fireEvent.press(view.getByLabelText('Implementar'));
+    await act(async () => undefined);
+
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(view.getByText('Revisar antes de adicionar')).toBeTruthy();
+    expect(view.getByText('Museu do Louvre')).toBeTruthy();
+
+    fireEvent.press(view.getByLabelText(/Adicionar 3 itens/));
+    await act(async () => undefined);
+    expect(mockRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelar a revisão aberta por Implementar preserva a proposta sem gravar', async () => {
+    const view = await abrirAbaIA();
+    fireEvent.press(view.getByLabelText('Implementar'));
+    await act(async () => undefined);
+    fireEvent.press(view.getByLabelText('Cancelar'));
+    await act(async () => undefined);
+
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(view.queryByText('Revisar antes de adicionar')).toBeNull();
+    expect(view.getByLabelText('Implementar')).toBeTruthy();
+  });
+
   it('abre a revisão em vez de perguntar ao modelo de novo', async () => {
     const view = await abrirAbaIA();
 

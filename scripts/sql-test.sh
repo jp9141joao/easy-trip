@@ -43,7 +43,7 @@ docker run -d --name "$CONTAINER" -e POSTGRES_PASSWORD=postgres "$IMAGE" \
 # três respostas consecutivas antes de considerar o banco pronto.
 ok=0
 for _ in $(seq 1 120); do
-  if docker exec "$CONTAINER" psql -U postgres -d postgres -tAc 'select 1' >/dev/null 2>&1; then
+  if docker exec "$CONTAINER" psql -h 127.0.0.1 -U postgres -d postgres -tAc 'select 1' >/dev/null 2>&1; then
     ok=$((ok + 1)); [ $ok -ge 3 ] && break
   else
     ok=0
@@ -107,7 +107,7 @@ fi
 
 if [ "$ONLY" = all ]; then
   echo "→ suítes de RLS (banco novo por suíte, 0001–$LAST)"
-  for t in rls_articles rls_content rls_collaboration ownership_transfer push_tokens trip_cover_and_daily_goal suggestion_refresh_window; do
+  for t in rls_articles rls_content rls_collaboration ownership_transfer push_tokens trip_cover_and_daily_goal suggestion_refresh_window storage_record_binding; do
     make_db "t_$t" 0001 "$LAST" || { FAILED=1; continue; }
     run_suite "$t.test.sql" "t_$t" "$ROOT/supabase/tests/$t.test.sql"
   done

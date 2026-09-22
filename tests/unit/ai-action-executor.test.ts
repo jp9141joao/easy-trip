@@ -189,7 +189,7 @@ describe('checklist', () => {
 });
 
 describe('despesas', () => {
-  it('grava valor informado sem prefixo e estimativa com prefixo', async () => {
+  it('grava toda despesa proposta com prefixo de estimativa', async () => {
     const actions = parseAIActions(
       [
         {
@@ -222,7 +222,7 @@ describe('despesas', () => {
 
     const expenses = await db.expenses.listByTrip(paris.id);
     const descriptions = expenses.map((expense) => expense.description).sort();
-    expect(descriptions).toEqual(['Estimativa — Alimentação', 'Passagem aérea']);
+    expect(descriptions).toEqual(['Estimativa — Alimentação', 'Estimativa — Passagem aérea']);
 
     // O orçamento reage pela lógica que já existia: as despesas estão na moeda
     // do orçamento, então entram convertidas 1:1.
