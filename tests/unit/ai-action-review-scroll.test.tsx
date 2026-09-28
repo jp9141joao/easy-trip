@@ -133,7 +133,8 @@ describe('a folha de revisão rola', () => {
     const { view } = abrir(10);
 
     expect(view.getByText('Cancelar')).toBeTruthy();
-    expect(view.getByText('Adicionar 10 itens')).toBeTruthy();
+    expect(view.getByText('Adicionar')).toBeTruthy();
+    expect(view.getByText('10 itens selecionados.')).toBeTruthy();
   });
 
   it('a seleção continua mandando na contagem do botão', () => {
@@ -142,7 +143,8 @@ describe('a folha de revisão rola', () => {
     fireEvent.press(view.getByRole('checkbox', { name: new RegExp(TITULOS[0]) }));
     fireEvent.press(view.getByRole('checkbox', { name: new RegExp(TITULOS[9]) }));
 
-    fireEvent.press(view.getByText('Adicionar 8 itens'));
+    expect(view.getByText('8 itens selecionados.')).toBeTruthy();
+    fireEvent.press(view.getByText('Adicionar'));
 
     const [actions] = onConfirm.mock.calls[0];
     const enviados = actions[0].items.map((item: { title: string }) => item.title);
@@ -158,7 +160,7 @@ describe('a folha de revisão rola', () => {
 
     expect(areasRolaveis(view)).toHaveLength(1);
     expect(view.getByText(TITULOS[9])).toBeTruthy();
-    expect(view.getByText('Adicionar 10 itens')).toBeTruthy();
+    expect(view.getByText('10 itens selecionados.')).toBeTruthy();
   });
 
   it('duplicatas desmarcadas mantêm o aviso, a lista inteira e uma área rolável só', () => {
@@ -180,7 +182,7 @@ describe('a folha de revisão rola', () => {
     expect(view.getByText(/Alguns itens vieram desmarcados/)).toBeTruthy();
     expect(view.getByText('Possível duplicata de "Visita ao Templo Senso-ji"')).toBeTruthy();
     expect(view.getByText(TITULOS[9])).toBeTruthy();
-    expect(view.getByText('Adicionar 9 itens')).toBeTruthy();
+    expect(view.getByText('9 itens selecionados.')).toBeTruthy();
     expect(areasRolaveis(view)).toHaveLength(1);
   });
 
@@ -189,7 +191,7 @@ describe('a folha de revisão rola', () => {
 
     expect(view.getByText(TITULOS[9])).toBeTruthy();
     expect(areasRolaveis(view)).toHaveLength(1);
-    expect(view.getByText('Adicionar 10 itens')).toBeTruthy();
+    expect(view.getByText('10 itens selecionados.')).toBeTruthy();
   });
 });
 
@@ -249,7 +251,8 @@ describe('a folha revisa uma entrada de diário', () => {
     expect(view.getByText(DIARIO.journal.content)).toBeTruthy();
     expect(view.getByText(/Visibilidade: Somente eu/)).toBeTruthy();
     expect(view.getByText(/A IA não lê o seu diário/)).toBeTruthy();
-    expect(view.getByText('Adicionar 1 item')).toBeTruthy();
+    expect(view.getByText('1 item selecionado.')).toBeTruthy();
+    expect(view.getByText('Adicionar')).toBeTruthy();
     expect(view.getByText('Cancelar')).toBeTruthy();
   });
 
@@ -281,7 +284,7 @@ describe('a folha revisa uma entrada de diário', () => {
     const { view, onConfirm, onCancel } = abrirCom([DIARIO]);
 
     fireEvent.press(view.getByRole('checkbox', { name: /Está previsto|agosto|Asakusa/ }));
-    expect(view.getByText('Nada selecionado')).toBeTruthy();
+    expect(view.getByText('Nenhum item selecionado.')).toBeTruthy();
 
     fireEvent.press(view.getByText('Cancelar'));
     expect(onCancel).toHaveBeenCalled();
@@ -291,7 +294,8 @@ describe('a folha revisa uma entrada de diário', () => {
   it('confirmar devolve a entrada — e só ela', () => {
     const { view, onConfirm } = abrirCom([DIARIO]);
 
-    fireEvent.press(view.getByText('Adicionar 1 item'));
+    expect(view.getByText('1 item selecionado.')).toBeTruthy();
+    fireEvent.press(view.getByText('Adicionar'));
 
     const [actions] = onConfirm.mock.calls[0];
     expect(actions).toHaveLength(1);
@@ -312,7 +316,7 @@ describe('a folha revisa uma entrada de diário', () => {
     expect(view.getByText('Transporte do aeroporto')).toBeTruthy();
     expect(view.getByText(DIARIO.journal.content)).toBeTruthy();
     // 1 roteiro + 3 despesas + 1 diário.
-    expect(view.getByText('Adicionar 5 itens')).toBeTruthy();
+    expect(view.getByText('5 itens selecionados.')).toBeTruthy();
   });
 
   it('com despesas na folha, a estimativa é dita antes de qualquer confirmação', () => {

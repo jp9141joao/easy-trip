@@ -264,7 +264,8 @@ describe('folha de revisão', () => {
   it('confirma com os itens marcados', () => {
     const { view, onConfirm } = abrir();
 
-    fireEvent.press(view.getByText('Adicionar 2 itens'));
+    expect(view.getByText('2 itens selecionados.')).toBeTruthy();
+    fireEvent.press(view.getByText('Adicionar'));
 
     const [actions] = onConfirm.mock.calls[0];
     expect(actions).toHaveLength(1);
@@ -278,7 +279,8 @@ describe('folha de revisão', () => {
     const { view, onConfirm } = abrir();
 
     fireEvent.press(view.getByRole('checkbox', { name: /Museu do Louvre/ }));
-    fireEvent.press(view.getByText('Adicionar 1 item'));
+    expect(view.getByText('1 item selecionado.')).toBeTruthy();
+    fireEvent.press(view.getByText('Adicionar'));
 
     const [actions] = onConfirm.mock.calls[0];
     expect(actions[0].items.map((item: { title: string }) => item.title)).toEqual(['Torre Eiffel']);
@@ -310,7 +312,8 @@ describe('folha de revisão', () => {
 
     expect(view.getByText('Possível duplicata de "Visitar Museu do Louvre"')).toBeTruthy();
 
-    fireEvent.press(view.getByText('Adicionar 1 item'));
+    expect(view.getByText('1 item selecionado.')).toBeTruthy();
+    fireEvent.press(view.getByText('Adicionar'));
     const [actions] = onConfirm.mock.calls[0];
     expect(actions[0].items.map((item: { title: string }) => item.title)).toEqual(['Torre Eiffel']);
   });
@@ -321,7 +324,8 @@ describe('folha de revisão', () => {
     fireEvent.press(view.getByRole('checkbox', { name: /Museu do Louvre/ }));
     fireEvent.press(view.getByRole('checkbox', { name: /Torre Eiffel/ }));
 
-    fireEvent.press(view.getByLabelText('Nada selecionado'));
+    expect(view.getByText('Nenhum item selecionado.')).toBeTruthy();
+    fireEvent.press(view.getByLabelText('Adicionar. Nenhum item selecionado.'));
     expect(onConfirm).not.toHaveBeenCalled();
   });
 });

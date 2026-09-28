@@ -13,6 +13,7 @@ import { useTripSelection } from '@/providers/TripSelectionProvider';
 import { dataSource } from '@/repositories';
 import { purgeRevokedTripState } from './useNotifications';
 import { queryKeys } from './queryKeys';
+import { useTrip } from './useTrips';
 
 /**
  * Quem participa da viagem, e o que quem está lendo pode fazer nela.
@@ -50,25 +51,46 @@ export function useTripInvites(tripId?: string, enabled = true) {
  */
 export function useTripPermissions(tripId?: string) {
   const { user } = useAuth();
+  const userId = user?.id;
   const membersQuery = useTripMembers(tripId);
+  // Mesma `queryKey` que a tela já usa para desenhar o herói: o React Query
+  // devolve o cache, e ler o dono aqui não custa uma requisição a mais.
+  const tripQuery = useTrip(tripId);
 
   return useMemo(() => {
     const members = membersQuery.data ?? [];
-    const mine = members.find((member) => member.userId === user?.id);
-    const role: TripRole | undefined = mine?.role;
+    const mine = members.find((member) => member.userId === userId);
+    /*
+     * Quem criou a viagem é proprietário mesmo sem linha em `trip_members`.
+     *
+     * O DEFEITO que isto corrige: viagens criadas antes de a colaboração
+     * existir (ou cuja linha de membro sumiu) ficavam sem papel resolvido
+     * aqui, e a tela escondia o lápis de editar de quem é dono — enquanto o
+     * Postgres aceitaria a edição sem reclamar. A assimetria era só do
+     * cliente: `is_trip_owner` (0008) e `decorateWithMembership` já caem de
+     * volta em `trips.user_id` exatamente neste caso, e esta é a terceira
+     * cópia da mesma regra, não uma regra nova.
+     *
+     * A ordem importa: `trip_members` vem primeiro. Depois de uma
+     * transferência de propriedade (0014) a linha de membro é a verdade, e
+     * `trips.user_id` — que a função também atualiza — nunca contradiz quem
+     * já tem papel na tabela.
+     */
+    const ownsTripRow = Boolean(userId && tripQuery.data?.userId === userId);
+    const role: TripRole | undefined = mine?.role ?? (ownsTripRow ? 'owner' : undefined);
     // A refetch can fail while previously confirmed membership remains in the
     // cache. Keep that known permission; only an initial failure blocks the
     // role. Most importantly, an error is never converted to an empty member
     // list and then described as `viewer`.
     const blockingError = membersQuery.data === undefined ? membersQuery.error : null;
-    const status = !tripId || !user?.id
+    const status = !tripId || !userId
       ? 'idle'
-      : membersQuery.isLoading
+      : membersQuery.isLoading || tripQuery.isLoading
         ? 'loading'
-        : blockingError
-          ? 'error'
-          : role
-            ? 'ready'
+        : role
+          ? 'ready'
+          : blockingError
+            ? 'error'
             : 'unavailable';
 
     return {
@@ -78,7 +100,11 @@ export function useTripPermissions(tripId?: string) {
       isShared: members.length > 1,
       canEdit: canEditTrip(role),
       canManageMembers: canManageMembers(role),
-      canLeave: canLeaveTrip(role, members.length),
+      // `members.length > 0` porque o papel pode vir de `trips.user_id` com a
+      // lista ainda indisponível — e sair de uma viagem cuja contagem de
+      // viajantes não se conhece é exatamente a decisão que não se deve
+      // oferecer.
+      canLeave: members.length > 0 && canLeaveTrip(role, members.length),
       status,
       isResolved: status === 'ready',
       isLoading: status === 'loading',
@@ -86,7 +112,16 @@ export function useTripPermissions(tripId?: string) {
       error: blockingError,
       refetch: membersQuery.refetch,
     };
-  }, [membersQuery.data, membersQuery.error, membersQuery.isLoading, membersQuery.refetch, tripId, user?.id]);
+  }, [
+    membersQuery.data,
+    membersQuery.error,
+    membersQuery.isLoading,
+    membersQuery.refetch,
+    tripQuery.data,
+    tripQuery.isLoading,
+    tripId,
+    userId,
+  ]);
 }
 
 /** Convites que a pessoa recebeu — alimenta o sino e a Central. */

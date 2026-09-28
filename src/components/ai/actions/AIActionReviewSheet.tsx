@@ -226,13 +226,39 @@ export function AIActionReviewSheet({
           </View>
         ) : null}
 
+        {/*
+          A CONTAGEM FICA AQUI, NÃO NO RÓTULO DO BOTÃO.
+
+          O DEFEITO: o botão dizia "Adicionar 5 itens" dentro de metade de uma
+          linha — cerca de 106dp de texto depois do respiro horizontal — e o
+          `numberOfLines={1}` do `Button` cortava em "Adicionar 5 ite…". O
+          número, que era a razão de estar ali, era justamente a parte que
+          sumia; e com a preferência de texto grande do sistema o corte começa
+          antes ainda.
+
+          Rótulo curto e fixo no botão, contagem numa linha própria logo acima:
+          a informação continua à vista, sem depender da largura que sobrar. A
+          contagem completa vai também no `accessibilityLabel`, porque quem usa
+          leitor de tela ouve o botão sozinho, sem a linha de cima.
+        */}
+        <AppText variant="caption" color="secondary">
+          {selected === 0
+            ? 'Nenhum item selecionado.'
+            : `${selected} ${selected === 1 ? 'item selecionado' : 'itens selecionados'}.`}
+        </AppText>
+
         <ButtonRow>
           <View style={{ flex: 1 }}>
             <Button label="Cancelar" variant="secondary" fullWidth onPress={onCancel} disabled={pending} />
           </View>
           <View style={{ flex: 1 }}>
             <Button
-              label={selected === 0 ? 'Nada selecionado' : `Adicionar ${selected} ${selected === 1 ? 'item' : 'itens'}`}
+              label="Adicionar"
+              accessibilityLabel={
+                selected === 0
+                  ? 'Adicionar. Nenhum item selecionado.'
+                  : `Adicionar ${selected} ${selected === 1 ? 'item' : 'itens'} à viagem.`
+              }
               fullWidth
               loading={pending}
               disabled={selected === 0}

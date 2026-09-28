@@ -5,7 +5,7 @@ import AdvisorScreen from '@/app/(tabs)/advisor';
 import { ToastProvider } from '@/components/ui';
 import { isApplyConfirmation, type AITripAction } from '@/domain/aiActions';
 import { AIRateLimitError } from '@/domain/aiRateLimit';
-import type { AIMessage, Trip } from '@/domain/types';
+import type { AIMessage, ItineraryItem, Trip } from '@/domain/types';
 import { ThemeProvider } from '@/theme';
 
 /**
@@ -69,6 +69,8 @@ const state = {
   /** As propostas que a conversa tem abertas, por mensagem. */
   actions: {} as Record<string, AITripAction[]>,
   messages: [] as AIMessage[],
+  /** O que a viagem JÁ tem — é daqui que sai a conferência de duplicata. */
+  itinerary: [] as ItineraryItem[],
 };
 
 const mockSend = jest.fn(async (_prompt: string) => ({ content: 'ok', local: false }));
@@ -103,7 +105,7 @@ jest.mock('@/hooks/useContent', () => ({
   useConsultations: () => ({ consultations: [], request: { isPending: false } }),
 }));
 jest.mock('@/hooks/useTripData', () => ({
-  useItinerary: () => ({ data: [] }),
+  useItinerary: () => ({ data: state.itinerary }),
   useChecklist: () => ({ data: [] }),
 }));
 jest.mock('@/hooks/useAIActions', () => ({
@@ -170,6 +172,7 @@ const escrever = async (view: Awaited<ReturnType<typeof abrirAbaIA>>, texto: str
 
 beforeEach(() => {
   state.actions = {};
+  state.itinerary = [];
   state.messages = [];
   mockSend.mockClear();
   mockRun.mockClear();
@@ -205,11 +208,31 @@ describe('B. "pode aplicar" com proposta aberta', () => {
     state.actions = { 'msg-1': [roteiro] };
   });
 
-  it('Implementar exige revisão e confirmação mesmo para um único bloco sem avisos', async () => {
+  /*
+   * OS DOIS BOTÕES FAZEM DUAS COISAS DIFERENTES.
+   *
+   * Antes os dois chamavam `setReview`: "Revisar" e "Implementar" abriam a
+   * mesma folha, e o primário era o que menos correspondia ao rótulo. Quem
+   * toca em "Implementar" está confirmando a proposta que já leu no card, e a
+   * próxima coisa que precisa ver é o resultado — não o mesmo conteúdo com um
+   * botão a mais.
+   */
+  it('Implementar grava direto quando nada precisa de conferência', async () => {
     const view = await abrirAbaIA();
     expect(mockRun).not.toHaveBeenCalled();
 
     fireEvent.press(view.getByLabelText('Implementar'));
+    await act(async () => undefined);
+
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    // A folha não chegou a abrir: o toque foi a confirmação.
+    expect(view.queryByText('Revisar antes de adicionar')).toBeNull();
+  });
+
+  it('Revisar continua abrindo a folha sem gravar nada', async () => {
+    const view = await abrirAbaIA();
+
+    fireEvent.press(view.getByLabelText('Revisar'));
     await act(async () => undefined);
 
     expect(mockRun).not.toHaveBeenCalled();
@@ -221,7 +244,51 @@ describe('B. "pode aplicar" com proposta aberta', () => {
     expect(mockRun).toHaveBeenCalledTimes(1);
   });
 
-  it('cancelar a revisão aberta por Implementar preserva a proposta sem gravar', async () => {
+  /*
+   * A exceção, e a razão de ela existir: a conferência de duplicata continua
+   * rodando no caminho direto. Quando ela marca alguma coisa, existe uma
+   * decisão a tomar, e tomá-la sozinho seria gravar uma duplicata em silêncio
+   * — exatamente o que a conferência existe para evitar (§22).
+   */
+  it('Implementar abre a revisão quando um item é possível duplicata', async () => {
+    state.itinerary = [
+      {
+        id: 'i1',
+        tripId: paris.id,
+        date: '2026-08-23',
+        type: 'atracao',
+        title: 'Museu do Louvre',
+        completed: false,
+        sortOrder: 0,
+        visibility: 'shared',
+      },
+    ];
+
+    const view = await abrirAbaIA();
+    fireEvent.press(view.getByLabelText('Implementar'));
+    await act(async () => undefined);
+
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(view.getByText('Revisar antes de adicionar')).toBeTruthy();
+    expect(view.getByText('Possível duplicata de "Museu do Louvre"')).toBeTruthy();
+    // O duplicado chega desmarcado: os outros dois é que seriam gravados.
+    expect(view.getByText('2 itens selecionados.')).toBeTruthy();
+  });
+
+  it('cancelar a revisão aberta por uma duplicata preserva a proposta sem gravar', async () => {
+    state.itinerary = [
+      {
+        id: 'i1',
+        tripId: paris.id,
+        date: '2026-08-23',
+        type: 'atracao',
+        title: 'Museu do Louvre',
+        completed: false,
+        sortOrder: 0,
+        visibility: 'shared',
+      },
+    ];
+
     const view = await abrirAbaIA();
     fireEvent.press(view.getByLabelText('Implementar'));
     await act(async () => undefined);

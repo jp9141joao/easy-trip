@@ -38,6 +38,7 @@ import { AuroraBackground } from '@/components/ui/Surface';
 import { DockAwareColumn, useDockMetrics } from '@/components/navigation/DockMetrics';
 import { DOCK_CLEARANCE } from '@/constants/layout';
 import { useKeyboardVisible } from '@/hooks/useKeyboard';
+import { buildReviewGroups, reviewToActions } from '@/domain/aiActionReview';
 import { isApplyConfirmation, type AITripAction } from '@/domain/aiActions';
 import { consultationSchema, type ConsultationInput } from '@/domain/schemas';
 import type { Advisor } from '@/domain/types';
@@ -452,10 +453,44 @@ function AITab() {
     }
   };
 
-  /** Toda proposta passa pela revisão visual antes da confirmação de escrita. */
+  /**
+   * "Implementar" GRAVA. "Revisar" é que abre a folha.
+   *
+   * O DEFEITO: os dois botões chamavam `setReview`. Dois rótulos diferentes,
+   * um comportamento só — e o da direita, o primário, era o que menos
+   * correspondia ao que prometia. Quem lê "Implementar" espera que a próxima
+   * tela seja o roteiro com os itens dentro, não o mesmo conteúdo de novo com
+   * um botão a mais para tocar.
+   *
+   * O que a revisão fazia de útil no caminho direto continua sendo feito:
+   * `buildReviewGroups` é a conferência de duplicata e de data fora do período
+   * da viagem, e ela roda aqui igual. A diferença é o que se faz com o
+   * resultado. Sem nenhum aviso, aplica-se a proposta inteira, que é o que a
+   * folha aplicaria se a pessoa a abrisse e tocasse em "Adicionar". COM aviso,
+   * a folha abre: aí existe uma decisão a tomar, e tomá-la por conta própria
+   * seria gravar uma duplicata em silêncio — exatamente o que a conferência
+   * existe para evitar (§22).
+   *
+   * A visibilidade é a mesma que a folha oferece por padrão
+   * (`DEFAULT_VISIBILITY`, resolvida no executor): o caminho direto é a
+   * confirmação dos padrões, nunca uma escolha diferente da que a revisão
+   * mostraria.
+   */
   const implement = (messageId: string, actions: AITripAction[]) => {
     if (!trip) return;
-    setReview({ messageId, actions });
+
+    const groups = buildReviewGroups(actions, { trip, itinerary, checklist });
+    const flagged = groups.some((group) =>
+      group.items.some((item) => item.warnings.length > 0),
+    );
+
+    if (flagged) {
+      setReview({ messageId, actions });
+      toast.info('Alguns itens pedem sua conferência antes de entrar.');
+      return;
+    }
+
+    void applyActions(messageId, reviewToActions(groups));
   };
 
   const undoResult = async () => {
