@@ -346,6 +346,11 @@ no workspace nem no histórico Git disponível. Portanto as antigas contagens
 105 RF, 62 RNF e 41 casos de uso não são apresentadas como inventário comprovado.
 Isso não altera funcionalidades nem substitui o recorte acadêmico.
 
+O catálogo individual dos 74 RF e 70 RNF está em
+[`docs/REQUISITOS.md`](docs/REQUISITOS.md), redocumentado em outubro de 2026
+pelo mesmo método retrospectivo e com os totais e classificações do recorte de
+2/9/2026, já que a lista de trabalho daquela data não foi versionada.
+
 A evidência disponível está nos contratos em `src/repositories/types.ts`, nas
 migrations, nos testes e no [relatório de alinhamento](docs/RELATORIO_ALINHAMENTO_CODIGO_TCC_FINAL.md).
 
